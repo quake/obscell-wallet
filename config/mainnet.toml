@@ -1,0 +1,28 @@
+# Obscell Wallet - Mainnet Configuration
+# NOTE: Mainnet contracts are not yet deployed
+
+[network]
+name = "mainnet"
+rpc_url = "https://mainnet.ckb.dev"
+indexer_url = "https://mainnet.ckb.dev/indexer"
+
+[contracts]
+# Stealth lock script code hash (type hash) - NOT YET DEPLOYED
+stealth_lock_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# CT token type script code hash - NOT YET DEPLOYED
+ct_token_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# CT info type script code hash - NOT YET DEPLOYED
+ct_info_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# CKB auth code hash
+ckb_auth_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[cell_deps]
+# CKB auth cell dep - NOT YET DEPLOYED
+[cell_deps.ckb_auth]
+tx_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+index = 0
+
+# Stealth lock cell dep - NOT YET DEPLOYED
+[cell_deps.stealth_lock]
+tx_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+index = 1

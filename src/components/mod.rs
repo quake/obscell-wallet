@@ -1,0 +1,13 @@
+pub mod accounts;
+
+use color_eyre::eyre::Result;
+use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
+
+use crate::tui::Frame;
+
+/// A component is a reusable UI element that can handle events and render itself.
+pub trait Component {
+    fn handle_key_event(&mut self, key: KeyEvent) -> Result<()>;
+    fn draw(&mut self, f: &mut Frame, area: Rect);
+}

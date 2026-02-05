@@ -1,0 +1,25 @@
+# Obscell Wallet - Devnet (Local Development) Configuration
+# Use this with a local CKB node for development and testing
+
+[network]
+name = "devnet"
+rpc_url = "http://127.0.0.1:8114"
+indexer_url = "http://127.0.0.1:8114/indexer"
+
+[contracts]
+# These will be populated after deploying contracts locally
+# Run the deploy script and update these values
+stealth_lock_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+ct_token_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+ct_info_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+ckb_auth_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[cell_deps]
+# Update after local deployment
+[cell_deps.ckb_auth]
+tx_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+index = 0
+
+[cell_deps.stealth_lock]
+tx_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+index = 1

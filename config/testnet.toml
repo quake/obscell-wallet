@@ -1,0 +1,27 @@
+# Obscell Wallet - Testnet Configuration
+
+[network]
+name = "testnet"
+rpc_url = "https://testnet.ckb.dev"
+indexer_url = "https://testnet.ckb.dev/indexer"
+
+[contracts]
+# Stealth lock script code hash (type hash)
+stealth_lock_code_hash = "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6"
+# CT token type script code hash
+ct_token_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# CT info type script code hash
+ct_info_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+# CKB auth code hash (for signature verification)
+ckb_auth_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[cell_deps]
+# CKB auth cell dep
+[cell_deps.ckb_auth]
+tx_hash = "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
+index = 0
+
+# Stealth lock cell dep
+[cell_deps.stealth_lock]
+tx_hash = "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
+index = 1

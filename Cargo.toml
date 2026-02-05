@@ -1,0 +1,56 @@
+[package]
+name = "obscell-wallet"
+version = "0.1.0"
+edition = "2024"
+authors = ["quake"]
+description = "A TUI wallet for obscell privacy tokens on Nervos CKB"
+license = "MIT"
+repository = "https://github.com/quake/obscell-wallet"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["full"] }
+
+# CLI & Config
+clap = { version = "4", features = ["derive"] }
+directories = "5"
+toml = "0.8"
+strum = { version = "0.26", features = ["derive"] }
+
+# Crypto
+secp256k1 = { version = "0.28", features = ["rand-std", "recovery", "global-context"] }
+# bulletproofs uses curve25519-dalek-ng internally, so we must use the same
+bulletproofs = { version = "4", default-features = false, features = ["std"] }
+curve25519-dalek-ng = "4"
+merlin = "3"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+
+# CKB
+ckb-sdk = "5"
+ckb-types = "1"
+ckb-hash = "1"
+ckb-jsonrpc-types = "1"
+
+# Storage
+heed = { version = "0.22", features = ["serde", "serde-rmp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling & logging
+color-eyre = "0.6"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-error = "0.2"
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+better-panic = "0.3"
+human-panic = "2"
+strip-ansi-escapes = "0.2"
+futures = "0.3"
+signal-hook = "0.3"
