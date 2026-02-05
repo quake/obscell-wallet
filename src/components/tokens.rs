@@ -30,6 +30,8 @@ pub enum TokensMode {
     Transfer,
     /// Mint tokens (issuer only).
     Mint,
+    /// Create new token (genesis).
+    Genesis,
 }
 
 /// Input field focus state for transfer mode.
@@ -37,6 +39,14 @@ pub enum TokensMode {
 pub enum TransferField {
     Recipient,
     Amount,
+    Confirm,
+}
+
+/// Input field focus state for genesis mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenesisField {
+    SupplyCap,
+    Unlimited,
     Confirm,
 }
 
@@ -58,6 +68,10 @@ pub struct TokensComponent {
     pub mint_recipient: String,
     pub mint_amount: String,
     pub mint_field: TransferField,
+    // Genesis mode state
+    pub genesis_supply_cap: String,
+    pub genesis_unlimited: bool,
+    pub genesis_field: GenesisField,
     // Messages
     pub error_message: Option<String>,
     pub success_message: Option<String>,
@@ -82,6 +96,9 @@ impl TokensComponent {
             mint_recipient: String::new(),
             mint_amount: String::new(),
             mint_field: TransferField::Recipient,
+            genesis_supply_cap: String::new(),
+            genesis_unlimited: true,
+            genesis_field: GenesisField::SupplyCap,
             error_message: None,
             success_message: None,
         }
@@ -125,6 +142,23 @@ impl TokensComponent {
         self.mint_amount.clear();
         self.mint_field = TransferField::Recipient;
         self.is_editing = false;
+    }
+
+    /// Clear genesis form.
+    pub fn clear_genesis(&mut self) {
+        self.genesis_supply_cap.clear();
+        self.genesis_unlimited = true;
+        self.genesis_field = GenesisField::SupplyCap;
+        self.is_editing = false;
+    }
+
+    /// Parse genesis supply cap to u128.
+    pub fn parse_genesis_supply_cap(&self) -> Option<u128> {
+        if self.genesis_unlimited {
+            Some(0) // 0 means unlimited
+        } else {
+            parse_token_amount(&self.genesis_supply_cap).map(|v| v as u128)
+        }
     }
 
     /// Parse transfer amount to u64.
@@ -179,6 +213,13 @@ impl TokensComponent {
                     TransferField::Confirm => TransferField::Recipient,
                 };
             }
+            TokensMode::Genesis => {
+                self.genesis_field = match self.genesis_field {
+                    GenesisField::SupplyCap => GenesisField::Unlimited,
+                    GenesisField::Unlimited => GenesisField::Confirm,
+                    GenesisField::Confirm => GenesisField::SupplyCap,
+                };
+            }
             TokensMode::List => {}
         }
     }
@@ -197,6 +238,13 @@ impl TokensComponent {
                     TransferField::Recipient => TransferField::Confirm,
                     TransferField::Amount => TransferField::Recipient,
                     TransferField::Confirm => TransferField::Amount,
+                };
+            }
+            TokensMode::Genesis => {
+                self.genesis_field = match self.genesis_field {
+                    GenesisField::SupplyCap => GenesisField::Confirm,
+                    GenesisField::Unlimited => GenesisField::SupplyCap,
+                    GenesisField::Confirm => GenesisField::Unlimited,
                 };
             }
             TokensMode::List => {}
@@ -227,6 +275,14 @@ impl TokensComponent {
                 }
                 TransferField::Confirm => {}
             },
+            TokensMode::Genesis => match self.genesis_field {
+                GenesisField::SupplyCap => {
+                    if c.is_ascii_digit() || (c == '.' && !self.genesis_supply_cap.contains('.')) {
+                        self.genesis_supply_cap.push(c);
+                    }
+                }
+                GenesisField::Unlimited | GenesisField::Confirm => {}
+            },
             TokensMode::List => {}
         }
     }
@@ -250,6 +306,12 @@ impl TokensComponent {
                     self.mint_amount.pop();
                 }
                 TransferField::Confirm => {}
+            },
+            TokensMode::Genesis => match self.genesis_field {
+                GenesisField::SupplyCap => {
+                    self.genesis_supply_cap.pop();
+                }
+                GenesisField::Unlimited | GenesisField::Confirm => {}
             },
             TokensMode::List => {}
         }
@@ -331,6 +393,25 @@ impl TokensComponent {
         }
     }
 
+    /// Validate genesis inputs.
+    pub fn validate_genesis(&self) -> Option<String> {
+        if self.account.is_none() {
+            return Some("No account selected".to_string());
+        }
+
+        // If not unlimited, validate supply cap
+        if !self.genesis_unlimited {
+            if self.genesis_supply_cap.trim().is_empty() {
+                return Some("Supply cap is required (or select Unlimited)".to_string());
+            }
+            if self.parse_genesis_supply_cap().is_none() {
+                return Some("Invalid supply cap format".to_string());
+            }
+        }
+
+        None
+    }
+
     /// Static draw method for use in the main app draw loop.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_static(
@@ -346,6 +427,9 @@ impl TokensComponent {
         mint_recipient: &str,
         mint_amount: &str,
         mint_field: TransferField,
+        genesis_supply_cap: &str,
+        genesis_unlimited: bool,
+        genesis_field: GenesisField,
         is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
@@ -376,6 +460,19 @@ impl TokensComponent {
                     mint_recipient,
                     mint_amount,
                     mint_field,
+                    is_editing,
+                    error_message,
+                    success_message,
+                );
+            }
+            TokensMode::Genesis => {
+                Self::draw_genesis_mode(
+                    f,
+                    area,
+                    account,
+                    genesis_supply_cap,
+                    genesis_unlimited,
+                    genesis_field,
                     is_editing,
                     error_message,
                     success_message,
@@ -429,7 +526,7 @@ impl TokensComponent {
 
         let account_name = account.map(|a| a.name.as_str()).unwrap_or("None");
         let title = format!(
-            "Token Balances - {} [t]Transfer [m]Mint [r]Rescan",
+            "Token Balances - {} [n]New [t]Transfer [m]Mint [r]Rescan",
             account_name
         );
 
@@ -484,7 +581,7 @@ impl TokensComponent {
                 Line::from(""),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "[t] Transfer  [m] Mint  [r] Rescan  [j/k] Navigate",
+                    "[n] New  [t] Transfer  [m] Mint  [r] Rescan  [j/k] Navigate",
                     Style::default().fg(Color::DarkGray),
                 )]),
             ]
@@ -492,8 +589,8 @@ impl TokensComponent {
             vec![
                 Line::from("No tokens found"),
                 Line::from(""),
+                Line::from("Press [n] to create a new token"),
                 Line::from("Press [r] to rescan for tokens"),
-                Line::from("Press [m] to mint new tokens (if issuer)"),
             ]
         };
 
@@ -918,6 +1015,206 @@ impl TokensComponent {
         );
         f.render_widget(status_widget, chunks[4]);
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_genesis_mode(
+        f: &mut Frame,
+        area: Rect,
+        account: Option<&Account>,
+        supply_cap: &str,
+        unlimited: bool,
+        focused_field: GenesisField,
+        is_editing: bool,
+        error_message: Option<&str>,
+        success_message: Option<&str>,
+    ) {
+        let chunks = Layout::vertical([
+            Constraint::Length(5), // Account info
+            Constraint::Length(5), // Supply cap
+            Constraint::Length(3), // Unlimited checkbox
+            Constraint::Length(5), // Confirm button
+            Constraint::Min(0),    // Status/help
+        ])
+        .split(area);
+
+        // Account info
+        let info = if let Some(acc) = account {
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Issuer: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::raw("  |  "),
+                    Span::styled(
+                        "Creating new CT token (genesis)",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]),
+            ]
+        } else {
+            vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "No account selected",
+                    Style::default().fg(Color::Red),
+                )]),
+            ]
+        };
+
+        let info_widget = Paragraph::new(info).block(
+            Block::default()
+                .title("Create New Token [Esc] Back")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(info_widget, chunks[0]);
+
+        // Supply cap input
+        let supply_style = if focused_field == GenesisField::SupplyCap {
+            if is_editing {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Cyan)
+            }
+        } else if unlimited {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let supply_text = if unlimited {
+            "Unlimited (checkbox enabled)".to_string()
+        } else if supply_cap.is_empty() && focused_field != GenesisField::SupplyCap {
+            "Enter maximum supply".to_string()
+        } else if supply_cap.is_empty() {
+            "|".to_string()
+        } else {
+            supply_cap.to_string()
+        };
+
+        let mut supply_display = supply_text;
+        if is_editing && focused_field == GenesisField::SupplyCap && !unlimited {
+            supply_display.push('|');
+        }
+
+        let supply_widget = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(supply_display, supply_style)]),
+        ])
+        .block(
+            Block::default()
+                .title(if focused_field == GenesisField::SupplyCap {
+                    "> Supply Cap"
+                } else {
+                    "  Supply Cap"
+                })
+                .borders(Borders::ALL)
+                .border_style(if focused_field == GenesisField::SupplyCap {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+        );
+        f.render_widget(supply_widget, chunks[1]);
+
+        // Unlimited checkbox
+        let checkbox_style = if focused_field == GenesisField::Unlimited {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let checkbox_text = if unlimited {
+            "[x] Unlimited"
+        } else {
+            "[ ] Unlimited"
+        };
+
+        let checkbox_widget = Paragraph::new(vec![Line::from(vec![Span::styled(
+            checkbox_text,
+            checkbox_style,
+        )])])
+        .block(
+            Block::default()
+                .title(if focused_field == GenesisField::Unlimited {
+                    "> Options"
+                } else {
+                    "  Options"
+                })
+                .borders(Borders::ALL)
+                .border_style(if focused_field == GenesisField::Unlimited {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+        );
+        f.render_widget(checkbox_widget, chunks[2]);
+
+        // Confirm button
+        let confirm_style = if focused_field == GenesisField::Confirm {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+
+        let confirm_widget = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![Span::styled("  [ Create Token ]  ", confirm_style)]),
+        ])
+        .block(
+            Block::default()
+                .title(if focused_field == GenesisField::Confirm {
+                    "> Confirm"
+                } else {
+                    "  Confirm"
+                })
+                .borders(Borders::ALL)
+                .border_style(if focused_field == GenesisField::Confirm {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+        );
+        f.render_widget(confirm_widget, chunks[3]);
+
+        // Status/help
+        let mut status_lines = vec![Line::from("")];
+
+        if let Some(err) = error_message {
+            status_lines.push(Line::from(vec![Span::styled(
+                format!("Error: {}", err),
+                Style::default().fg(Color::Red),
+            )]));
+        } else if let Some(success) = success_message {
+            status_lines.push(Line::from(vec![Span::styled(
+                success,
+                Style::default().fg(Color::Green),
+            )]));
+        }
+
+        status_lines.push(Line::from(""));
+        status_lines.push(Line::from(vec![Span::styled(
+            if is_editing {
+                "[Esc] Stop editing  [Tab] Next field"
+            } else if focused_field == GenesisField::Unlimited {
+                "[Space/Enter] Toggle  [Tab] Next  [Esc] Back"
+            } else {
+                "[Enter/e] Edit  [Tab] Next  [c] Clear  [Esc] Back"
+            },
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        let status_widget = Paragraph::new(status_lines).block(
+            Block::default()
+                .title("Help")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+        f.render_widget(status_widget, chunks[4]);
+    }
 }
 
 impl Component for TokensComponent {
@@ -948,6 +1245,11 @@ impl Component for TokensComponent {
                         self.mode = TokensMode::Mint;
                         self.clear_mint();
                     }
+                    KeyCode::Char('n') => {
+                        // Enter genesis mode (create new token)
+                        self.mode = TokensMode::Genesis;
+                        self.clear_genesis();
+                    }
                     KeyCode::Char('r') => {
                         self.action_tx.send(Action::Rescan)?;
                     }
@@ -961,7 +1263,7 @@ impl Component for TokensComponent {
                     _ => {}
                 }
             }
-            TokensMode::Transfer | TokensMode::Mint => {
+            TokensMode::Transfer | TokensMode::Mint | TokensMode::Genesis => {
                 if self.is_editing {
                     match key.code {
                         KeyCode::Esc => {
@@ -999,20 +1301,36 @@ impl Component for TokensComponent {
                         KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
                             self.prev_field();
                         }
+                        KeyCode::Char(' ') if self.mode == TokensMode::Genesis => {
+                            // Toggle unlimited checkbox in Genesis mode
+                            if self.genesis_field == GenesisField::Unlimited {
+                                self.genesis_unlimited = !self.genesis_unlimited;
+                            }
+                        }
                         KeyCode::Enter | KeyCode::Char('e') => {
                             let is_confirm = match self.mode {
                                 TokensMode::Transfer => {
                                     self.transfer_field == TransferField::Confirm
                                 }
                                 TokensMode::Mint => self.mint_field == TransferField::Confirm,
+                                TokensMode::Genesis => self.genesis_field == GenesisField::Confirm,
                                 TokensMode::List => false,
                             };
+
+                            // Handle unlimited toggle on Enter in Genesis mode
+                            if self.mode == TokensMode::Genesis
+                                && self.genesis_field == GenesisField::Unlimited
+                            {
+                                self.genesis_unlimited = !self.genesis_unlimited;
+                                return Ok(());
+                            }
 
                             if is_confirm {
                                 // Validate and execute
                                 let validation_error = match self.mode {
                                     TokensMode::Transfer => self.validate_transfer(),
                                     TokensMode::Mint => self.validate_mint(),
+                                    TokensMode::Genesis => self.validate_genesis(),
                                     TokensMode::List => None,
                                 };
 
@@ -1027,16 +1345,25 @@ impl Component for TokensComponent {
                                         TokensMode::Mint => {
                                             self.action_tx.send(Action::MintToken)?;
                                         }
+                                        TokensMode::Genesis => {
+                                            self.action_tx.send(Action::CreateToken)?;
+                                        }
                                         TokensMode::List => {}
                                     }
                                 }
                             } else {
-                                self.is_editing = true;
+                                // Don't enter edit mode for the Unlimited field
+                                if !(self.mode == TokensMode::Genesis
+                                    && self.genesis_field == GenesisField::Unlimited)
+                                {
+                                    self.is_editing = true;
+                                }
                             }
                         }
                         KeyCode::Char('c') => match self.mode {
                             TokensMode::Transfer => self.clear_transfer(),
                             TokensMode::Mint => self.clear_mint(),
+                            TokensMode::Genesis => self.clear_genesis(),
                             TokensMode::List => {}
                         },
                         _ => {}
@@ -1061,6 +1388,9 @@ impl Component for TokensComponent {
             &self.mint_recipient,
             &self.mint_amount,
             self.mint_field,
+            &self.genesis_supply_cap,
+            self.genesis_unlimited,
+            self.genesis_field,
             self.is_editing,
             self.error_message.as_deref(),
             self.success_message.as_deref(),

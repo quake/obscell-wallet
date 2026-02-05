@@ -145,6 +145,7 @@ impl HistoryComponent {
                     TxType::StealthReceive { .. } => Color::Green,
                     TxType::CtTransfer { .. } => Color::Yellow,
                     TxType::CtMint { .. } => Color::Magenta,
+                    TxType::CtGenesis { .. } => Color::Cyan,
                 };
 
                 let amount_str = tx

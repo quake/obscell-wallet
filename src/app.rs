@@ -19,8 +19,11 @@ use crate::{
     domain::{
         account::AccountManager,
         cell::{TxRecord, aggregate_ct_balances},
-        ct_info::CtInfoData,
-        ct_mint::{CtInfoCellInput, MintParams, build_mint_transaction, sign_mint_transaction},
+        ct_info::{CtInfoData, MINTABLE},
+        ct_mint::{
+            CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
+            build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+        },
         ct_tx_builder::CtTxBuilder,
         tx_builder::{StealthTxBuilder, parse_stealth_address},
     },
@@ -859,6 +862,150 @@ impl App {
                     self.status_message = "CT mint failed: missing data".to_string();
                 }
             }
+            Action::CreateToken => {
+                // Genesis: Create a new CT token
+                if let Some(ref account) = self.tokens_component.account.clone() {
+                    // Get supply cap from genesis form
+                    let supply_cap = self.tokens_component.parse_genesis_supply_cap().unwrap_or(0);
+
+                    // Get account's stealth address for issuer ownership
+                    let stealth_address_hex = account.stealth_address();
+                    let stealth_address = match hex::decode(&stealth_address_hex) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid stealth address: {}", e));
+                            self.status_message = "Genesis failed: invalid address".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Find a suitable funding cell from the account's stealth cells
+                    let stealth_cells = match self.store.get_stealth_cells(account.id) {
+                        Ok(cells) => cells,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Failed to get stealth cells: {}", e));
+                            self.status_message = "Genesis failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Need at least 150 CKB for ct-info cell
+                    let min_capacity = 150_00000000u64;
+                    let funding_cell = stealth_cells
+                        .iter()
+                        .find(|c| c.capacity >= min_capacity);
+
+                    let funding_cell = match funding_cell {
+                        Some(cell) => cell,
+                        None => {
+                            self.tokens_component.error_message = Some(format!(
+                                "No cell with at least {} CKB available. Receive CKB first.",
+                                min_capacity / 100_000_000
+                            ));
+                            self.status_message = "Genesis failed: insufficient funds".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Build genesis params
+                    let genesis_params = GenesisParams {
+                        supply_cap,
+                        flags: MINTABLE,
+                        issuer_stealth_address: stealth_address,
+                    };
+
+                    // Build funding cell input
+                    let funding_input = FundingCell {
+                        out_point: funding_cell.out_point.clone(),
+                        capacity: funding_cell.capacity,
+                        lock_script_args: funding_cell.stealth_script_args.clone(),
+                    };
+
+                    // Build the genesis transaction
+                    let built_tx =
+                        match build_genesis_transaction(&self.config, genesis_params, funding_input)
+                        {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                self.tokens_component.error_message =
+                                    Some(format!("Genesis build failed: {}", e));
+                                self.status_message = "Genesis failed: build error".to_string();
+                                return Ok(());
+                            }
+                        };
+
+                    // Remember the token ID and ct-info lock args for later use
+                    let token_id = built_tx.token_id;
+
+                    // Sign the transaction with the funding cell's stealth key
+                    let signed_tx = match sign_genesis_transaction(
+                        built_tx,
+                        account,
+                        &funding_cell.stealth_script_args,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Genesis signing failed: {}", e));
+                            self.status_message = "Genesis failed: signing error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Submit the transaction
+                    match self.scanner.rpc().send_transaction(signed_tx) {
+                        Ok(tx_hash) => {
+                            self.tokens_component.success_message = Some(format!(
+                                "Token created! Hash: {}...{}\nToken ID: {}...{}",
+                                &hex::encode(&tx_hash.0[..4]),
+                                &hex::encode(&tx_hash.0[28..]),
+                                &hex::encode(&token_id[..4]),
+                                &hex::encode(&token_id[28..])
+                            ));
+                            self.status_message = format!(
+                                "Created new token {}...{}",
+                                &hex::encode(&token_id[..4]),
+                                &hex::encode(&token_id[28..])
+                            );
+
+                            // Save transaction record to history
+                            let tx_record = TxRecord::ct_genesis(tx_hash.0, token_id);
+                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
+                                info!("Failed to save genesis record: {}", e);
+                            }
+
+                            // Refresh history display
+                            if let Ok(history) = self.store.get_tx_history(account.id) {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            // Remove spent stealth cell from store
+                            if let Err(e) = self
+                                .store
+                                .remove_spent_cells(account.id, std::slice::from_ref(&funding_cell.out_point))
+                            {
+                                info!("Failed to remove spent stealth cell: {}", e);
+                            }
+
+                            // Clear genesis form and return to list
+                            self.tokens_component.clear_genesis();
+                            self.tokens_component.mode =
+                                crate::components::tokens::TokensMode::List;
+                        }
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Genesis submission failed: {}", e));
+                            self.status_message = "Genesis failed: RPC error".to_string();
+                        }
+                    }
+                } else {
+                    self.tokens_component.error_message =
+                        Some("No account selected".to_string());
+                    self.status_message = "Genesis failed: no account".to_string();
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -893,6 +1040,9 @@ impl App {
         let tokens_mint_recipient = self.tokens_component.mint_recipient.clone();
         let tokens_mint_amount = self.tokens_component.mint_amount.clone();
         let tokens_mint_field = self.tokens_component.mint_field;
+        let tokens_genesis_supply_cap = self.tokens_component.genesis_supply_cap.clone();
+        let tokens_genesis_unlimited = self.tokens_component.genesis_unlimited;
+        let tokens_genesis_field = self.tokens_component.genesis_field;
         let tokens_is_editing = self.tokens_component.is_editing;
         let tokens_error_message = self.tokens_component.error_message.clone();
         let tokens_success_message = self.tokens_component.success_message.clone();
@@ -991,6 +1141,9 @@ impl App {
                         &tokens_mint_recipient,
                         &tokens_mint_amount,
                         tokens_mint_field,
+                        &tokens_genesis_supply_cap,
+                        tokens_genesis_unlimited,
+                        tokens_genesis_field,
                         tokens_is_editing,
                         tokens_error_message.as_deref(),
                         tokens_success_message.as_deref(),

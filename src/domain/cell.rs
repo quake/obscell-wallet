@@ -31,6 +31,11 @@ pub enum TxType {
         /// Amount minted.
         amount: u64,
     },
+    /// Created a new CT token (genesis).
+    CtGenesis {
+        /// Token ID (type script hash).
+        token_id: [u8; 32],
+    },
 }
 
 /// Transaction status.
@@ -106,6 +111,11 @@ impl TxRecord {
         Self::new(tx_hash, TxType::CtMint { token, amount }, TxStatus::Pending)
     }
 
+    /// Create a CT token genesis record.
+    pub fn ct_genesis(tx_hash: [u8; 32], token_id: [u8; 32]) -> Self {
+        Self::new(tx_hash, TxType::CtGenesis { token_id }, TxStatus::Pending)
+    }
+
     /// Mark as confirmed with block number.
     pub fn confirm(&mut self, block_number: u64) {
         self.status = TxStatus::Confirmed;
@@ -131,7 +141,7 @@ impl TxRecord {
         match &self.tx_type {
             TxType::StealthSend { amount, .. } => Some(*amount as f64 / 100_000_000.0),
             TxType::StealthReceive { amount } => Some(*amount as f64 / 100_000_000.0),
-            TxType::CtTransfer { .. } | TxType::CtMint { .. } => None,
+            TxType::CtTransfer { .. } | TxType::CtMint { .. } | TxType::CtGenesis { .. } => None,
         }
     }
 
@@ -142,6 +152,7 @@ impl TxRecord {
             TxType::StealthReceive { .. } => "Receive",
             TxType::CtTransfer { .. } => "Transfer",
             TxType::CtMint { .. } => "Mint",
+            TxType::CtGenesis { .. } => "Genesis",
         }
     }
 }
