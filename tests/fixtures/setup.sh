@@ -55,20 +55,23 @@ setup_ckb() {
     ARCH=$(detect_arch)
     info "Downloading CKB v$CKB_VERSION for $OS-$ARCH..."
 
-    if [ "$OS" = "linux" ]; then
-        ARCHIVE="ckb_v${CKB_VERSION}_${ARCH}-unknown-linux-gnu.tar.gz"
-    else
-        ARCHIVE="ckb_v${CKB_VERSION}_${ARCH}-apple-darwin.tar.gz"
-    fi
-
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    curl -L -o "$TEMP_DIR/$ARCHIVE" \
-        "https://github.com/nervosnetwork/ckb/releases/download/v${CKB_VERSION}/${ARCHIVE}" \
-        || error "Failed to download CKB"
-
-    tar -xzf "$TEMP_DIR/$ARCHIVE" -C "$TEMP_DIR"
+    if [ "$OS" = "linux" ]; then
+        ARCHIVE="ckb_v${CKB_VERSION}_${ARCH}-unknown-linux-gnu.tar.gz"
+        curl -L -o "$TEMP_DIR/$ARCHIVE" \
+            "https://github.com/nervosnetwork/ckb/releases/download/v${CKB_VERSION}/${ARCHIVE}" \
+            || error "Failed to download CKB"
+        tar -xzf "$TEMP_DIR/$ARCHIVE" -C "$TEMP_DIR"
+    else
+        # macOS uses .zip format
+        ARCHIVE="ckb_v${CKB_VERSION}_${ARCH}-apple-darwin.zip"
+        curl -L -o "$TEMP_DIR/$ARCHIVE" \
+            "https://github.com/nervosnetwork/ckb/releases/download/v${CKB_VERSION}/${ARCHIVE}" \
+            || error "Failed to download CKB"
+        unzip -q "$TEMP_DIR/$ARCHIVE" -d "$TEMP_DIR"
+    fi
     
     CKB_BINARY=$(find "$TEMP_DIR" -name "ckb" -type f | head -1)
     [ -z "$CKB_BINARY" ] && error "CKB binary not found in archive"

@@ -2,7 +2,7 @@
 //!
 //! The ct-info-type cell manages token issuance and supply tracking.
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 
 /// Flag indicating the token is mintable.

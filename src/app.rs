@@ -171,7 +171,10 @@ impl App {
 
             // Load CT cells and balances for first account
             if let Ok(ct_cells) = self.store.get_ct_cells(first_account.id) {
-                let ct_info_cells = self.store.get_ct_info_cells(first_account.id).unwrap_or_default();
+                let ct_info_cells = self
+                    .store
+                    .get_ct_info_cells(first_account.id)
+                    .unwrap_or_default();
                 let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                 self.tokens_component.set_ct_cells(ct_cells);
                 self.tokens_component.set_balances(balances);
@@ -343,7 +346,8 @@ impl App {
 
                     // Load CT cells and balances for this account
                     if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                        let ct_info_cells = self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                        let ct_info_cells =
+                            self.store.get_ct_info_cells(account.id).unwrap_or_default();
                         let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                         self.tokens_component.set_ct_cells(ct_cells);
                         self.tokens_component.set_balances(balances);
@@ -602,7 +606,8 @@ impl App {
                             "Insufficient balance: have {}, need {}",
                             token_balance.total_amount, amount_value
                         ));
-                        self.status_message = "CT transfer failed: insufficient balance".to_string();
+                        self.status_message =
+                            "CT transfer failed: insufficient balance".to_string();
                         return Ok(());
                     }
 
@@ -636,7 +641,8 @@ impl App {
                     }
 
                     // Build the CT transaction
-                    let builder = CtTxBuilder::new(self.config.clone(), token_balance.token_type_hash);
+                    let builder =
+                        CtTxBuilder::new(self.config.clone(), token_balance.token_type_hash);
                     let builder = match builder
                         .add_output(stealth_addr, amount_value)
                         .select_inputs(&available_ct_cells, amount_value)
@@ -645,7 +651,8 @@ impl App {
                         Err(e) => {
                             self.tokens_component.error_message =
                                 Some(format!("Input selection failed: {}", e));
-                            self.status_message = "CT transfer failed: insufficient funds".to_string();
+                            self.status_message =
+                                "CT transfer failed: insufficient funds".to_string();
                             return Ok(());
                         }
                     };
@@ -664,16 +671,16 @@ impl App {
                     };
 
                     // Sign the transaction
-                    let signed_tx =
-                        match CtTxBuilder::sign(built_tx.clone(), account, &input_cells) {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                self.tokens_component.error_message =
-                                    Some(format!("Signing failed: {}", e));
-                                self.status_message = "CT transfer failed: signing error".to_string();
-                                return Ok(());
-                            }
-                        };
+                    let signed_tx = match CtTxBuilder::sign(built_tx.clone(), account, &input_cells)
+                    {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Signing failed: {}", e));
+                            self.status_message = "CT transfer failed: signing error".to_string();
+                            return Ok(());
+                        }
+                    };
 
                     // Submit the transaction
                     match self.scanner.rpc().send_transaction(signed_tx) {
@@ -703,16 +710,19 @@ impl App {
                             // Remove spent CT cells from store
                             let spent_out_points: Vec<_> =
                                 input_cells.iter().map(|c| c.out_point.clone()).collect();
-                            if let Err(e) =
-                                self.store.remove_spent_ct_cells(account.id, &spent_out_points)
+                            if let Err(e) = self
+                                .store
+                                .remove_spent_ct_cells(account.id, &spent_out_points)
                             {
                                 info!("Failed to remove spent CT cells: {}", e);
                             }
 
                             // Refresh CT balances
                             if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                                let ct_info_cells = self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                                let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
+                                let ct_info_cells =
+                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                                let balances =
+                                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                                 self.tokens_component.set_balances(balances);
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
@@ -727,8 +737,9 @@ impl App {
                         }
                     }
                 } else {
-                    self.tokens_component.error_message =
-                        Some("No account selected, invalid amount, or no token selected".to_string());
+                    self.tokens_component.error_message = Some(
+                        "No account selected, invalid amount, or no token selected".to_string(),
+                    );
                     self.status_message = "CT transfer failed: missing data".to_string();
                 }
             }
@@ -860,8 +871,9 @@ impl App {
                         }
                     }
                 } else {
-                    self.tokens_component.error_message =
-                        Some("No account selected, invalid amount, or no token selected".to_string());
+                    self.tokens_component.error_message = Some(
+                        "No account selected, invalid amount, or no token selected".to_string(),
+                    );
                     self.status_message = "CT mint failed: missing data".to_string();
                 }
             }
@@ -869,7 +881,10 @@ impl App {
                 // Genesis: Create a new CT token
                 if let Some(ref account) = self.tokens_component.account.clone() {
                     // Get supply cap from genesis form
-                    let supply_cap = self.tokens_component.parse_genesis_supply_cap().unwrap_or(0);
+                    let supply_cap = self
+                        .tokens_component
+                        .parse_genesis_supply_cap()
+                        .unwrap_or(0);
 
                     // Get account's stealth address for issuer ownership
                     let stealth_address_hex = account.stealth_address();
@@ -896,9 +911,7 @@ impl App {
 
                     // Need at least 150 CKB for ct-info cell
                     let min_capacity = 150_00000000u64;
-                    let funding_cell = stealth_cells
-                        .iter()
-                        .find(|c| c.capacity >= min_capacity);
+                    let funding_cell = stealth_cells.iter().find(|c| c.capacity >= min_capacity);
 
                     let funding_cell = match funding_cell {
                         Some(cell) => cell,
@@ -927,17 +940,19 @@ impl App {
                     };
 
                     // Build the genesis transaction
-                    let built_tx =
-                        match build_genesis_transaction(&self.config, genesis_params, funding_input)
-                        {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                self.tokens_component.error_message =
-                                    Some(format!("Genesis build failed: {}", e));
-                                self.status_message = "Genesis failed: build error".to_string();
-                                return Ok(());
-                            }
-                        };
+                    let built_tx = match build_genesis_transaction(
+                        &self.config,
+                        genesis_params,
+                        funding_input,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Genesis build failed: {}", e));
+                            self.status_message = "Genesis failed: build error".to_string();
+                            return Ok(());
+                        }
+                    };
 
                     // Remember the token ID and ct-info lock args for later use
                     let token_id = built_tx.token_id;
@@ -985,16 +1000,17 @@ impl App {
                             }
 
                             // Remove spent stealth cell from store
-                            if let Err(e) = self
-                                .store
-                                .remove_spent_cells(account.id, std::slice::from_ref(&funding_cell.out_point))
-                            {
+                            if let Err(e) = self.store.remove_spent_cells(
+                                account.id,
+                                std::slice::from_ref(&funding_cell.out_point),
+                            ) {
                                 info!("Failed to remove spent stealth cell: {}", e);
                             }
 
                             // Trigger a rescan to detect the new ct-info cell
                             // (The transaction needs to be confirmed first, so we inform user)
-                            self.status_message.push_str(" - Press 'r' to rescan after confirmation");
+                            self.status_message
+                                .push_str(" - Press 'r' to rescan after confirmation");
 
                             // Clear genesis form and return to list
                             self.tokens_component.clear_genesis();
@@ -1008,8 +1024,7 @@ impl App {
                         }
                     }
                 } else {
-                    self.tokens_component.error_message =
-                        Some("No account selected".to_string());
+                    self.tokens_component.error_message = Some("No account selected".to_string());
                     self.status_message = "Genesis failed: no account".to_string();
                 }
             }

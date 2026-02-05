@@ -12,7 +12,7 @@ use crate::{
     config::Config,
     domain::{
         account::Account,
-        cell::{aggregate_ct_balances, CtBalance, CtCell, CtInfoCell, StealthCell, TxRecord},
+        cell::{CtBalance, CtCell, CtInfoCell, StealthCell, TxRecord, aggregate_ct_balances},
         ct,
         ct_info::CtInfoData,
         stealth::matches_key,

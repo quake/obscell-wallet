@@ -8,8 +8,8 @@
 
 use tempfile::TempDir;
 
-use super::devnet::DevNet;
 use super::TestEnv;
+use super::devnet::DevNet;
 
 // Re-export wallet types for testing
 use obscell_wallet::config::{

@@ -9,6 +9,7 @@
 pub mod contract_deployer;
 pub mod devnet;
 pub mod e2e_basic_flow;
+pub mod e2e_ct_flow;
 pub mod e2e_user_flow;
 pub mod faucet;
 
@@ -67,8 +68,7 @@ impl TestEnv {
             // Load contract info
             if let Some(contracts_info) = ContractDeployer::load_deployed_info() {
                 // Verify contracts are still deployed
-                let deployer =
-                    ContractDeployer::new(DevNet::RPC_URL, miner_key, miner_lock_args);
+                let deployer = ContractDeployer::new(DevNet::RPC_URL, miner_key, miner_lock_args);
                 if deployer.are_all_deployed(&contracts_info)? {
                     println!("Contract still deployed, reusing existing setup");
                     (contracts_info, checkpoint)
@@ -97,6 +97,24 @@ impl TestEnv {
         println!(
             "CKB-auth deployed: data_hash = 0x{}",
             hex::encode(contracts.ckb_auth.data_hash.as_bytes())
+        );
+        println!(
+            "CT-info-type deployed: type_id_hash = 0x{}",
+            contracts
+                .ct_info_type
+                .type_id_hash
+                .as_ref()
+                .map(|h| hex::encode(h.as_bytes()))
+                .unwrap_or_else(|| "none".to_string())
+        );
+        println!(
+            "CT-token-type deployed: type_id_hash = 0x{}",
+            contracts
+                .ct_token_type
+                .type_id_hash
+                .as_ref()
+                .map(|h| hex::encode(h.as_bytes()))
+                .unwrap_or_else(|| "none".to_string())
         );
         println!("Checkpoint: block {}", checkpoint);
 
@@ -194,6 +212,50 @@ impl TestEnv {
         (
             self.contracts.ckb_auth.tx_hash.clone(),
             self.contracts.ckb_auth.output_index,
+        )
+    }
+
+    /// Get the ct-info-type code hash (type_id hash for use with hash_type=Type).
+    pub fn ct_info_type_code_hash(&self) -> H256 {
+        self.contracts
+            .ct_info_type
+            .type_id_hash
+            .clone()
+            .expect("CT-info-type contract should have type_id_hash")
+    }
+
+    /// Get the ct-info-type data hash (for use with hash_type=Data).
+    pub fn ct_info_type_data_hash(&self) -> H256 {
+        self.contracts.ct_info_type.data_hash.clone()
+    }
+
+    /// Get the ct-info-type contract cell dep.
+    pub fn ct_info_type_cell_dep(&self) -> (H256, u32) {
+        (
+            self.contracts.ct_info_type.tx_hash.clone(),
+            self.contracts.ct_info_type.output_index,
+        )
+    }
+
+    /// Get the ct-token-type code hash (type_id hash for use with hash_type=Type).
+    pub fn ct_token_type_code_hash(&self) -> H256 {
+        self.contracts
+            .ct_token_type
+            .type_id_hash
+            .clone()
+            .expect("CT-token-type contract should have type_id_hash")
+    }
+
+    /// Get the ct-token-type data hash (for use with hash_type=Data).
+    pub fn ct_token_type_data_hash(&self) -> H256 {
+        self.contracts.ct_token_type.data_hash.clone()
+    }
+
+    /// Get the ct-token-type contract cell dep.
+    pub fn ct_token_type_cell_dep(&self) -> (H256, u32) {
+        (
+            self.contracts.ct_token_type.tx_hash.clone(),
+            self.contracts.ct_token_type.output_index,
         )
     }
 }
