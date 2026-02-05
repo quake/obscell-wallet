@@ -992,6 +992,10 @@ impl App {
                                 info!("Failed to remove spent stealth cell: {}", e);
                             }
 
+                            // Trigger a rescan to detect the new ct-info cell
+                            // (The transaction needs to be confirmed first, so we inform user)
+                            self.status_message.push_str(" - Press 'r' to rescan after confirmation");
+
                             // Clear genesis form and return to list
                             self.tokens_component.clear_genesis();
                             self.tokens_component.mode =
