@@ -54,7 +54,7 @@ impl TestEnv {
 
         // Load miner key
         let (miner_key, miner_lock_args) = Faucet::load_miner_key()?;
-        println!("Miner lock args: 0x{}", hex::encode(&miner_lock_args));
+        println!("Miner lock args: 0x{}", hex::encode(miner_lock_args));
 
         // Start or detect devnet
         let mut devnet = DevNet::new();
@@ -68,7 +68,7 @@ impl TestEnv {
             if let Some(contracts_info) = ContractDeployer::load_deployed_info() {
                 // Verify contracts are still deployed
                 let deployer =
-                    ContractDeployer::new(DevNet::RPC_URL, miner_key.clone(), miner_lock_args);
+                    ContractDeployer::new(DevNet::RPC_URL, miner_key, miner_lock_args);
                 if deployer.are_all_deployed(&contracts_info)? {
                     println!("Contract still deployed, reusing existing setup");
                     (contracts_info, checkpoint)
@@ -101,7 +101,7 @@ impl TestEnv {
         println!("Checkpoint: block {}", checkpoint);
 
         // Create faucet
-        let faucet = Faucet::new(DevNet::RPC_URL, miner_key.clone(), miner_lock_args);
+        let faucet = Faucet::new(DevNet::RPC_URL, miner_key, miner_lock_args);
 
         println!("=== Test environment ready ===\n");
 
@@ -121,7 +121,7 @@ impl TestEnv {
         miner_key: &SecretKey,
         miner_lock_args: &[u8; 20],
     ) -> Result<(DeployedContracts, u64), String> {
-        let deployer = ContractDeployer::new(DevNet::RPC_URL, miner_key.clone(), *miner_lock_args);
+        let deployer = ContractDeployer::new(DevNet::RPC_URL, *miner_key, *miner_lock_args);
 
         // Deploy all contracts
         let contracts = deployer.deploy_all()?;

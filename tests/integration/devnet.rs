@@ -22,6 +22,12 @@ pub struct DevNet {
     client: CkbRpcClient,
 }
 
+impl Default for DevNet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DevNet {
     /// RPC URL for the devnet
     pub const RPC_URL: &'static str = "http://127.0.0.1:8114";

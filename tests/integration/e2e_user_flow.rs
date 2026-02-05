@@ -8,8 +8,8 @@
 
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 // Re-export wallet types for testing
 use obscell_wallet::config::{
@@ -46,6 +46,14 @@ fn create_test_config(env: &TestEnv) -> Config {
             ckb_auth: CellDepConfig {
                 tx_hash: format!("0x{}", hex::encode(ckb_auth_tx_hash.as_bytes())),
                 index: ckb_auth_index,
+            },
+            ct_token: CellDepConfig {
+                tx_hash: "0x".to_string() + &"0".repeat(64),
+                index: 0,
+            },
+            ct_info: CellDepConfig {
+                tx_hash: "0x".to_string() + &"0".repeat(64),
+                index: 0,
             },
         },
     }
@@ -289,7 +297,7 @@ fn test_store_persists_cells() {
     // Scan and verify cells are persisted
     let scanner = Scanner::new(config.clone(), store.clone());
     let results = scanner
-        .scan_all_accounts(&[alice.clone()])
+        .scan_all_accounts(std::slice::from_ref(&alice))
         .expect("Scan should succeed");
 
     assert_eq!(results[0].cells.len(), 1);
@@ -445,7 +453,7 @@ fn test_alice_sends_to_bob_full_flow() {
     use ckb_sdk::CkbRpcClient;
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let tx_hash = client
-        .send_transaction(signed_tx.clone().into(), None)
+        .send_transaction(signed_tx.clone(), None)
         .expect("Sending tx should succeed");
 
     println!("Transaction sent: 0x{}", hex::encode(tx_hash.as_bytes()));

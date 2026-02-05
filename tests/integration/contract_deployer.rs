@@ -328,7 +328,7 @@ impl ContractDeployer {
 
         // Calculate type_id args: hash(first_input || output_index)
         let type_id_args = self.calculate_type_id_args(&inputs[0], 0);
-        let _type_id_hash = H256::from_slice(&blake2b_256(&{
+        let _type_id_hash = H256::from_slice(&blake2b_256({
             // Hash the type script to get the type_id_hash
             let type_script = Script {
                 code_hash: H256::from_slice(&TYPE_ID_CODE_HASH).unwrap(),
@@ -737,17 +737,17 @@ mod tests {
         assert_eq!(compressed_pubkey.len(), 33, "Should be compressed pubkey");
 
         // Blake2b-256 hash then take first 20 bytes
-        let hash = blake2b_256(&compressed_pubkey);
+        let hash = blake2b_256(compressed_pubkey);
         let lock_args: [u8; 20] = hash[0..20].try_into().unwrap();
 
         let expected = "c8328aabcd9b9e8e64fbc566c4385c3bdeb219d7";
-        let actual = hex::encode(&lock_args);
+        let actual = hex::encode(lock_args);
         assert_eq!(
             actual, expected,
             "Miner key derivation should match expected lock args"
         );
 
-        println!("Public key: 0x{}", hex::encode(&compressed_pubkey));
+        println!("Public key: 0x{}", hex::encode(compressed_pubkey));
         println!("Lock args:  0x{}", actual);
     }
 
