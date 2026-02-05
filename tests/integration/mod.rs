@@ -180,6 +180,11 @@ impl TestEnv {
         self.devnet.generate_blocks(count)
     }
 
+    /// Wait for the indexer to sync with the chain tip.
+    pub fn wait_for_indexer_sync(&self) -> Result<(), String> {
+        self.devnet.wait_for_indexer_sync()
+    }
+
     /// Get the stealth-lock code hash (type_id hash for use with hash_type=Type).
     pub fn stealth_lock_code_hash(&self) -> H256 {
         self.contracts

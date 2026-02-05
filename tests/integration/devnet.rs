@@ -221,8 +221,8 @@ impl DevNet {
                     self.clear_tx_pool()?;
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
-                // Wait longer for indexer to re-sync (it needs to handle the reorg)
-                std::thread::sleep(std::time::Duration::from_millis(2000));
+                // Wait for indexer to re-sync after reorg
+                self.wait_for_indexer_sync()?;
             }
             Ok(())
         } else {

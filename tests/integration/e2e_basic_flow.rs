@@ -7,13 +7,13 @@
 //! 4. Verify cells can be found via scanning
 
 use ckb_hash::blake2b_256;
-use ckb_sdk::CkbRpcClient;
 use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
+use ckb_sdk::CkbRpcClient;
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use super::devnet::DevNet;
-use super::{TestEnv, contract_deployer::SIGHASH_ALL_CODE_HASH};
+use super::{contract_deployer::SIGHASH_ALL_CODE_HASH, TestEnv};
 
 /// Generate stealth script args for a one-time address.
 ///
@@ -353,8 +353,10 @@ fn test_stealth_cell_scanning() {
         .transfer_to_stealth(&alice_stealth_args, &stealth_code_hash, alice_amount)
         .expect("Alice transfer should succeed");
 
-    // Generate blocks to confirm Alice's transfer before sending Bob's
+    // Generate blocks to confirm Alice's transfer and wait for indexer
     env.generate_blocks(5).expect("Should generate blocks");
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after Alice transfer");
 
     // Send 200 CKB to Bob
     let bob_amount = 200_00000000u64;
@@ -362,11 +364,10 @@ fn test_stealth_cell_scanning() {
         .transfer_to_stealth(&bob_stealth_args, &stealth_code_hash, bob_amount)
         .expect("Bob transfer should succeed");
 
-    // Generate blocks to confirm Bob's transfer
+    // Generate blocks to confirm Bob's transfer and wait for indexer
     env.generate_blocks(10).expect("Should generate blocks");
-
-    // Wait for indexer to sync
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after Bob transfer");
 
     // Scan all stealth cells
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -460,15 +461,16 @@ fn test_multiple_stealth_cells_same_account() {
             .transfer_to_stealth(&stealth_args, &stealth_code_hash, *amount)
             .expect("Transfer should succeed");
 
-        // Generate block after each transfer to prevent RBF conflicts
+        // Generate block after each transfer and wait for indexer
         env.generate_blocks(5).expect("Should generate blocks");
+        env.wait_for_indexer_sync()
+            .expect("Should sync indexer after transfer");
     }
 
     // Generate blocks to confirm - need multiple for proposal window
     env.generate_blocks(10).expect("Should generate blocks");
-
-    // Wait for indexer to sync
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after confirmation");
 
     // Scan and verify total
     let client = CkbRpcClient::new(DevNet::RPC_URL);
