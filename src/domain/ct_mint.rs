@@ -1,6 +1,6 @@
 //! CT Token minting support.
 //!
-//! Builds mint transactions that create new CT tokens via ct-info-type authorization.
+//! Builds genesis and mint transactions for CT tokens via ct-info-type.
 //! The ct-info cell is controlled by a stealth-lock, so minting requires the user's
 //! secp256k1 private key to sign the transaction.
 
@@ -20,7 +20,7 @@ use crate::{
     domain::{
         account::Account,
         ct::{encrypt_amount, prove_range},
-        ct_info::CtInfoData,
+        ct_info::{CtInfoData, MINTABLE},
         stealth::{derive_stealth_secret, generate_ephemeral_key},
     },
 };
@@ -546,6 +546,298 @@ fn calculate_tx_hash(tx: &Transaction) -> H256 {
     H256::from_slice(&hash).unwrap()
 }
 
+// ============================================================================
+// Genesis functionality
+// ============================================================================
+
+/// Minimum cell capacity for ct-info cell (57 bytes data + overhead).
+const MIN_CT_INFO_CELL_CAPACITY: u64 = 150_00000000;
+
+/// Parameters for creating a new CT token (genesis).
+#[derive(Debug, Clone)]
+pub struct GenesisParams {
+    /// Maximum supply (0 = unlimited).
+    pub supply_cap: u128,
+    /// Initial flags (typically MINTABLE).
+    pub flags: u8,
+    /// Issuer's stealth address (66 bytes = view_pub || spend_pub).
+    /// The ct-info cell will be locked to this address.
+    pub issuer_stealth_address: Vec<u8>,
+}
+
+impl Default for GenesisParams {
+    fn default() -> Self {
+        Self {
+            supply_cap: 0, // Unlimited
+            flags: MINTABLE,
+            issuer_stealth_address: Vec::new(),
+        }
+    }
+}
+
+/// Input cell to fund the genesis transaction.
+#[derive(Debug, Clone)]
+pub struct FundingCell {
+    /// OutPoint of the funding cell (tx_hash || index as 36 bytes).
+    pub out_point: Vec<u8>,
+    /// Cell capacity in shannons.
+    pub capacity: u64,
+    /// Lock script args (stealth-lock args).
+    pub lock_script_args: Vec<u8>,
+}
+
+/// A built genesis transaction ready for signing.
+#[derive(Debug, Clone)]
+pub struct BuiltGenesisTransaction {
+    pub tx: Transaction,
+    pub tx_hash: H256,
+    /// The generated token ID (from Type ID).
+    pub token_id: [u8; 32],
+    /// Lock script args for the ct-info cell.
+    pub ct_info_lock_args: Vec<u8>,
+}
+
+/// Build a CT token genesis transaction.
+///
+/// This creates:
+/// 1. A new ct-info-type cell with initial supply = 0
+/// 2. The ct-info cell is locked with a stealth-lock for the issuer
+/// 3. Token ID is derived using Type ID mechanism
+///
+/// The funding cell provides CKB for the ct-info cell capacity.
+pub fn build_genesis_transaction(
+    config: &Config,
+    params: GenesisParams,
+    funding_cell: FundingCell,
+) -> Result<BuiltGenesisTransaction> {
+    // Validate parameters
+    if params.issuer_stealth_address.len() != 66 {
+        return Err(eyre!(
+            "Invalid issuer stealth address length: {} (expected 66)",
+            params.issuer_stealth_address.len()
+        ));
+    }
+
+    if funding_cell.capacity < MIN_CT_INFO_CELL_CAPACITY {
+        return Err(eyre!(
+            "Insufficient funding: {} < {} required",
+            funding_cell.capacity,
+            MIN_CT_INFO_CELL_CAPACITY
+        ));
+    }
+
+    // Parse funding cell out point
+    if funding_cell.out_point.len() != 36 {
+        return Err(eyre!(
+            "Invalid funding out_point length: {} (expected 36)",
+            funding_cell.out_point.len()
+        ));
+    }
+    let funding_tx_hash = H256::from_slice(&funding_cell.out_point[0..32])?;
+    let funding_index = u32::from_le_bytes(funding_cell.out_point[32..36].try_into().unwrap());
+
+    // Build input
+    let funding_input = CellInput {
+        previous_output: OutPoint {
+            tx_hash: funding_tx_hash.clone(),
+            index: Uint32::from(funding_index),
+        },
+        since: Uint64::from(0u64),
+    };
+
+    // Calculate Type ID: blake2b(inputs[0] || output_index)
+    // inputs[0] = tx_hash (32) || index (4) || since (8) = 44 bytes
+    let mut type_id_input = Vec::with_capacity(48);
+    type_id_input.extend_from_slice(funding_tx_hash.as_bytes());
+    type_id_input.extend_from_slice(&funding_index.to_le_bytes());
+    type_id_input.extend_from_slice(&0u64.to_le_bytes()); // since = 0
+    type_id_input.extend_from_slice(&0u64.to_le_bytes()); // output_index = 0
+    let token_id = blake2b_256(&type_id_input);
+
+    // Build ct-info type script
+    let ct_info_code_hash = config.contracts.ct_info_code_hash.trim_start_matches("0x");
+    let ct_info_code_hash_bytes = hex::decode(ct_info_code_hash)?;
+
+    // Type args: token_id (32) || version (1)
+    let mut ct_info_type_args = Vec::with_capacity(33);
+    ct_info_type_args.extend_from_slice(&token_id);
+    ct_info_type_args.push(0); // version 0
+
+    let ct_info_type_script = Script {
+        code_hash: H256::from_slice(&ct_info_code_hash_bytes)?,
+        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+        args: JsonBytes::from_vec(ct_info_type_args),
+    };
+
+    // Build ct-info lock script (stealth-lock for issuer)
+    let stealth_code_hash = config
+        .contracts
+        .stealth_lock_code_hash
+        .trim_start_matches("0x");
+    let stealth_code_hash_bytes = hex::decode(stealth_code_hash)?;
+
+    // Generate one-time stealth lock for the issuer
+    let view_pub = PublicKey::from_slice(&params.issuer_stealth_address[0..33])?;
+    let spend_pub = PublicKey::from_slice(&params.issuer_stealth_address[33..66])?;
+    let (eph_pub, stealth_pub) = generate_ephemeral_key(&view_pub, &spend_pub);
+    let pubkey_hash = blake2b_256(stealth_pub.serialize());
+
+    // Lock args: eph_pub (33) || pubkey_hash[0..20] (20)
+    let mut ct_info_lock_args = Vec::with_capacity(53);
+    ct_info_lock_args.extend_from_slice(&eph_pub.serialize());
+    ct_info_lock_args.extend_from_slice(&pubkey_hash[0..20]);
+
+    let ct_info_lock_script = Script {
+        code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
+        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+        args: JsonBytes::from_vec(ct_info_lock_args.clone()),
+    };
+
+    // Build funding cell lock script (same stealth-lock pattern)
+    let funding_lock_script = Script {
+        code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
+        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+        args: JsonBytes::from_vec(funding_cell.lock_script_args.clone()),
+    };
+
+    // Create ct-info data with initial supply = 0
+    let ct_info_data = CtInfoData::new(0, params.supply_cap, params.flags);
+
+    // Build cell deps
+    let cell_deps = build_genesis_cell_deps(config)?;
+
+    // Build outputs
+    let change_capacity = funding_cell
+        .capacity
+        .saturating_sub(MIN_CT_INFO_CELL_CAPACITY);
+
+    let mut outputs = vec![
+        // Output 0: ct-info-type cell
+        CellOutput {
+            capacity: Uint64::from(MIN_CT_INFO_CELL_CAPACITY),
+            lock: ct_info_lock_script,
+            type_: Some(ct_info_type_script),
+        },
+    ];
+
+    let mut outputs_data = vec![JsonBytes::from_vec(ct_info_data.to_bytes())];
+
+    // Add change output if there's remaining capacity
+    if change_capacity > 0 {
+        outputs.push(CellOutput {
+            capacity: Uint64::from(change_capacity),
+            lock: funding_lock_script,
+            type_: None,
+        });
+        outputs_data.push(JsonBytes::from_vec(vec![]));
+    }
+
+    // Build transaction
+    let tx = Transaction {
+        version: Uint32::from(0u32),
+        cell_deps,
+        header_deps: vec![],
+        inputs: vec![funding_input],
+        outputs,
+        outputs_data,
+        witnesses: vec![], // Will be filled by sign_genesis_transaction
+    };
+
+    let tx_hash = calculate_tx_hash(&tx);
+
+    Ok(BuiltGenesisTransaction {
+        tx,
+        tx_hash,
+        token_id,
+        ct_info_lock_args,
+    })
+}
+
+/// Sign the genesis transaction with the funding cell's stealth key.
+pub fn sign_genesis_transaction(
+    built_tx: BuiltGenesisTransaction,
+    account: &Account,
+    funding_lock_args: &[u8],
+) -> Result<Transaction> {
+    let secp = Secp256k1::new();
+    let message = Message::from_digest(built_tx.tx_hash.0);
+
+    // Derive the stealth secret key for the funding cell
+    let stealth_secret = derive_stealth_secret(
+        funding_lock_args,
+        &account.view_secret_key(),
+        &account.spend_secret_key(),
+    )
+    .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
+
+    // Sign with recoverable signature
+    let sig = secp.sign_ecdsa_recoverable(&message, &stealth_secret);
+    let (recovery_id, signature_bytes) = sig.serialize_compact();
+
+    // Build witness for funding cell
+    let witness = build_witness_args_with_lock(&signature_bytes, recovery_id.to_i32() as u8);
+
+    Ok(Transaction {
+        version: built_tx.tx.version,
+        cell_deps: built_tx.tx.cell_deps,
+        header_deps: built_tx.tx.header_deps,
+        inputs: built_tx.tx.inputs,
+        outputs: built_tx.tx.outputs,
+        outputs_data: built_tx.tx.outputs_data,
+        witnesses: vec![witness],
+    })
+}
+
+fn build_genesis_cell_deps(config: &Config) -> Result<Vec<CellDep>> {
+    let mut deps = Vec::new();
+
+    // ct-info-type cell dep
+    let ct_info_tx_hash = config.cell_deps.ct_info.tx_hash.trim_start_matches("0x");
+    let ct_info_hash = H256::from_slice(&hex::decode(ct_info_tx_hash)?)?;
+    deps.push(CellDep {
+        out_point: OutPoint {
+            tx_hash: ct_info_hash,
+            index: Uint32::from(config.cell_deps.ct_info.index),
+        },
+        dep_type: DepType::Code,
+    });
+
+    // stealth-lock cell dep
+    let stealth_tx_hash = config
+        .cell_deps
+        .stealth_lock
+        .tx_hash
+        .trim_start_matches("0x");
+    let stealth_hash = H256::from_slice(&hex::decode(stealth_tx_hash)?)?;
+    deps.push(CellDep {
+        out_point: OutPoint {
+            tx_hash: stealth_hash,
+            index: Uint32::from(config.cell_deps.stealth_lock.index),
+        },
+        dep_type: DepType::Code,
+    });
+
+    Ok(deps)
+}
+
+fn build_witness_args_with_lock(signature: &[u8], recovery_id: u8) -> JsonBytes {
+    use ckb_types::packed::{Bytes, BytesOpt, WitnessArgs};
+    use ckb_types::prelude::*;
+
+    // Lock: signature (64 bytes) || recovery_id (1 byte)
+    let mut lock_data = Vec::with_capacity(65);
+    lock_data.extend_from_slice(signature);
+    lock_data.push(recovery_id);
+
+    let lock_bytes: Bytes = lock_data.pack();
+
+    let witness = WitnessArgs::new_builder()
+        .lock(BytesOpt::new_builder().set(Some(lock_bytes)).build())
+        .build();
+
+    JsonBytes::from_vec(witness.as_bytes().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +845,6 @@ mod tests {
     #[test]
     fn test_min_capacities() {
         assert_eq!(MIN_CT_CELL_CAPACITY, 142_00000000);
+        assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 150_00000000);
     }
 }
