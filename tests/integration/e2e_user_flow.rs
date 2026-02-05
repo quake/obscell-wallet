@@ -8,8 +8,8 @@
 
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 // Re-export wallet types for testing
 use obscell_wallet::config::{
@@ -123,7 +123,8 @@ fn test_scanner_finds_stealth_cells() {
 
     // Confirm transaction
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after transfer");
 
     // Create scanner and scan for Alice's cells
     let scanner = Scanner::new(config, store);
@@ -187,7 +188,8 @@ fn test_multi_account_scanning() {
         .expect("Bob transfer should succeed");
 
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after Bob transfer");
 
     // Scan for both accounts
     let scanner = Scanner::new(config, store);
@@ -244,12 +246,14 @@ fn test_account_receives_multiple_transfers() {
         // Generate enough blocks to fully confirm the transaction before sending next one
         // CKB proposal window requires ~4 blocks, we use 10 for safety
         env.generate_blocks(10).expect("Should generate blocks");
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        env.wait_for_indexer_sync()
+            .expect("Should sync indexer after transfer");
     }
 
     // Final confirmation
     env.generate_blocks(5).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after final confirmation");
 
     // Scan
     let scanner = Scanner::new(config, store);
@@ -292,7 +296,8 @@ fn test_store_persists_cells() {
         .expect("Transfer should succeed");
 
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after transfer");
 
     // Scan and verify cells are persisted
     let scanner = Scanner::new(config.clone(), store.clone());
@@ -345,7 +350,8 @@ fn test_tx_history_recorded_on_receive() {
         .expect("Transfer should succeed");
 
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after transfer");
 
     // Scan
     let scanner = Scanner::new(config, store.clone());
@@ -397,7 +403,8 @@ fn test_alice_sends_to_bob_full_flow() {
         .expect("Funding Alice should succeed");
 
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after funding");
 
     // Step 2: Alice scans and verifies balance
     println!("Step 2: Alice scanning for cells...");
@@ -460,7 +467,8 @@ fn test_alice_sends_to_bob_full_flow() {
 
     // Confirm
     env.generate_blocks(10).expect("Should generate blocks");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after tx confirmation");
 
     // Step 4: Bob scans and verifies he received 100 CKB
     println!("Step 4: Bob scanning for cells...");

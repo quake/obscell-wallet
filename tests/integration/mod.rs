@@ -61,6 +61,9 @@ impl TestEnv {
         let mut devnet = DevNet::new();
         devnet.start()?;
 
+        // Clear any stale transactions from the pool (from previous failed runs)
+        let _ = devnet.clear_tx_pool();
+
         // Check if we have a checkpoint (contracts already deployed)
         let (contracts, checkpoint) = if let Some(checkpoint) = devnet.load_checkpoint() {
             println!("Found checkpoint at block {}", checkpoint);
