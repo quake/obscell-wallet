@@ -13,26 +13,22 @@ pub const BURNABLE: u8 = 0x02;
 pub const PAUSABLE: u8 = 0x04;
 
 /// CT Info cell data size in bytes.
-pub const CT_INFO_DATA_SIZE: usize = 89;
+pub const CT_INFO_DATA_SIZE: usize = 57;
 
 /// CT Info cell data structure.
 ///
-/// Layout (89 bytes):
+/// Layout (57 bytes):
 /// - total_supply: u128 (16 bytes, little-endian) [0..16]
-/// - issuer_pubkey: [u8; 32] (issuer identifier, for reference/audit) [16..48]
-/// - supply_cap: u128 (16 bytes, little-endian) [48..64]
-/// - reserved: [u8; 24] [64..88]
-/// - flags: u8 [88]
+/// - supply_cap: u128 (16 bytes, little-endian) [16..32]
+/// - reserved: [u8; 24] [32..56]
+/// - flags: u8 [56]
 ///
 /// Note: Authorization for minting is controlled by the ct-info cell's lock script,
-/// not by this type script. The issuer_pubkey field is for reference only.
+/// not by this type script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtInfoData {
     /// Current total supply of tokens.
     pub total_supply: u128,
-    /// Issuer identifier (32 bytes, for reference/audit purposes).
-    /// Can be any 32-byte value identifying the issuer.
-    pub issuer_pubkey: [u8; 32],
     /// Maximum supply (0 = unlimited).
     pub supply_cap: u128,
     /// Reserved for future use.
@@ -43,10 +39,9 @@ pub struct CtInfoData {
 
 impl CtInfoData {
     /// Create a new CtInfoData for token genesis.
-    pub fn new(total_supply: u128, issuer_pubkey: [u8; 32], supply_cap: u128, flags: u8) -> Self {
+    pub fn new(total_supply: u128, supply_cap: u128, flags: u8) -> Self {
         Self {
             total_supply,
-            issuer_pubkey,
             supply_cap,
             reserved: [0u8; 24],
             flags,
@@ -64,16 +59,13 @@ impl CtInfoData {
         }
 
         let total_supply = u128::from_le_bytes(data[0..16].try_into().unwrap());
-        let mut issuer_pubkey = [0u8; 32];
-        issuer_pubkey.copy_from_slice(&data[16..48]);
-        let supply_cap = u128::from_le_bytes(data[48..64].try_into().unwrap());
+        let supply_cap = u128::from_le_bytes(data[16..32].try_into().unwrap());
         let mut reserved = [0u8; 24];
-        reserved.copy_from_slice(&data[64..88]);
-        let flags = data[88];
+        reserved.copy_from_slice(&data[32..56]);
+        let flags = data[56];
 
         Ok(Self {
             total_supply,
-            issuer_pubkey,
             supply_cap,
             reserved,
             flags,
@@ -84,7 +76,6 @@ impl CtInfoData {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(CT_INFO_DATA_SIZE);
         data.extend_from_slice(&self.total_supply.to_le_bytes());
-        data.extend_from_slice(&self.issuer_pubkey);
         data.extend_from_slice(&self.supply_cap.to_le_bytes());
         data.extend_from_slice(&self.reserved);
         data.push(self.flags);
@@ -125,7 +116,6 @@ impl CtInfoData {
 
         Ok(Self {
             total_supply: new_supply,
-            issuer_pubkey: self.issuer_pubkey,
             supply_cap: self.supply_cap,
             reserved: self.reserved,
             flags: self.flags,
@@ -178,15 +168,13 @@ mod tests {
 
     #[test]
     fn test_ct_info_data_roundtrip() {
-        let issuer_pubkey = [42u8; 32];
-        let data = CtInfoData::new(1000, issuer_pubkey, 1_000_000, MINTABLE);
+        let data = CtInfoData::new(1000, 1_000_000, MINTABLE);
 
         let bytes = data.to_bytes();
         assert_eq!(bytes.len(), CT_INFO_DATA_SIZE);
 
         let parsed = CtInfoData::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.total_supply, 1000);
-        assert_eq!(parsed.issuer_pubkey, issuer_pubkey);
         assert_eq!(parsed.supply_cap, 1_000_000);
         assert_eq!(parsed.flags, MINTABLE);
         assert!(parsed.is_mintable());
@@ -194,8 +182,7 @@ mod tests {
 
     #[test]
     fn test_ct_info_mint() {
-        let issuer_pubkey = [42u8; 32];
-        let data = CtInfoData::new(0, issuer_pubkey, 1000, MINTABLE);
+        let data = CtInfoData::new(0, 1000, MINTABLE);
 
         // Mint 100 tokens
         let minted = data.with_minted(100).unwrap();

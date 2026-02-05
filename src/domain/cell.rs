@@ -224,8 +224,6 @@ pub struct CtInfoCell {
     pub total_supply: u128,
     /// Maximum supply (0 = unlimited).
     pub supply_cap: u128,
-    /// Issuer identifier (32 bytes, for reference).
-    pub issuer_pubkey: [u8; 32],
     /// Flags (MINTABLE, BURNABLE, etc.).
     pub flags: u8,
     /// Cell capacity in shannons.
@@ -235,13 +233,11 @@ pub struct CtInfoCell {
 }
 
 impl CtInfoCell {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         out_point: Vec<u8>,
         token_id: [u8; 32],
         total_supply: u128,
         supply_cap: u128,
-        issuer_pubkey: [u8; 32],
         flags: u8,
         capacity: u64,
         lock_script_args: Vec<u8>,
@@ -251,7 +247,6 @@ impl CtInfoCell {
             token_id,
             total_supply,
             supply_cap,
-            issuer_pubkey,
             flags,
             capacity,
             lock_script_args,

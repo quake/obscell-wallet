@@ -775,7 +775,6 @@ impl App {
                     // Convert CtInfoCell to CtInfoCellInput for the mint builder
                     let ct_info_data = CtInfoData::new(
                         ct_info_cell.total_supply,
-                        ct_info_cell.issuer_pubkey,
                         ct_info_cell.supply_cap,
                         ct_info_cell.flags,
                     );

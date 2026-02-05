@@ -856,7 +856,6 @@ impl Scanner {
                         token_id,
                         ct_info_data.total_supply,
                         ct_info_data.supply_cap,
-                        ct_info_data.issuer_pubkey,
                         ct_info_data.flags,
                         capacity,
                         lock_args.to_vec(),
