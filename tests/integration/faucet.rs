@@ -5,16 +5,16 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ckb_hash::blake2b_256;
+use ckb_hash::{blake2b_256, new_blake2b};
 use ckb_jsonrpc_types::{
     CellDep, CellInput, CellOutput, DepType, JsonBytes, OutPoint, Script, Transaction, Uint32,
     Uint64,
 };
-use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
 use ckb_sdk::CkbRpcClient;
+use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
+use ckb_types::H256;
 use ckb_types::packed;
 use ckb_types::prelude::*;
-use ckb_types::H256;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use super::contract_deployer::SIGHASH_ALL_CODE_HASH;
@@ -360,155 +360,55 @@ impl Faucet {
 
     /// Calculate transaction hash.
     fn calculate_tx_hash(&self, tx: &Transaction) -> H256 {
-        let raw_tx = packed::RawTransaction::new_builder()
-            .version(packed::Uint32::from_slice(&tx.version.value().to_le_bytes()).unwrap())
-            .cell_deps(
-                tx.cell_deps
-                    .iter()
-                    .map(|dep| {
-                        packed::CellDep::new_builder()
-                            .out_point(
-                                packed::OutPoint::new_builder()
-                                    .tx_hash(
-                                        packed::Byte32::from_slice(
-                                            dep.out_point.tx_hash.as_bytes(),
-                                        )
-                                        .unwrap(),
-                                    )
-                                    .index(
-                                        packed::Uint32::from_slice(
-                                            &dep.out_point.index.value().to_le_bytes(),
-                                        )
-                                        .unwrap(),
-                                    )
-                                    .build(),
-                            )
-                            .dep_type(match dep.dep_type {
-                                DepType::Code => packed::Byte::new(0),
-                                DepType::DepGroup => packed::Byte::new(1),
-                            })
-                            .build()
-                    })
-                    .collect::<Vec<_>>()
-                    .pack(),
-            )
-            .inputs(
-                tx.inputs
-                    .iter()
-                    .map(|input| {
-                        packed::CellInput::new_builder()
-                            .previous_output(
-                                packed::OutPoint::new_builder()
-                                    .tx_hash(
-                                        packed::Byte32::from_slice(
-                                            input.previous_output.tx_hash.as_bytes(),
-                                        )
-                                        .unwrap(),
-                                    )
-                                    .index(
-                                        packed::Uint32::from_slice(
-                                            &input.previous_output.index.value().to_le_bytes(),
-                                        )
-                                        .unwrap(),
-                                    )
-                                    .build(),
-                            )
-                            .since(
-                                packed::Uint64::from_slice(&input.since.value().to_le_bytes())
-                                    .unwrap(),
-                            )
-                            .build()
-                    })
-                    .collect::<Vec<_>>()
-                    .pack(),
-            )
-            .outputs(
-                tx.outputs
-                    .iter()
-                    .map(|output| {
-                        let lock = packed::Script::new_builder()
-                            .code_hash(
-                                packed::Byte32::from_slice(output.lock.code_hash.as_bytes())
-                                    .unwrap(),
-                            )
-                            .hash_type(match output.lock.hash_type {
-                                ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
-                                ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
-                                ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
-                                ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
-                                _ => packed::Byte::new(1),
-                            })
-                            .args(output.lock.args.as_bytes().to_vec().pack())
-                            .build();
-
-                        packed::CellOutput::new_builder()
-                            .capacity(
-                                packed::Uint64::from_slice(&output.capacity.value().to_le_bytes())
-                                    .unwrap(),
-                            )
-                            .lock(lock)
-                            .build()
-                    })
-                    .collect::<Vec<_>>()
-                    .pack(),
-            )
-            .outputs_data(
-                tx.outputs_data
-                    .iter()
-                    .map(|d| d.as_bytes().to_vec().pack())
-                    .collect::<Vec<packed::Bytes>>()
-                    .pack(),
-            )
-            .build();
-
-        let hash = blake2b_256(raw_tx.as_slice());
-        H256::from_slice(&hash).unwrap()
+        // Convert to packed::Transaction and use its calc_tx_hash method
+        let packed_tx: packed::Transaction = tx.clone().into();
+        H256::from_slice(packed_tx.calc_tx_hash().as_slice()).unwrap()
     }
 
     /// Sign the transaction.
     fn sign_transaction(&self, tx: Transaction, tx_hash: &H256) -> Result<Transaction, String> {
         let secp = Secp256k1::new();
 
-        // Build witness args with placeholder
+        // Build witness args with placeholder (65 bytes for recoverable signature)
+        let zero_lock: ckb_types::bytes::Bytes = vec![0u8; 65].into();
         let placeholder_witness = packed::WitnessArgs::new_builder()
-            .lock(
-                packed::BytesOpt::new_builder()
-                    .set(Some(vec![0u8; 65].pack()))
-                    .build(),
-            )
+            .lock(Some(zero_lock).pack())
             .build();
 
-        // Calculate message
-        let mut hasher_data = Vec::new();
-        hasher_data.extend_from_slice(tx_hash.as_bytes());
+        // Calculate message to sign using incremental blake2b (matching CKB reference)
+        let mut blake2b = new_blake2b();
+        blake2b.update(tx_hash.as_bytes());
 
         let witness_bytes = placeholder_witness.as_bytes();
-        hasher_data.extend_from_slice(&(witness_bytes.len() as u64).to_le_bytes());
-        hasher_data.extend_from_slice(&witness_bytes);
+        blake2b.update(&(witness_bytes.len() as u64).to_le_bytes());
+        blake2b.update(&witness_bytes);
 
-        for _ in 1..tx.inputs.len() {
-            let empty_witness = packed::WitnessArgs::new_builder().build();
-            let witness_bytes = empty_witness.as_bytes();
-            hasher_data.extend_from_slice(&(witness_bytes.len() as u64).to_le_bytes());
-            hasher_data.extend_from_slice(&witness_bytes);
+        // For additional witnesses in same script group (beyond the first input)
+        for i in 1..tx.inputs.len() {
+            let witness_data = if i < tx.witnesses.len() {
+                tx.witnesses[i].as_bytes().to_vec()
+            } else {
+                vec![]
+            };
+            blake2b.update(&(witness_data.len() as u64).to_le_bytes());
+            blake2b.update(&witness_data);
         }
 
-        let message_hash = blake2b_256(&hasher_data);
+        let mut message_hash = [0u8; 32];
+        blake2b.finalize(&mut message_hash);
+
         let message = Message::from_digest(message_hash);
 
-        // Sign
+        // Sign with recoverable signature
         let sig = secp.sign_ecdsa_recoverable(&message, &self.miner_key);
         let (recovery_id, signature_bytes) = sig.serialize_compact();
 
+        // Build signature: [r(32) || s(32) || v(1)]
         let mut signature = signature_bytes.to_vec();
         signature.push(recovery_id.to_i32() as u8);
 
         let signed_witness = packed::WitnessArgs::new_builder()
-            .lock(
-                packed::BytesOpt::new_builder()
-                    .set(Some(signature.pack()))
-                    .build(),
-            )
+            .lock(Some(ckb_types::bytes::Bytes::from(signature)).pack())
             .build();
 
         let mut witnesses: Vec<JsonBytes> =

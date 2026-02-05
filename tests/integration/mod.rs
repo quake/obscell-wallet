@@ -9,6 +9,7 @@
 pub mod contract_deployer;
 pub mod devnet;
 pub mod e2e_basic_flow;
+pub mod e2e_user_flow;
 pub mod faucet;
 
 use std::sync::OnceLock;
@@ -16,7 +17,7 @@ use std::sync::OnceLock;
 use ckb_types::H256;
 use secp256k1::SecretKey;
 
-use contract_deployer::{ContractDeployer, DeployedContract};
+use contract_deployer::{ContractDeployer, DeployedContracts};
 use devnet::DevNet;
 use faucet::Faucet;
 
@@ -26,8 +27,8 @@ static TEST_ENV: OnceLock<TestEnv> = OnceLock::new();
 pub struct TestEnv {
     /// DevNet manager.
     pub devnet: DevNet,
-    /// Deployed contract info.
-    pub contract: DeployedContract,
+    /// Deployed contracts info.
+    pub contracts: DeployedContracts,
     /// Faucet for funding test accounts.
     pub faucet: Faucet,
     /// Checkpoint block number (after contract deployment).
@@ -60,17 +61,17 @@ impl TestEnv {
         devnet.start()?;
 
         // Check if we have a checkpoint (contracts already deployed)
-        let (contract, checkpoint) = if let Some(checkpoint) = devnet.load_checkpoint() {
+        let (contracts, checkpoint) = if let Some(checkpoint) = devnet.load_checkpoint() {
             println!("Found checkpoint at block {}", checkpoint);
 
             // Load contract info
-            if let Some(contract_info) = ContractDeployer::load_deployed_info() {
-                // Verify contract is still deployed
+            if let Some(contracts_info) = ContractDeployer::load_deployed_info() {
+                // Verify contracts are still deployed
                 let deployer =
                     ContractDeployer::new(DevNet::RPC_URL, miner_key.clone(), miner_lock_args);
-                if deployer.is_deployed(&contract_info)? {
+                if deployer.are_all_deployed(&contracts_info)? {
                     println!("Contract still deployed, reusing existing setup");
-                    (contract_info, checkpoint)
+                    (contracts_info, checkpoint)
                 } else {
                     println!("Contract no longer deployed, redeploying...");
                     Self::deploy_and_checkpoint(&devnet, &miner_key, &miner_lock_args)?
@@ -86,11 +87,16 @@ impl TestEnv {
 
         println!(
             "Contract deployed: type_id_hash = 0x{}",
-            contract
+            contracts
+                .stealth_lock
                 .type_id_hash
                 .as_ref()
                 .map(|h| hex::encode(h.as_bytes()))
                 .unwrap_or_else(|| "none".to_string())
+        );
+        println!(
+            "CKB-auth deployed: data_hash = 0x{}",
+            hex::encode(contracts.ckb_auth.data_hash.as_bytes())
         );
         println!("Checkpoint: block {}", checkpoint);
 
@@ -101,7 +107,7 @@ impl TestEnv {
 
         Ok(Self {
             devnet,
-            contract,
+            contracts,
             faucet,
             checkpoint,
             miner_key,
@@ -114,11 +120,11 @@ impl TestEnv {
         devnet: &DevNet,
         miner_key: &SecretKey,
         miner_lock_args: &[u8; 20],
-    ) -> Result<(DeployedContract, u64), String> {
+    ) -> Result<(DeployedContracts, u64), String> {
         let deployer = ContractDeployer::new(DevNet::RPC_URL, miner_key.clone(), *miner_lock_args);
 
-        // Deploy stealth-lock contract
-        let contract = deployer.deploy_stealth_lock()?;
+        // Deploy all contracts
+        let contracts = deployer.deploy_all()?;
 
         // Generate blocks to confirm deployment
         // CKB requires transactions to go through proposal window before being committed.
@@ -136,7 +142,7 @@ impl TestEnv {
         let checkpoint = devnet.get_tip_block_number()?;
         devnet.save_checkpoint(checkpoint)?;
 
-        Ok((contract, checkpoint))
+        Ok((contracts, checkpoint))
     }
 
     /// Reset the chain to checkpoint.
@@ -158,7 +164,8 @@ impl TestEnv {
 
     /// Get the stealth-lock code hash (type_id hash for use with hash_type=Type).
     pub fn stealth_lock_code_hash(&self) -> H256 {
-        self.contract
+        self.contracts
+            .stealth_lock
             .type_id_hash
             .clone()
             .expect("Contract should have type_id_hash")
@@ -166,12 +173,28 @@ impl TestEnv {
 
     /// Get the stealth-lock data hash (for use with hash_type=Data).
     pub fn stealth_lock_data_hash(&self) -> H256 {
-        self.contract.data_hash.clone()
+        self.contracts.stealth_lock.data_hash.clone()
     }
 
-    /// Get the contract cell dep.
+    /// Get the stealth-lock contract cell dep.
     pub fn stealth_lock_cell_dep(&self) -> (H256, u32) {
-        (self.contract.tx_hash.clone(), self.contract.output_index)
+        (
+            self.contracts.stealth_lock.tx_hash.clone(),
+            self.contracts.stealth_lock.output_index,
+        )
+    }
+
+    /// Get the ckb-auth data hash (for use with hash_type=Data2).
+    pub fn ckb_auth_data_hash(&self) -> H256 {
+        self.contracts.ckb_auth.data_hash.clone()
+    }
+
+    /// Get the ckb-auth cell dep.
+    pub fn ckb_auth_cell_dep(&self) -> (H256, u32) {
+        (
+            self.contracts.ckb_auth.tx_hash.clone(),
+            self.contracts.ckb_auth.output_index,
+        )
     }
 }
 

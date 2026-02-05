@@ -268,22 +268,30 @@ impl StealthTxBuilder {
             .trim_start_matches("0x");
         let ckb_auth_hash = H256::from_slice(&hex::decode(ckb_auth_tx_hash)?)?;
 
-        Ok(vec![
-            CellDep {
-                out_point: OutPoint {
-                    tx_hash: stealth_lock_hash,
-                    index: Uint32::from(self.config.cell_deps.stealth_lock.index),
-                },
-                dep_type: DepType::Code,
+        let stealth_dep = CellDep {
+            out_point: OutPoint {
+                tx_hash: stealth_lock_hash.clone(),
+                index: Uint32::from(self.config.cell_deps.stealth_lock.index),
             },
-            CellDep {
-                out_point: OutPoint {
-                    tx_hash: ckb_auth_hash,
-                    index: Uint32::from(self.config.cell_deps.ckb_auth.index),
-                },
-                dep_type: DepType::Code,
+            dep_type: DepType::Code,
+        };
+
+        let ckb_auth_dep = CellDep {
+            out_point: OutPoint {
+                tx_hash: ckb_auth_hash.clone(),
+                index: Uint32::from(self.config.cell_deps.ckb_auth.index),
             },
-        ])
+            dep_type: DepType::Code,
+        };
+
+        // Avoid duplicate cell deps
+        if stealth_lock_hash == ckb_auth_hash
+            && self.config.cell_deps.stealth_lock.index == self.config.cell_deps.ckb_auth.index
+        {
+            Ok(vec![stealth_dep])
+        } else {
+            Ok(vec![stealth_dep, ckb_auth_dep])
+        }
     }
 
     fn build_inputs(&self) -> Vec<CellInput> {

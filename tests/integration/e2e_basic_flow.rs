@@ -7,13 +7,13 @@
 //! 4. Verify cells can be found via scanning
 
 use ckb_hash::blake2b_256;
-use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
 use ckb_sdk::CkbRpcClient;
+use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use super::devnet::DevNet;
-use super::{contract_deployer::SIGHASH_ALL_CODE_HASH, TestEnv};
+use super::{TestEnv, contract_deployer::SIGHASH_ALL_CODE_HASH};
 
 /// Generate stealth script args for a one-time address.
 ///
@@ -112,21 +112,35 @@ fn test_env_setup() {
     // Verify devnet is running
     assert!(env.devnet.is_running(), "DevNet should be running");
 
-    // Verify contract is deployed
-    let contract = &env.contract;
+    // Verify contracts are deployed
+    let stealth_lock = &env.contracts.stealth_lock;
     assert!(
-        contract.type_id_hash.is_some(),
-        "Contract should have type_id_hash"
+        stealth_lock.type_id_hash.is_some(),
+        "Stealth-lock contract should have type_id_hash"
+    );
+
+    let ckb_auth = &env.contracts.ckb_auth;
+    assert!(
+        ckb_auth.data_hash.as_bytes().iter().any(|&b| b != 0),
+        "CKB-auth contract should have data_hash"
     );
 
     println!("Test environment verified:");
     println!(
-        "  - Contract tx_hash: 0x{}",
-        hex::encode(contract.tx_hash.as_bytes())
+        "  - Stealth-lock tx_hash: 0x{}",
+        hex::encode(stealth_lock.tx_hash.as_bytes())
     );
     println!(
-        "  - Contract type_id_hash: 0x{}",
-        hex::encode(contract.type_id_hash.as_ref().unwrap().as_bytes())
+        "  - Stealth-lock type_id_hash: 0x{}",
+        hex::encode(stealth_lock.type_id_hash.as_ref().unwrap().as_bytes())
+    );
+    println!(
+        "  - CKB-auth tx_hash: 0x{}",
+        hex::encode(ckb_auth.tx_hash.as_bytes())
+    );
+    println!(
+        "  - CKB-auth data_hash: 0x{}",
+        hex::encode(ckb_auth.data_hash.as_bytes())
     );
     println!("  - Checkpoint: block {}", env.checkpoint);
 }
