@@ -18,7 +18,7 @@ use crate::{
     config::Config,
     domain::{
         account::AccountManager,
-        cell::{TxRecord, aggregate_ct_balances},
+        cell::{TxRecord, aggregate_ct_balances_with_info},
         ct_info::{CtInfoData, MINTABLE},
         ct_mint::{
             CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
@@ -171,7 +171,8 @@ impl App {
 
             // Load CT cells and balances for first account
             if let Ok(ct_cells) = self.store.get_ct_cells(first_account.id) {
-                let balances = aggregate_ct_balances(&ct_cells);
+                let ct_info_cells = self.store.get_ct_info_cells(first_account.id).unwrap_or_default();
+                let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                 self.tokens_component.set_ct_cells(ct_cells);
                 self.tokens_component.set_balances(balances);
             }
@@ -342,7 +343,8 @@ impl App {
 
                     // Load CT cells and balances for this account
                     if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                        let balances = aggregate_ct_balances(&ct_cells);
+                        let ct_info_cells = self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                        let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                         self.tokens_component.set_ct_cells(ct_cells);
                         self.tokens_component.set_balances(balances);
                     }
@@ -709,7 +711,8 @@ impl App {
 
                             // Refresh CT balances
                             if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                                let balances = aggregate_ct_balances(&ct_cells);
+                                let ct_info_cells = self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                                let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
                                 self.tokens_component.set_balances(balances);
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }

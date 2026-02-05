@@ -360,6 +360,37 @@ pub fn aggregate_ct_balances(cells: &[CtCell]) -> Vec<CtBalance> {
     result
 }
 
+/// Aggregate CtCells into CtBalances, including tokens from ct-info cells (issuable tokens).
+/// This ensures tokens you can mint appear in the list even if you have 0 balance.
+pub fn aggregate_ct_balances_with_info(
+    ct_cells: &[CtCell],
+    ct_info_cells: &[CtInfoCell],
+) -> Vec<CtBalance> {
+    use std::collections::HashMap;
+
+    let mut balances: HashMap<[u8; 32], CtBalance> = HashMap::new();
+
+    // First, add all ct-info cells (tokens you can mint) with 0 balance
+    for info in ct_info_cells {
+        balances
+            .entry(info.token_id)
+            .or_insert_with(|| CtBalance::new(info.token_id, None));
+    }
+
+    // Then add actual balances from ct-token cells
+    for cell in ct_cells {
+        let balance = balances
+            .entry(cell.token_type_hash)
+            .or_insert_with(|| CtBalance::new(cell.token_type_hash, None));
+        balance.add_cell(cell.amount);
+    }
+
+    let mut result: Vec<_> = balances.into_values().collect();
+    // Sort by total amount descending (but tokens with 0 balance still appear)
+    result.sort_by(|a, b| b.total_amount.cmp(&a.total_amount));
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
