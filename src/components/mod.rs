@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod history;
 pub mod receive;
 pub mod send;
+pub mod tokens;
 
 use color_eyre::eyre::Result;
 use crossterm::event::KeyEvent;

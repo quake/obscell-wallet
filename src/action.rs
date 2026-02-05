@@ -40,6 +40,8 @@ pub enum Action {
     Rescan,
 
     // Token actions
+    SelectToken(usize),
+    TransferToken,
     MintToken,
     CreateToken,
 

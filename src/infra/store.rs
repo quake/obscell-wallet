@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
+use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::get_data_dir,
     domain::{
         account::Account,
-        cell::{StealthCell, TxRecord},
+        cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
     },
 };
 
@@ -224,6 +224,131 @@ impl Store {
             record.block_number = block_number;
             self.save_tx_history(account_id, &records)?;
         }
+        Ok(())
+    }
+
+    // ==================== CT Cell Storage ====================
+
+    /// Save CT cells for an account (replaces existing cells).
+    pub fn save_ct_cells(&self, account_id: u64, cells: &[CtCell]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<Vec<CtCell>>> =
+            self.env.create_database(&mut wtxn, Some("ct_cells"))?;
+        db.put(&mut wtxn, &account_id, &cells.to_vec())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get CT cells for an account.
+    pub fn get_ct_cells(&self, account_id: u64) -> Result<Vec<CtCell>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<Vec<CtCell>>>> =
+            self.env.open_database(&rtxn, Some("ct_cells"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &account_id)?.unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Add new CT cells to an account (for incremental scan updates).
+    pub fn add_ct_cells(&self, account_id: u64, new_cells: &[CtCell]) -> Result<()> {
+        let mut cells = self.get_ct_cells(account_id)?;
+
+        // Avoid duplicates by checking out_point
+        for new_cell in new_cells {
+            if !cells.iter().any(|c| c.out_point == new_cell.out_point) {
+                cells.push(new_cell.clone());
+            }
+        }
+
+        self.save_ct_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    /// Remove spent CT cells from an account's stored cells.
+    pub fn remove_spent_ct_cells(
+        &self,
+        account_id: u64,
+        spent_out_points: &[Vec<u8>],
+    ) -> Result<()> {
+        let mut cells = self.get_ct_cells(account_id)?;
+        cells.retain(|cell| !spent_out_points.contains(&cell.out_point));
+        self.save_ct_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    /// Get CT cells filtered by token type hash.
+    pub fn get_ct_cells_by_token(
+        &self,
+        account_id: u64,
+        token_type_hash: &[u8; 32],
+    ) -> Result<Vec<CtCell>> {
+        let cells = self.get_ct_cells(account_id)?;
+        Ok(cells
+            .into_iter()
+            .filter(|c| &c.token_type_hash == token_type_hash)
+            .collect())
+    }
+
+    // ==================== CT Info Cell Storage ====================
+
+    /// Save ct-info cells for an account (replaces existing cells).
+    pub fn save_ct_info_cells(&self, account_id: u64, cells: &[CtInfoCell]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<Vec<CtInfoCell>>> =
+            self.env.create_database(&mut wtxn, Some("ct_info_cells"))?;
+        db.put(&mut wtxn, &account_id, &cells.to_vec())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get ct-info cells for an account.
+    pub fn get_ct_info_cells(&self, account_id: u64) -> Result<Vec<CtInfoCell>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<Vec<CtInfoCell>>>> =
+            self.env.open_database(&rtxn, Some("ct_info_cells"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &account_id)?.unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Add new ct-info cells to an account (for incremental scan updates).
+    pub fn add_ct_info_cells(&self, account_id: u64, new_cells: &[CtInfoCell]) -> Result<()> {
+        let mut cells = self.get_ct_info_cells(account_id)?;
+
+        // Avoid duplicates by checking out_point
+        for new_cell in new_cells {
+            if !cells.iter().any(|c| c.out_point == new_cell.out_point) {
+                cells.push(new_cell.clone());
+            }
+        }
+
+        self.save_ct_info_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    /// Get ct-info cell by token ID.
+    pub fn get_ct_info_by_token_id(
+        &self,
+        account_id: u64,
+        token_id: &[u8; 32],
+    ) -> Result<Option<CtInfoCell>> {
+        let cells = self.get_ct_info_cells(account_id)?;
+        Ok(cells.into_iter().find(|c| &c.token_id == token_id))
+    }
+
+    /// Remove spent ct-info cells from an account's stored cells.
+    pub fn remove_spent_ct_info_cells(
+        &self,
+        account_id: u64,
+        spent_out_points: &[Vec<u8>],
+    ) -> Result<()> {
+        let mut cells = self.get_ct_info_cells(account_id)?;
+        cells.retain(|cell| !spent_out_points.contains(&cell.out_point));
+        self.save_ct_info_cells(account_id, &cells)?;
         Ok(())
     }
 }

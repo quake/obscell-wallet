@@ -57,6 +57,8 @@ pub struct Config {
 pub struct CellDepsConfig {
     pub ckb_auth: CellDepConfig,
     pub stealth_lock: CellDepConfig,
+    pub ct_token: CellDepConfig,
+    pub ct_info: CellDepConfig,
 }
 
 impl Default for Config {
@@ -94,6 +96,16 @@ impl Config {
                         .to_string(),
                     index: 1,
                 },
+                ct_token: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
+                },
+                ct_info: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
+                },
             },
         }
     }
@@ -126,6 +138,16 @@ impl Config {
                         .to_string(),
                     index: 1,
                 },
+                ct_token: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
+                },
+                ct_info: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
+                },
             },
         }
     }
@@ -157,6 +179,16 @@ impl Config {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 1,
+                },
+                ct_token: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
+                },
+                ct_info: CellDepConfig {
+                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                    index: 0,
                 },
             },
         }

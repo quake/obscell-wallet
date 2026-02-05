@@ -13,12 +13,15 @@ use crate::{
     action::Action,
     components::{
         Component, accounts::AccountsComponent, history::HistoryComponent,
-        receive::ReceiveComponent, send::SendComponent,
+        receive::ReceiveComponent, send::SendComponent, tokens::TokensComponent,
     },
     config::Config,
     domain::{
         account::AccountManager,
-        cell::TxRecord,
+        cell::{TxRecord, aggregate_ct_balances},
+        ct_info::CtInfoData,
+        ct_mint::{CtInfoCellInput, MintParams, build_mint_transaction, sign_mint_transaction},
+        ct_tx_builder::CtTxBuilder,
         tx_builder::{StealthTxBuilder, parse_stealth_address},
     },
     infra::{scanner::Scanner, store::Store},
@@ -93,6 +96,7 @@ pub struct App {
     pub receive_component: ReceiveComponent,
     pub send_component: SendComponent,
     pub history_component: HistoryComponent,
+    pub tokens_component: TokensComponent,
     pub status_message: String,
     pub tip_block_number: Option<u64>,
     pub is_scanning: bool,
@@ -109,6 +113,7 @@ impl App {
         let receive_component = ReceiveComponent::new(action_tx.clone());
         let send_component = SendComponent::new(action_tx.clone());
         let history_component = HistoryComponent::new();
+        let tokens_component = TokensComponent::new(action_tx.clone());
 
         let tui = Tui::new()?
             .tick_rate(tick_rate)
@@ -132,6 +137,7 @@ impl App {
             receive_component,
             send_component,
             history_component,
+            tokens_component,
             status_message: "Ready".to_string(),
             tip_block_number: None,
             is_scanning: false,
@@ -152,10 +158,19 @@ impl App {
             self.send_component.set_account(Some(first_account.clone()));
             self.history_component
                 .set_account(Some(first_account.clone()));
+            self.tokens_component
+                .set_account(Some(first_account.clone()));
 
             // Load transaction history for first account
             if let Ok(history) = self.store.get_tx_history(first_account.id) {
                 self.history_component.set_transactions(history);
+            }
+
+            // Load CT cells and balances for first account
+            if let Ok(ct_cells) = self.store.get_ct_cells(first_account.id) {
+                let balances = aggregate_ct_balances(&ct_cells);
+                self.tokens_component.set_ct_cells(ct_cells);
+                self.tokens_component.set_balances(balances);
             }
         }
 
@@ -278,10 +293,12 @@ impl App {
                 Tab::Receive => {
                     self.receive_component.handle_key_event(key)?;
                 }
+                Tab::Tokens => {
+                    self.tokens_component.handle_key_event(key)?;
+                }
                 Tab::History => {
                     self.history_component.handle_key_event(key)?;
                 }
-                _ => {}
             },
         }
         Ok(())
@@ -307,16 +324,24 @@ impl App {
             }
             Action::SelectAccount(index) => {
                 self.account_manager.set_active_account(index)?;
-                // Update receive, send, and history components with selected account
+                // Update receive, send, history, and tokens components with selected account
                 let accounts = self.account_manager.list_accounts()?;
                 if let Some(account) = accounts.get(index) {
                     self.receive_component.set_account(Some(account.clone()));
                     self.send_component.set_account(Some(account.clone()));
                     self.history_component.set_account(Some(account.clone()));
+                    self.tokens_component.set_account(Some(account.clone()));
 
                     // Load transaction history for this account
                     if let Ok(history) = self.store.get_tx_history(account.id) {
                         self.history_component.set_transactions(history);
+                    }
+
+                    // Load CT cells and balances for this account
+                    if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
+                        let balances = aggregate_ct_balances(&ct_cells);
+                        self.tokens_component.set_ct_cells(ct_cells);
+                        self.tokens_component.set_balances(balances);
                     }
                 }
                 self.status_message = format!("Selected account {}", index);
@@ -383,6 +408,42 @@ impl App {
                             self.status_message = format!("Scan failed: {}", e);
                         }
                     }
+
+                    // Also scan for ct-info cells (for minting authorization)
+                    match self.scanner.scan_ct_info_cells(&accounts) {
+                        Ok(ct_info_results) => {
+                            let mut total_ct_info = 0usize;
+                            let mut new_ct_info = 0usize;
+
+                            for result in &ct_info_results {
+                                total_ct_info += result.cells.len();
+                                new_ct_info += result.new_cells.len();
+
+                                // Save ct-info cells to storage
+                                if !result.cells.is_empty()
+                                    && let Err(e) = self
+                                        .store
+                                        .save_ct_info_cells(result.account_id, &result.cells)
+                                {
+                                    info!(
+                                        "Failed to save ct-info cells for account {}: {}",
+                                        result.account_id, e
+                                    );
+                                }
+                            }
+
+                            if new_ct_info > 0 {
+                                info!(
+                                    "CT-info scan: {} cells found (+{} new)",
+                                    total_ct_info, new_ct_info
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            info!("CT-info scan failed: {}", e);
+                        }
+                    }
+
                     self.is_scanning = false;
                 }
             }
@@ -512,6 +573,293 @@ impl App {
                         Some("No account selected or invalid amount".to_string());
                 }
             }
+            Action::SelectToken(index) => {
+                // Update selected token index in tokens component
+                self.tokens_component.selected_index = index;
+                self.status_message = format!("Selected token {}", index);
+            }
+            Action::TransferToken => {
+                // Get transfer parameters from tokens component
+                let recipient = self.tokens_component.transfer_recipient.clone();
+                let amount = self.tokens_component.parse_transfer_amount();
+
+                // Get the selected token
+                let selected_balance = self.tokens_component.selected_balance().cloned();
+
+                if let (Some(ref account), Some(amount_value), Some(token_balance)) = (
+                    self.tokens_component.account.clone(),
+                    amount,
+                    selected_balance,
+                ) {
+                    // Validate amount against balance
+                    if amount_value > token_balance.total_amount {
+                        self.tokens_component.error_message = Some(format!(
+                            "Insufficient balance: have {}, need {}",
+                            token_balance.total_amount, amount_value
+                        ));
+                        self.status_message = "CT transfer failed: insufficient balance".to_string();
+                        return Ok(());
+                    }
+
+                    // Parse the recipient stealth address
+                    let stealth_addr = match parse_stealth_address(&recipient) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid recipient: {}", e));
+                            self.status_message = "CT transfer failed: invalid address".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Get available CT cells for this account
+                    let available_ct_cells = match self.store.get_ct_cells(account.id) {
+                        Ok(cells) => cells,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Failed to get CT cells: {}", e));
+                            self.status_message = "CT transfer failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    if available_ct_cells.is_empty() {
+                        self.tokens_component.error_message =
+                            Some("No available CT cells. Try rescanning first.".to_string());
+                        self.status_message = "CT transfer failed: no cells".to_string();
+                        return Ok(());
+                    }
+
+                    // Build the CT transaction
+                    let builder = CtTxBuilder::new(self.config.clone(), token_balance.token_type_hash);
+                    let builder = match builder
+                        .add_output(stealth_addr, amount_value)
+                        .select_inputs(&available_ct_cells, amount_value)
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Input selection failed: {}", e));
+                            self.status_message = "CT transfer failed: insufficient funds".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Get the selected input cells for signing
+                    let input_cells = builder.inputs.clone();
+
+                    let built_tx = match builder.build(account) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Build failed: {}", e));
+                            self.status_message = "CT transfer failed: build error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Sign the transaction
+                    let signed_tx =
+                        match CtTxBuilder::sign(built_tx.clone(), account, &input_cells) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                self.tokens_component.error_message =
+                                    Some(format!("Signing failed: {}", e));
+                                self.status_message = "CT transfer failed: signing error".to_string();
+                                return Ok(());
+                            }
+                        };
+
+                    // Submit the transaction
+                    match self.scanner.rpc().send_transaction(signed_tx) {
+                        Ok(tx_hash) => {
+                            self.tokens_component.success_message = Some(format!(
+                                "CT Transfer sent! Hash: {}...{}",
+                                &hex::encode(&tx_hash.0[..4]),
+                                &hex::encode(&tx_hash.0[28..])
+                            ));
+                            self.status_message = format!("Transferred {} CT tokens", amount_value);
+
+                            // Save transaction record to history
+                            let tx_record = TxRecord::ct_transfer(
+                                tx_hash.0,
+                                token_balance.token_type_hash,
+                                amount_value,
+                            );
+                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
+                                info!("Failed to save CT transaction record: {}", e);
+                            }
+
+                            // Refresh history display
+                            if let Ok(history) = self.store.get_tx_history(account.id) {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            // Remove spent CT cells from store
+                            let spent_out_points: Vec<_> =
+                                input_cells.iter().map(|c| c.out_point.clone()).collect();
+                            if let Err(e) =
+                                self.store.remove_spent_ct_cells(account.id, &spent_out_points)
+                            {
+                                info!("Failed to remove spent CT cells: {}", e);
+                            }
+
+                            // Refresh CT balances
+                            if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
+                                let balances = aggregate_ct_balances(&ct_cells);
+                                self.tokens_component.set_balances(balances);
+                                self.tokens_component.set_ct_cells(ct_cells);
+                            }
+
+                            // Clear transfer form
+                            self.tokens_component.clear_transfer();
+                        }
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Submission failed: {}", e));
+                            self.status_message = "CT transfer failed: RPC error".to_string();
+                        }
+                    }
+                } else {
+                    self.tokens_component.error_message =
+                        Some("No account selected, invalid amount, or no token selected".to_string());
+                    self.status_message = "CT transfer failed: missing data".to_string();
+                }
+            }
+            Action::MintToken => {
+                // Get mint parameters from tokens component
+                let recipient = self.tokens_component.mint_recipient.clone();
+                let amount = self.tokens_component.parse_mint_amount();
+
+                // Get the selected token for minting
+                let selected_balance = self.tokens_component.selected_balance().cloned();
+
+                if let (Some(ref account), Some(amount_value), Some(token_balance)) = (
+                    self.tokens_component.account.clone(),
+                    amount,
+                    selected_balance,
+                ) {
+                    // Parse the recipient stealth address
+                    let stealth_addr = match parse_stealth_address(&recipient) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid recipient: {}", e));
+                            self.status_message = "CT mint failed: invalid address".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Get the ct-info cell for this token from storage
+                    let ct_info_cell = match self
+                        .store
+                        .get_ct_info_by_token_id(account.id, &token_balance.token_type_hash)
+                    {
+                        Ok(Some(cell)) => cell,
+                        Ok(None) => {
+                            self.tokens_component.error_message = Some(
+                                "No ct-info cell found for this token. You may not be the issuer."
+                                    .to_string(),
+                            );
+                            self.status_message = "CT mint failed: no ct-info cell".to_string();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Failed to get ct-info cell: {}", e));
+                            self.status_message = "CT mint failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Convert CtInfoCell to CtInfoCellInput for the mint builder
+                    let ct_info_data = CtInfoData::new(
+                        ct_info_cell.total_supply,
+                        ct_info_cell.issuer_pubkey,
+                        ct_info_cell.supply_cap,
+                        ct_info_cell.flags,
+                    );
+
+                    let ct_info_input = CtInfoCellInput {
+                        out_point: ct_info_cell.out_point.clone(),
+                        lock_script_args: ct_info_cell.lock_script_args.clone(),
+                        data: ct_info_data,
+                        capacity: ct_info_cell.capacity,
+                    };
+
+                    let mint_params = MintParams {
+                        ct_info_cell: ct_info_input,
+                        token_id: token_balance.token_type_hash,
+                        mint_amount: amount_value,
+                        recipient_stealth_address: stealth_addr.clone(),
+                    };
+
+                    // Build the mint transaction
+                    let built_tx = match build_mint_transaction(&self.config, mint_params) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Mint build failed: {}", e));
+                            self.status_message = "CT mint failed: build error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Sign the transaction (ct-info cell uses stealth-lock, requires secp256k1 signature)
+                    let signed_tx = match sign_mint_transaction(
+                        built_tx,
+                        account,
+                        &ct_info_cell.lock_script_args,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Mint signing failed: {}", e));
+                            self.status_message = "CT mint failed: signing error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Submit the signed transaction
+                    match self.scanner.rpc().send_transaction(signed_tx) {
+                        Ok(tx_hash) => {
+                            self.tokens_component.success_message = Some(format!(
+                                "CT Mint sent! Hash: {}...{}",
+                                &hex::encode(&tx_hash.0[..4]),
+                                &hex::encode(&tx_hash.0[28..])
+                            ));
+                            self.status_message = format!("Minted {} CT tokens", amount_value);
+
+                            // Save transaction record to history
+                            let tx_record = TxRecord::ct_mint(
+                                tx_hash.0,
+                                token_balance.token_type_hash,
+                                amount_value,
+                            );
+                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
+                                info!("Failed to save CT mint record: {}", e);
+                            }
+
+                            // Refresh history display
+                            if let Ok(history) = self.store.get_tx_history(account.id) {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            // Clear mint form
+                            self.tokens_component.clear_mint();
+                        }
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Mint submission failed: {}", e));
+                            self.status_message = "CT mint failed: RPC error".to_string();
+                        }
+                    }
+                } else {
+                    self.tokens_component.error_message =
+                        Some("No account selected, invalid amount, or no token selected".to_string());
+                    self.status_message = "CT mint failed: missing data".to_string();
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -535,6 +883,20 @@ impl App {
         let send_is_editing = self.send_component.is_editing;
         let send_error_message = self.send_component.error_message.clone();
         let send_success_message = self.send_component.success_message.clone();
+        // Tokens component data
+        let tokens_account = self.tokens_component.account.clone();
+        let tokens_balances = self.tokens_component.balances.clone();
+        let tokens_selected_index = self.tokens_component.selected_index;
+        let tokens_mode = self.tokens_component.mode;
+        let tokens_transfer_recipient = self.tokens_component.transfer_recipient.clone();
+        let tokens_transfer_amount = self.tokens_component.transfer_amount.clone();
+        let tokens_transfer_field = self.tokens_component.transfer_field;
+        let tokens_mint_recipient = self.tokens_component.mint_recipient.clone();
+        let tokens_mint_amount = self.tokens_component.mint_amount.clone();
+        let tokens_mint_field = self.tokens_component.mint_field;
+        let tokens_is_editing = self.tokens_component.is_editing;
+        let tokens_error_message = self.tokens_component.error_message.clone();
+        let tokens_success_message = self.tokens_component.success_message.clone();
 
         self.tui.draw(|f| {
             let chunks = Layout::vertical([
@@ -617,14 +979,23 @@ impl App {
                     );
                 }
                 Tab::Tokens => {
-                    let block = Block::default()
-                        .title("Tokens")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray));
-                    let paragraph = Paragraph::new("Tokens view - Coming soon...")
-                        .block(block)
-                        .style(Style::default().fg(Color::Gray));
-                    f.render_widget(paragraph, chunks[2]);
+                    TokensComponent::draw_static(
+                        f,
+                        chunks[2],
+                        tokens_account.as_ref(),
+                        &tokens_balances,
+                        tokens_selected_index,
+                        tokens_mode,
+                        &tokens_transfer_recipient,
+                        &tokens_transfer_amount,
+                        tokens_transfer_field,
+                        &tokens_mint_recipient,
+                        &tokens_mint_amount,
+                        tokens_mint_field,
+                        tokens_is_editing,
+                        tokens_error_message.as_deref(),
+                        tokens_success_message.as_deref(),
+                    );
                 }
                 Tab::History => {
                     let block = Block::default()

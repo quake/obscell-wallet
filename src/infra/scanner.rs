@@ -12,7 +12,9 @@ use crate::{
     config::Config,
     domain::{
         account::Account,
-        cell::{StealthCell, TxRecord},
+        cell::{aggregate_ct_balances, CtBalance, CtCell, CtInfoCell, StealthCell, TxRecord},
+        ct,
+        ct_info::CtInfoData,
         stealth::matches_key,
     },
     infra::{rpc::RpcClient, store::Store},
@@ -57,6 +59,33 @@ pub struct AccountScanResult {
     pub new_cells: Vec<StealthCell>,
     /// Total capacity of all cells (new and existing).
     pub total_capacity: u64,
+}
+
+/// Result for CT cells from a single account scan.
+#[derive(Debug)]
+pub struct AccountCtScanResult {
+    pub account_id: u64,
+    pub cells: Vec<CtCell>,
+    /// New CT cells found that weren't in the previous scan.
+    pub new_cells: Vec<CtCell>,
+    /// Aggregated balances by token type.
+    pub balances: Vec<CtBalance>,
+}
+
+/// Result for ct-info cells from a single account scan.
+#[derive(Debug)]
+pub struct AccountCtInfoScanResult {
+    pub account_id: u64,
+    pub cells: Vec<CtInfoCell>,
+    /// New ct-info cells found that weren't in the previous scan.
+    pub new_cells: Vec<CtInfoCell>,
+}
+
+/// Combined result from scanning all accounts for both stealth and CT cells.
+#[derive(Debug)]
+pub struct ScanAllResult {
+    pub stealth_results: Vec<AccountScanResult>,
+    pub ct_results: Vec<AccountCtScanResult>,
 }
 
 impl Scanner {
@@ -385,6 +414,502 @@ impl Scanner {
     /// Get a reference to the RPC client.
     pub fn rpc(&self) -> &RpcClient {
         &self.rpc
+    }
+
+    // ==================== CT Cell Scanning ====================
+
+    /// Get the CT token type code hash as bytes.
+    fn ct_token_code_hash(&self) -> Result<Option<[u8; 32]>> {
+        let hash_str = self
+            .config
+            .contracts
+            .ct_token_code_hash
+            .trim_start_matches("0x");
+
+        // Check if it's all zeros (not configured)
+        if hash_str.chars().all(|c| c == '0') {
+            return Ok(None);
+        }
+
+        let bytes = hex::decode(hash_str)?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| color_eyre::eyre::eyre!("Invalid CT token code hash length"))?;
+        Ok(Some(arr))
+    }
+
+    /// Check if a cell has a CT token type script.
+    fn is_ct_cell(&self, cell: &ckb_sdk::rpc::ckb_indexer::Cell) -> bool {
+        if let Some(type_script) = &cell.output.type_
+            && let Ok(Some(ct_code_hash)) = self.ct_token_code_hash()
+        {
+            return type_script.code_hash.as_bytes() == ct_code_hash;
+        }
+        false
+    }
+
+    /// Extract CT cell data from output_data.
+    ///
+    /// Expected format:
+    /// - commitment: 32 bytes (Pedersen commitment)
+    /// - encrypted_amount: 32 bytes
+    fn parse_ct_cell_data(data: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+        if data.len() < 64 {
+            return None;
+        }
+        let mut commitment = [0u8; 32];
+        let mut encrypted_amount = [0u8; 32];
+        commitment.copy_from_slice(&data[0..32]);
+        encrypted_amount.copy_from_slice(&data[32..64]);
+        Some((commitment, encrypted_amount))
+    }
+
+    /// Derive shared secret for CT amount decryption.
+    fn derive_ct_shared_secret(lock_args: &[u8], view_key: &SecretKey) -> Option<Vec<u8>> {
+        use secp256k1::Secp256k1;
+
+        // lock_args format: ephemeral_pubkey (33B) || pubkey_hash (20B)
+        if lock_args.len() < 33 {
+            return None;
+        }
+
+        let ephemeral_pub = PublicKey::from_slice(&lock_args[0..33]).ok()?;
+        let secp = Secp256k1::new();
+
+        // ECDH: shared_secret = view_key * ephemeral_pubkey
+        let shared_point = ephemeral_pub.mul_tweak(&secp, &(*view_key).into()).ok()?;
+        Some(shared_point.serialize().to_vec())
+    }
+
+    /// Scan for CT cells belonging to multiple accounts.
+    ///
+    /// This scans all cells with stealth-lock that also have ct-token-type,
+    /// then decrypts the amounts for matching accounts.
+    pub fn scan_ct_cells(&self, accounts: &[Account]) -> Result<Vec<AccountCtScanResult>> {
+        // Check if CT is configured
+        let ct_code_hash = match self.ct_token_code_hash()? {
+            Some(hash) => hash,
+            None => {
+                info!("CT token not configured, skipping CT scan");
+                return Ok(accounts
+                    .iter()
+                    .map(|a| AccountCtScanResult {
+                        account_id: a.id,
+                        cells: Vec::new(),
+                        new_cells: Vec::new(),
+                        balances: Vec::new(),
+                    })
+                    .collect());
+            }
+        };
+
+        info!(
+            "Starting CT scan for {} accounts, ct_code_hash: {}",
+            accounts.len(),
+            hex::encode(ct_code_hash)
+        );
+
+        let stealth_code_hash = self.stealth_lock_code_hash()?;
+
+        // Load existing CT cells for each account to detect new ones
+        let mut existing_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+        for account in accounts {
+            let cells = self.store.get_ct_cells(account.id)?;
+            let out_points: std::collections::HashSet<_> =
+                cells.iter().map(|c| c.out_point.clone()).collect();
+            existing_out_points.insert(account.id, out_points);
+        }
+
+        // Prepare keys for all accounts
+        let account_keys: Vec<_> = accounts
+            .iter()
+            .map(|a| (a.id, a.view_secret_key(), a.spend_public_key()))
+            .collect();
+
+        let mut results: Vec<AccountCtScanResult> = accounts
+            .iter()
+            .map(|a| AccountCtScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+                balances: Vec::new(),
+            })
+            .collect();
+
+        // Clear cursor for fresh scan
+        self.clear_cursor()?;
+
+        let mut total_scanned = 0u64;
+
+        loop {
+            let cursor = self.load_cursor()?;
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
+
+            for cell in &cells_result.objects {
+                total_scanned += 1;
+
+                // Check if this cell has CT token type
+                if !self.is_ct_cell(cell) {
+                    continue;
+                }
+
+                let lock_args = cell.output.lock.args.as_bytes();
+
+                // Check against all accounts for lock ownership
+                for (account_id, view_key, spend_pub) in &account_keys {
+                    if !matches_key(lock_args, view_key, spend_pub) {
+                        continue;
+                    }
+
+                    // This CT cell belongs to this account
+                    debug!("Found matching CT cell: {:?}", cell.out_point);
+
+                    // Parse cell data
+                    let cell_data = cell
+                        .output_data
+                        .as_ref()
+                        .map(|d| d.as_bytes())
+                        .unwrap_or(&[]);
+                    let (commitment, encrypted_amount) = match Self::parse_ct_cell_data(cell_data) {
+                        Some(data) => data,
+                        None => {
+                            debug!("Invalid CT cell data format");
+                            continue;
+                        }
+                    };
+
+                    // Derive shared secret and decrypt amount
+                    let shared_secret = match Self::derive_ct_shared_secret(lock_args, view_key) {
+                        Some(s) => s,
+                        None => {
+                            debug!("Failed to derive shared secret");
+                            continue;
+                        }
+                    };
+
+                    let amount = match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
+                        Some(a) => a,
+                        None => {
+                            debug!("Failed to decrypt CT amount");
+                            continue;
+                        }
+                    };
+
+                    // TODO: Verify commitment = amount*G + blinding*H
+                    // For now, we use zero blinding factor as placeholder
+                    let blinding_factor = [0u8; 32];
+
+                    // Extract token type hash
+                    let token_type_hash: [u8; 32] = cell
+                        .output
+                        .type_
+                        .as_ref()
+                        .map(|t| {
+                            let mut hash = [0u8; 32];
+                            // Use the type script hash as token identifier
+                            // In practice this should be computed from the type script
+                            hash.copy_from_slice(t.code_hash.as_bytes());
+                            hash
+                        })
+                        .unwrap_or([0u8; 32]);
+
+                    // Build OutPoint
+                    let mut out_point_bytes = Vec::with_capacity(36);
+                    out_point_bytes.extend_from_slice(cell.out_point.tx_hash.as_bytes());
+                    out_point_bytes.extend_from_slice(&cell.out_point.index.value().to_le_bytes());
+
+                    let ct_cell = CtCell::new(
+                        out_point_bytes.clone(),
+                        token_type_hash,
+                        commitment,
+                        encrypted_amount,
+                        blinding_factor,
+                        amount,
+                        lock_args.to_vec(),
+                    );
+
+                    // Find the account's result
+                    if let Some(result) = results.iter_mut().find(|r| r.account_id == *account_id) {
+                        result.cells.push(ct_cell.clone());
+
+                        // Check if this is a new cell
+                        let is_new = existing_out_points
+                            .get(account_id)
+                            .map(|set| !set.contains(&out_point_bytes))
+                            .unwrap_or(true);
+
+                        if is_new {
+                            result.new_cells.push(ct_cell);
+                        }
+                    }
+
+                    // A cell can only belong to one account
+                    break;
+                }
+            }
+
+            // Check if done
+            if cells_result.last_cursor.is_empty() {
+                break;
+            }
+
+            self.save_cursor(Some(&cells_result.last_cursor))?;
+        }
+
+        // Calculate balances and persist cells
+        for result in &mut results {
+            // Aggregate balances
+            result.balances = aggregate_ct_balances(&result.cells);
+
+            // Save all CT cells to store
+            if let Err(e) = self.store.save_ct_cells(result.account_id, &result.cells) {
+                info!(
+                    "Failed to save CT cells for account {}: {}",
+                    result.account_id, e
+                );
+            }
+        }
+
+        info!(
+            "CT scan complete: {} cells scanned, {} accounts processed",
+            total_scanned,
+            accounts.len()
+        );
+
+        Ok(results)
+    }
+
+    /// Scan all accounts for both stealth cells and CT cells.
+    pub fn scan_all(&self, accounts: &[Account]) -> Result<ScanAllResult> {
+        let stealth_results = self.scan_all_accounts(accounts)?;
+        let ct_results = self.scan_ct_cells(accounts)?;
+
+        Ok(ScanAllResult {
+            stealth_results,
+            ct_results,
+        })
+    }
+
+    // ==================== CT Info Cell Scanning ====================
+
+    /// Get the CT info type code hash as bytes.
+    fn ct_info_code_hash(&self) -> Result<Option<[u8; 32]>> {
+        let hash_str = self
+            .config
+            .contracts
+            .ct_info_code_hash
+            .trim_start_matches("0x");
+
+        // Check if it's all zeros (not configured)
+        if hash_str.chars().all(|c| c == '0') {
+            return Ok(None);
+        }
+
+        let bytes = hex::decode(hash_str)?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| color_eyre::eyre::eyre!("Invalid CT info code hash length"))?;
+        Ok(Some(arr))
+    }
+
+    /// Check if a cell has a CT info type script.
+    fn is_ct_info_cell(&self, cell: &ckb_sdk::rpc::ckb_indexer::Cell) -> bool {
+        if let Some(type_script) = &cell.output.type_
+            && let Ok(Some(ct_info_hash)) = self.ct_info_code_hash()
+        {
+            return type_script.code_hash.as_bytes() == ct_info_hash;
+        }
+        false
+    }
+
+    /// Scan for ct-info cells belonging to multiple accounts.
+    ///
+    /// ct-info cells are controlled by stealth-lock, so we scan for cells
+    /// where the lock matches one of our accounts.
+    pub fn scan_ct_info_cells(&self, accounts: &[Account]) -> Result<Vec<AccountCtInfoScanResult>> {
+        // Check if CT info is configured
+        let ct_info_hash = match self.ct_info_code_hash()? {
+            Some(hash) => hash,
+            None => {
+                info!("CT info type not configured, skipping ct-info scan");
+                return Ok(accounts
+                    .iter()
+                    .map(|a| AccountCtInfoScanResult {
+                        account_id: a.id,
+                        cells: Vec::new(),
+                        new_cells: Vec::new(),
+                    })
+                    .collect());
+            }
+        };
+
+        info!(
+            "Starting CT info scan for {} accounts, ct_info_hash: {}",
+            accounts.len(),
+            hex::encode(ct_info_hash)
+        );
+
+        let stealth_code_hash = self.stealth_lock_code_hash()?;
+
+        // Load existing ct-info cells for each account to detect new ones
+        let mut existing_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+        for account in accounts {
+            let cells = self.store.get_ct_info_cells(account.id)?;
+            let out_points: std::collections::HashSet<_> =
+                cells.iter().map(|c| c.out_point.clone()).collect();
+            existing_out_points.insert(account.id, out_points);
+        }
+
+        // Prepare keys for all accounts
+        let account_keys: Vec<_> = accounts
+            .iter()
+            .map(|a| (a.id, a.view_secret_key(), a.spend_public_key()))
+            .collect();
+
+        let mut results: Vec<AccountCtInfoScanResult> = accounts
+            .iter()
+            .map(|a| AccountCtInfoScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+            })
+            .collect();
+
+        // Clear cursor for fresh scan
+        self.clear_cursor()?;
+
+        let mut total_scanned = 0u64;
+
+        loop {
+            let cursor = self.load_cursor()?;
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
+
+            for cell in &cells_result.objects {
+                total_scanned += 1;
+
+                // Check if this cell has CT info type
+                if !self.is_ct_info_cell(cell) {
+                    continue;
+                }
+
+                let lock_args = cell.output.lock.args.as_bytes();
+
+                // Check against all accounts for lock ownership
+                for (account_id, view_key, spend_pub) in &account_keys {
+                    if !matches_key(lock_args, view_key, spend_pub) {
+                        continue;
+                    }
+
+                    // This ct-info cell belongs to this account
+                    debug!("Found matching ct-info cell: {:?}", cell.out_point);
+
+                    // Parse cell data
+                    let cell_data = cell
+                        .output_data
+                        .as_ref()
+                        .map(|d| d.as_bytes().to_vec())
+                        .unwrap_or_default();
+
+                    let ct_info_data = match CtInfoData::from_bytes(&cell_data) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            debug!("Invalid ct-info cell data: {}", e);
+                            continue;
+                        }
+                    };
+
+                    // Extract token_id from type script args
+                    let type_args = cell
+                        .output
+                        .type_
+                        .as_ref()
+                        .map(|t| t.args.as_bytes().to_vec())
+                        .unwrap_or_default();
+
+                    if type_args.len() < 32 {
+                        debug!("Invalid ct-info type args length: {}", type_args.len());
+                        continue;
+                    }
+
+                    let mut token_id = [0u8; 32];
+                    token_id.copy_from_slice(&type_args[0..32]);
+
+                    let capacity: u64 = cell.output.capacity.into();
+
+                    // Build OutPoint
+                    let mut out_point_bytes = Vec::with_capacity(36);
+                    out_point_bytes.extend_from_slice(cell.out_point.tx_hash.as_bytes());
+                    out_point_bytes.extend_from_slice(&cell.out_point.index.value().to_le_bytes());
+
+                    let ct_info_cell = CtInfoCell::new(
+                        out_point_bytes.clone(),
+                        token_id,
+                        ct_info_data.total_supply,
+                        ct_info_data.supply_cap,
+                        ct_info_data.issuer_pubkey,
+                        ct_info_data.flags,
+                        capacity,
+                        lock_args.to_vec(),
+                    );
+
+                    // Find the account's result
+                    if let Some(result) = results.iter_mut().find(|r| r.account_id == *account_id) {
+                        result.cells.push(ct_info_cell.clone());
+
+                        // Check if this is a new cell
+                        let is_new = existing_out_points
+                            .get(account_id)
+                            .map(|set| !set.contains(&out_point_bytes))
+                            .unwrap_or(true);
+
+                        if is_new {
+                            result.new_cells.push(ct_info_cell);
+                        }
+                    }
+
+                    // A cell can only belong to one account
+                    break;
+                }
+            }
+
+            // Check if done
+            if cells_result.last_cursor.is_empty() {
+                break;
+            }
+
+            self.save_cursor(Some(&cells_result.last_cursor))?;
+        }
+
+        // Persist ct-info cells to store
+        for result in &results {
+            if let Err(e) = self
+                .store
+                .save_ct_info_cells(result.account_id, &result.cells)
+            {
+                info!(
+                    "Failed to save ct-info cells for account {}: {}",
+                    result.account_id, e
+                );
+            }
+        }
+
+        info!(
+            "CT info scan complete: {} cells scanned, {} accounts processed",
+            total_scanned,
+            accounts.len()
+        );
+
+        Ok(results)
     }
 }
 

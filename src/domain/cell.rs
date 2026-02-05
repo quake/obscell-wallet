@@ -92,6 +92,20 @@ impl TxRecord {
         )
     }
 
+    /// Create a CT token transfer record.
+    pub fn ct_transfer(tx_hash: [u8; 32], token: [u8; 32], amount: u64) -> Self {
+        Self::new(
+            tx_hash,
+            TxType::CtTransfer { token, amount },
+            TxStatus::Pending,
+        )
+    }
+
+    /// Create a CT token mint record.
+    pub fn ct_mint(tx_hash: [u8; 32], token: [u8; 32], amount: u64) -> Self {
+        Self::new(tx_hash, TxType::CtMint { token, amount }, TxStatus::Pending)
+    }
+
     /// Mark as confirmed with block number.
     pub fn confirm(&mut self, block_number: u64) {
         self.status = TxStatus::Confirmed;
@@ -194,6 +208,150 @@ impl CtCell {
             lock_script_args,
         }
     }
+}
+
+/// A ct-info cell that controls token minting.
+///
+/// The ct-info cell is controlled by a stealth-lock, and whoever can
+/// unlock it can mint new tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtInfoCell {
+    /// Transaction output point (tx_hash || index as 36 bytes).
+    pub out_point: Vec<u8>,
+    /// Token ID (32 bytes, from type script args).
+    pub token_id: [u8; 32],
+    /// Current total supply.
+    pub total_supply: u128,
+    /// Maximum supply (0 = unlimited).
+    pub supply_cap: u128,
+    /// Issuer identifier (32 bytes, for reference).
+    pub issuer_pubkey: [u8; 32],
+    /// Flags (MINTABLE, BURNABLE, etc.).
+    pub flags: u8,
+    /// Cell capacity in shannons.
+    pub capacity: u64,
+    /// Lock script args (stealth-lock args: eph_pub || pubkey_hash).
+    pub lock_script_args: Vec<u8>,
+}
+
+impl CtInfoCell {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        out_point: Vec<u8>,
+        token_id: [u8; 32],
+        total_supply: u128,
+        supply_cap: u128,
+        issuer_pubkey: [u8; 32],
+        flags: u8,
+        capacity: u64,
+        lock_script_args: Vec<u8>,
+    ) -> Self {
+        Self {
+            out_point,
+            token_id,
+            total_supply,
+            supply_cap,
+            issuer_pubkey,
+            flags,
+            capacity,
+            lock_script_args,
+        }
+    }
+
+    /// Check if this token is mintable.
+    pub fn is_mintable(&self) -> bool {
+        self.flags & 0x01 != 0
+    }
+
+    /// Check if minting would exceed the supply cap.
+    pub fn would_exceed_cap(&self, mint_amount: u128) -> bool {
+        if self.supply_cap == 0 {
+            return false; // Unlimited supply
+        }
+        self.total_supply.saturating_add(mint_amount) > self.supply_cap
+    }
+
+    /// Get remaining mintable amount.
+    pub fn remaining_supply(&self) -> Option<u128> {
+        if self.supply_cap == 0 {
+            None // Unlimited
+        } else {
+            Some(self.supply_cap.saturating_sub(self.total_supply))
+        }
+    }
+
+    /// Get short token ID for display.
+    pub fn short_token_id(&self) -> String {
+        format!(
+            "{}...{}",
+            hex::encode(&self.token_id[..4]),
+            hex::encode(&self.token_id[28..])
+        )
+    }
+}
+
+/// CT token balance aggregated from CtCells.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtBalance {
+    /// Token type script hash (identifies the token).
+    pub token_type_hash: [u8; 32],
+    /// Human-readable token name (if known).
+    pub token_name: Option<String>,
+    /// Total balance (sum of all owned CtCells).
+    pub total_amount: u64,
+    /// Number of cells holding this token.
+    pub cell_count: usize,
+}
+
+impl CtBalance {
+    /// Create a new CtBalance.
+    pub fn new(token_type_hash: [u8; 32], token_name: Option<String>) -> Self {
+        Self {
+            token_type_hash,
+            token_name,
+            total_amount: 0,
+            cell_count: 0,
+        }
+    }
+
+    /// Add a cell's amount to this balance.
+    pub fn add_cell(&mut self, amount: u64) {
+        self.total_amount += amount;
+        self.cell_count += 1;
+    }
+
+    /// Get short token hash for display.
+    pub fn short_hash(&self) -> String {
+        format!(
+            "{}...{}",
+            hex::encode(&self.token_type_hash[..4]),
+            hex::encode(&self.token_type_hash[28..])
+        )
+    }
+
+    /// Get display name (token_name or short hash).
+    pub fn display_name(&self) -> String {
+        self.token_name.clone().unwrap_or_else(|| self.short_hash())
+    }
+}
+
+/// Aggregate CtCells into CtBalances by token type.
+pub fn aggregate_ct_balances(cells: &[CtCell]) -> Vec<CtBalance> {
+    use std::collections::HashMap;
+
+    let mut balances: HashMap<[u8; 32], CtBalance> = HashMap::new();
+
+    for cell in cells {
+        let balance = balances
+            .entry(cell.token_type_hash)
+            .or_insert_with(|| CtBalance::new(cell.token_type_hash, None));
+        balance.add_cell(cell.amount);
+    }
+
+    let mut result: Vec<_> = balances.into_values().collect();
+    // Sort by total amount descending
+    result.sort_by(|a, b| b.total_amount.cmp(&a.total_amount));
+    result
 }
 
 #[cfg(test)]
