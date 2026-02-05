@@ -4,9 +4,8 @@ Cargo.lock
 .config/
 *.log
 
-# Test fixtures - binaries and runtime data
+# Test fixtures - runtime data (stealth-lock kept in repo, ckb downloaded via setup.sh)
 tests/fixtures/ckb
-tests/fixtures/stealth-lock
 tests/fixtures/devnet/data/
 tests/fixtures/devnet/.checkpoint
 tests/fixtures/devnet/.contracts
