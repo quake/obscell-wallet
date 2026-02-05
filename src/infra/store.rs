@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
+use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -278,16 +278,16 @@ impl Store {
         Ok(())
     }
 
-    /// Get CT cells filtered by token type hash.
+    /// Get CT cells filtered by token ID.
     pub fn get_ct_cells_by_token(
         &self,
         account_id: u64,
-        token_type_hash: &[u8; 32],
+        token_id: &[u8; 32],
     ) -> Result<Vec<CtCell>> {
         let cells = self.get_ct_cells(account_id)?;
         Ok(cells
             .into_iter()
-            .filter(|c| &c.token_type_hash == token_type_hash)
+            .filter(|c| &c.token_id == token_id)
             .collect())
     }
 

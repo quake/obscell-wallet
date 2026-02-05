@@ -555,11 +555,11 @@ impl TokensComponent {
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "Type Hash: ",
+                    "Token ID: ",
                     Style::default().fg(Color::DarkGray),
                 )]),
                 Line::from(vec![Span::styled(
-                    hex::encode(bal.token_type_hash),
+                    hex::encode(bal.token_id),
                     Style::default().fg(Color::Yellow),
                 )]),
                 Line::from(""),

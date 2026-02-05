@@ -175,8 +175,12 @@ pub struct StealthCell {
 pub struct CtCell {
     /// Transaction output point.
     pub out_point: Vec<u8>,
-    /// Token type script hash.
-    pub token_type_hash: [u8; 32],
+    /// Token type script args (ct_info_code_hash || token_id = 64 bytes).
+    /// Used for building transactions with matching type scripts.
+    pub type_script_args: Vec<u8>,
+    /// Token ID (last 32 bytes of type_script_args).
+    /// Used for grouping and display.
+    pub token_id: [u8; 32],
     /// Pedersen commitment (compressed Ristretto point).
     pub commitment: [u8; 32],
     /// Encrypted amount (encrypted with receiver's key).
@@ -202,16 +206,27 @@ impl StealthCell {
 impl CtCell {
     pub fn new(
         out_point: Vec<u8>,
-        token_type_hash: [u8; 32],
+        type_script_args: Vec<u8>,
         commitment: [u8; 32],
         encrypted_amount: [u8; 32],
         blinding_factor: [u8; 32],
         amount: u64,
         lock_script_args: Vec<u8>,
     ) -> Self {
+        // Extract token_id from the last 32 bytes of type_script_args
+        let token_id = if type_script_args.len() >= 32 {
+            let mut id = [0u8; 32];
+            let start = type_script_args.len() - 32;
+            id.copy_from_slice(&type_script_args[start..]);
+            id
+        } else {
+            [0u8; 32]
+        };
+
         Self {
             out_point,
-            token_type_hash,
+            type_script_args,
+            token_id,
             commitment,
             encrypted_amount,
             blinding_factor,
@@ -299,8 +314,10 @@ impl CtInfoCell {
 /// CT token balance aggregated from CtCells.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtBalance {
-    /// Token type script hash (identifies the token).
-    pub token_type_hash: [u8; 32],
+    /// Token ID (identifies the token).
+    pub token_id: [u8; 32],
+    /// Full type script args (ct_info_code_hash || token_id).
+    pub type_script_args: Vec<u8>,
     /// Human-readable token name (if known).
     pub token_name: Option<String>,
     /// Total balance (sum of all owned CtCells).
@@ -311,9 +328,10 @@ pub struct CtBalance {
 
 impl CtBalance {
     /// Create a new CtBalance.
-    pub fn new(token_type_hash: [u8; 32], token_name: Option<String>) -> Self {
+    pub fn new(token_id: [u8; 32], type_script_args: Vec<u8>, token_name: Option<String>) -> Self {
         Self {
-            token_type_hash,
+            token_id,
+            type_script_args,
             token_name,
             total_amount: 0,
             cell_count: 0,
@@ -330,8 +348,8 @@ impl CtBalance {
     pub fn short_hash(&self) -> String {
         format!(
             "{}...{}",
-            hex::encode(&self.token_type_hash[..4]),
-            hex::encode(&self.token_type_hash[28..])
+            hex::encode(&self.token_id[..4]),
+            hex::encode(&self.token_id[28..])
         )
     }
 
@@ -349,8 +367,8 @@ pub fn aggregate_ct_balances(cells: &[CtCell]) -> Vec<CtBalance> {
 
     for cell in cells {
         let balance = balances
-            .entry(cell.token_type_hash)
-            .or_insert_with(|| CtBalance::new(cell.token_type_hash, None));
+            .entry(cell.token_id)
+            .or_insert_with(|| CtBalance::new(cell.token_id, cell.type_script_args.clone(), None));
         balance.add_cell(cell.amount);
     }
 
@@ -365,23 +383,32 @@ pub fn aggregate_ct_balances(cells: &[CtCell]) -> Vec<CtBalance> {
 pub fn aggregate_ct_balances_with_info(
     ct_cells: &[CtCell],
     ct_info_cells: &[CtInfoCell],
+    config: &crate::config::Config,
 ) -> Vec<CtBalance> {
     use std::collections::HashMap;
 
     let mut balances: HashMap<[u8; 32], CtBalance> = HashMap::new();
 
     // First, add all ct-info cells (tokens you can mint) with 0 balance
+    // Build the full type script args from ct_info_code_hash || token_id
+    let ct_info_code_hash = config.contracts.ct_info_code_hash.trim_start_matches("0x");
+    let ct_info_code_hash_bytes = hex::decode(ct_info_code_hash).unwrap_or_else(|_| vec![0u8; 32]);
+
     for info in ct_info_cells {
+        let mut type_args = Vec::with_capacity(64);
+        type_args.extend_from_slice(&ct_info_code_hash_bytes);
+        type_args.extend_from_slice(&info.token_id);
+
         balances
             .entry(info.token_id)
-            .or_insert_with(|| CtBalance::new(info.token_id, None));
+            .or_insert_with(|| CtBalance::new(info.token_id, type_args, None));
     }
 
     // Then add actual balances from ct-token cells
     for cell in ct_cells {
         let balance = balances
-            .entry(cell.token_type_hash)
-            .or_insert_with(|| CtBalance::new(cell.token_type_hash, None));
+            .entry(cell.token_id)
+            .or_insert_with(|| CtBalance::new(cell.token_id, cell.type_script_args.clone(), None));
         balance.add_cell(cell.amount);
     }
 

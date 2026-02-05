@@ -593,19 +593,13 @@ impl Scanner {
                     // For now, we use zero blinding factor as placeholder
                     let blinding_factor = [0u8; 32];
 
-                    // Extract token type hash
-                    let token_type_hash: [u8; 32] = cell
+                    // Extract full type script args (ct_info_code_hash || token_id = 64 bytes)
+                    let type_script_args: Vec<u8> = cell
                         .output
                         .type_
                         .as_ref()
-                        .map(|t| {
-                            let mut hash = [0u8; 32];
-                            // Use the type script hash as token identifier
-                            // In practice this should be computed from the type script
-                            hash.copy_from_slice(t.code_hash.as_bytes());
-                            hash
-                        })
-                        .unwrap_or([0u8; 32]);
+                        .map(|t| t.args.as_bytes().to_vec())
+                        .unwrap_or_default();
 
                     // Build OutPoint
                     let mut out_point_bytes = Vec::with_capacity(36);
@@ -614,7 +608,7 @@ impl Scanner {
 
                     let ct_cell = CtCell::new(
                         out_point_bytes.clone(),
-                        token_type_hash,
+                        type_script_args,
                         commitment,
                         encrypted_amount,
                         blinding_factor,

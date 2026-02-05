@@ -175,7 +175,8 @@ impl App {
                     .store
                     .get_ct_info_cells(first_account.id)
                     .unwrap_or_default();
-                let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
+                let balances =
+                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
                 self.tokens_component.set_ct_cells(ct_cells);
                 self.tokens_component.set_balances(balances);
             }
@@ -348,7 +349,8 @@ impl App {
                     if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
                         let ct_info_cells =
                             self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                        let balances = aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
+                        let balances =
+                            aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
                         self.tokens_component.set_ct_cells(ct_cells);
                         self.tokens_component.set_balances(balances);
                     }
@@ -642,7 +644,7 @@ impl App {
 
                     // Build the CT transaction
                     let builder =
-                        CtTxBuilder::new(self.config.clone(), token_balance.token_type_hash);
+                        CtTxBuilder::new(self.config.clone(), token_balance.type_script_args.clone());
                     let builder = match builder
                         .add_output(stealth_addr, amount_value)
                         .select_inputs(&available_ct_cells, amount_value)
@@ -671,16 +673,18 @@ impl App {
                     };
 
                     // Sign the transaction
-                    let signed_tx = match CtTxBuilder::sign(built_tx.clone(), account, &input_cells)
-                    {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Signing failed: {}", e));
-                            self.status_message = "CT transfer failed: signing error".to_string();
-                            return Ok(());
-                        }
-                    };
+                    // Note: No funding cell for now - transfers need to have sufficient CT input cells
+                    let signed_tx =
+                        match CtTxBuilder::sign(built_tx.clone(), account, &input_cells, None) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                self.tokens_component.error_message =
+                                    Some(format!("Signing failed: {}", e));
+                                self.status_message =
+                                    "CT transfer failed: signing error".to_string();
+                                return Ok(());
+                            }
+                        };
 
                     // Submit the transaction
                     match self.scanner.rpc().send_transaction(signed_tx) {
@@ -695,7 +699,7 @@ impl App {
                             // Save transaction record to history
                             let tx_record = TxRecord::ct_transfer(
                                 tx_hash.0,
-                                token_balance.token_type_hash,
+                                token_balance.token_id,
                                 amount_value,
                             );
                             if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
@@ -722,7 +726,7 @@ impl App {
                                 let ct_info_cells =
                                     self.store.get_ct_info_cells(account.id).unwrap_or_default();
                                 let balances =
-                                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells);
+                                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
                                 self.tokens_component.set_balances(balances);
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
@@ -770,7 +774,7 @@ impl App {
                     // Get the ct-info cell for this token from storage
                     let ct_info_cell = match self
                         .store
-                        .get_ct_info_by_token_id(account.id, &token_balance.token_type_hash)
+                        .get_ct_info_by_token_id(account.id, &token_balance.token_id)
                     {
                         Ok(Some(cell)) => cell,
                         Ok(None) => {
@@ -839,7 +843,7 @@ impl App {
 
                     let mint_params = MintParams {
                         ct_info_cell: ct_info_input,
-                        token_id: token_balance.token_type_hash,
+                        token_id: token_balance.token_id,
                         mint_amount: amount_value,
                         recipient_stealth_address: stealth_addr.clone(),
                         funding_cell: funding_input.clone(),
@@ -885,7 +889,7 @@ impl App {
                             // Save transaction record to history
                             let tx_record = TxRecord::ct_mint(
                                 tx_hash.0,
-                                token_balance.token_type_hash,
+                                token_balance.token_id,
                                 amount_value,
                             );
                             if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {

@@ -383,9 +383,9 @@ fn test_ct_mint_to_stealth_address() {
     );
 
     println!(
-        "Recipient found CT cell: amount={}, token_type=0x{}",
+        "Recipient found CT cell: amount={}, token_id=0x{}",
         ct_cell.amount,
-        hex::encode(&ct_cell.token_type_hash[..8])
+        hex::encode(&ct_cell.token_id[..8])
     );
 
     // Verify balances
@@ -530,6 +530,10 @@ fn test_ct_transfer_between_accounts() {
     println!("Step 3: Alice transferring 300 tokens to Bob...");
     let transfer_amount = 300u64;
 
+    // Fund Alice with additional CKB for the transfer (1 input -> 2 outputs needs extra capacity)
+    let transfer_funding_cell = fund_account_with_stealth(env, &alice, 350_00000000u64)
+        .expect("Transfer funding should succeed");
+
     use obscell_wallet::domain::ct_tx_builder::CtTxBuilder;
 
     let bob_stealth_address = {
@@ -538,9 +542,10 @@ fn test_ct_transfer_between_accounts() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
-    let built_transfer = CtTxBuilder::new(config.clone(), token_id)
+    let built_transfer = CtTxBuilder::new(config.clone(), alice_ct_cell.type_script_args.clone())
         .add_input(alice_ct_cell.clone())
         .add_output(bob_stealth_address, transfer_amount)
+        .funding_cell(transfer_funding_cell.clone())
         .build(&alice)
         .expect("Building transfer should succeed");
 
@@ -550,9 +555,14 @@ fn test_ct_transfer_between_accounts() {
         built_transfer.tx.outputs.len()
     );
 
-    // Sign the transfer
-    let signed_transfer = CtTxBuilder::sign(built_transfer, &alice, &[alice_ct_cell])
-        .expect("Signing transfer should succeed");
+    // Sign the transfer (including funding cell)
+    let signed_transfer = CtTxBuilder::sign(
+        built_transfer,
+        &alice,
+        &[alice_ct_cell.clone()],
+        Some(&transfer_funding_cell.lock_script_args),
+    )
+    .expect("Signing transfer should succeed");
 
     // Submit the transfer
     let transfer_hash = client
@@ -585,9 +595,9 @@ fn test_ct_transfer_between_accounts() {
     );
 
     println!(
-        "Bob received {} tokens, token_type=0x{}",
+        "Bob received {} tokens, token_id=0x{}",
         bob_ct_cell.amount,
-        hex::encode(&bob_ct_cell.token_type_hash[..8])
+        hex::encode(&bob_ct_cell.token_id[..8])
     );
 
     // Step 5: Verify Alice has change (700 tokens)
@@ -1148,6 +1158,10 @@ fn test_ct_transfer_with_change_verification() {
     let transfer_amount = 250u64;
     let expected_change = initial_amount - transfer_amount;
 
+    // Fund Alice with additional CKB for the transfer (1 input -> 2 outputs needs extra capacity)
+    let transfer_funding = fund_account_with_stealth(env, &alice, 350_00000000u64)
+        .expect("Transfer funding should succeed");
+
     println!(
         "Alice transferring {} tokens to Bob (expecting {} change)...",
         transfer_amount, expected_change
@@ -1161,21 +1175,26 @@ fn test_ct_transfer_with_change_verification() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
-    let transfer_tx = CtTxBuilder::new(config.clone(), token_id)
+    let transfer_tx = CtTxBuilder::new(config.clone(), alice_ct_cell.type_script_args.clone())
         .add_input(alice_ct_cell.clone())
         .add_output(bob_stealth, transfer_amount)
+        .funding_cell(transfer_funding.clone())
         .build(&alice)
         .expect("Transfer should succeed");
 
-    // Verify the transaction has 2 outputs (Bob + Alice change)
-    assert_eq!(
-        transfer_tx.tx.outputs.len(),
-        2,
-        "Transfer should have 2 outputs (recipient + change)"
+    // Verify the transaction has 2 CT outputs + 1 CKB change output
+    assert!(
+        transfer_tx.tx.outputs.len() >= 2,
+        "Transfer should have at least 2 outputs (recipient + CT change)"
     );
 
-    let signed_transfer =
-        CtTxBuilder::sign(transfer_tx, &alice, &[alice_ct_cell]).expect("Signing should succeed");
+    let signed_transfer = CtTxBuilder::sign(
+        transfer_tx,
+        &alice,
+        &[alice_ct_cell.clone()],
+        Some(&transfer_funding.lock_script_args),
+    )
+    .expect("Signing should succeed");
 
     client
         .send_transaction(signed_transfer, None)

@@ -165,4 +165,43 @@ mod tests {
         let wrong = decrypt_amount(&encrypted, b"wrong secret");
         assert!(wrong.is_none());
     }
+
+    #[test]
+    fn test_transfer_commitment_balance() {
+        // Simulate a transfer: 1 input (1000 tokens, zero blinding) -> 2 outputs (300 to bob, 700 change)
+        let input_amount = 1000u64;
+        let input_blinding = Scalar::zero(); // Minted cells have zero blinding
+
+        // Input commitment (as stored in minted cell)
+        let (_, input_commitments) = prove_range(&[input_amount], &[input_blinding]).unwrap();
+        let input_commitment = input_commitments[0].decompress().unwrap();
+
+        // Output amounts
+        let bob_amount = 300u64;
+        let change_amount = input_amount - bob_amount;
+        assert_eq!(change_amount, 700);
+
+        // Output blindings: random for bob, balance for change
+        let bob_blinding = random_blinding();
+        let change_blinding = input_blinding - bob_blinding;
+
+        // Output commitments
+        let (_, output_commitments) = prove_range(
+            &[bob_amount, change_amount],
+            &[bob_blinding, change_blinding],
+        )
+        .unwrap();
+
+        let output_sum = output_commitments[0].decompress().unwrap()
+            + output_commitments[1].decompress().unwrap();
+
+        // Verify balance: input_sum == output_sum
+        assert_eq!(
+            input_commitment,
+            output_sum,
+            "Commitment balance failed: input {:?} != output {:?}",
+            input_commitment.compress(),
+            output_sum.compress()
+        );
+    }
 }
