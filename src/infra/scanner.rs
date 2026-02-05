@@ -15,7 +15,7 @@ use crate::{
         cell::{CtBalance, CtCell, CtInfoCell, StealthCell, TxRecord, aggregate_ct_balances},
         ct,
         ct_info::CtInfoData,
-        stealth::matches_key,
+        stealth::{derive_shared_secret, matches_key},
     },
     infra::{rpc::RpcClient, store::Store},
 };
@@ -465,20 +465,9 @@ impl Scanner {
     }
 
     /// Derive shared secret for CT amount decryption.
-    fn derive_ct_shared_secret(lock_args: &[u8], view_key: &SecretKey) -> Option<Vec<u8>> {
-        use secp256k1::Secp256k1;
-
-        // lock_args format: ephemeral_pubkey (33B) || pubkey_hash (20B)
-        if lock_args.len() < 33 {
-            return None;
-        }
-
-        let ephemeral_pub = PublicKey::from_slice(&lock_args[0..33]).ok()?;
-        let secp = Secp256k1::new();
-
-        // ECDH: shared_secret = view_key * ephemeral_pubkey
-        let shared_point = ephemeral_pub.mul_tweak(&secp, &(*view_key).into()).ok()?;
-        Some(shared_point.serialize().to_vec())
+    fn derive_ct_shared_secret(lock_args: &[u8], view_key: &SecretKey) -> Option<[u8; 32]> {
+        // Use the stealth module's derive_shared_secret which does proper ECDH
+        derive_shared_secret(lock_args, view_key)
     }
 
     /// Scan for CT cells belonging to multiple accounts.

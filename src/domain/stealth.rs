@@ -23,6 +23,49 @@ pub fn generate_ephemeral_key(
     }
 }
 
+/// Generate an ephemeral keypair, derive the stealth public key, and return the shared secret.
+///
+/// Returns (ephemeral_pubkey, stealth_pubkey, shared_secret_bytes).
+/// The shared secret can be used for encrypting amounts in CT cells.
+pub fn generate_ephemeral_key_with_shared_secret(
+    view_pub: &PublicKey,
+    spend_pub: &PublicKey,
+) -> (PublicKey, PublicKey, [u8; 32]) {
+    let mut rng = rand::rngs::OsRng;
+    loop {
+        let eph_secret = SecretKey::new(&mut rng);
+        let eph_pub = PublicKey::from_secret_key_global(&eph_secret);
+        let shared = SharedSecret::new(view_pub, &eph_secret);
+
+        if let Ok(hashed_key) = hash_shared_to_secret(&shared) {
+            let tweaked = PublicKey::from_secret_key_global(&hashed_key);
+            let stealth_pub = spend_pub.combine(&tweaked).expect("combine ok");
+            // Return the raw shared secret bytes for CT encryption
+            let mut shared_bytes = [0u8; 32];
+            shared_bytes.copy_from_slice(&shared.secret_bytes());
+            return (eph_pub, stealth_pub, shared_bytes);
+        }
+    }
+}
+
+/// Derive the shared secret from a stealth script args and view key.
+///
+/// This is the counterpart to `generate_ephemeral_key_with_shared_secret` for the recipient.
+pub fn derive_shared_secret(
+    stealth_script_args: &[u8],
+    view_key: &SecretKey,
+) -> Option<[u8; 32]> {
+    if stealth_script_args.len() < 33 {
+        return None;
+    }
+
+    let eph_pub = PublicKey::from_slice(&stealth_script_args[0..33]).ok()?;
+    let shared = SharedSecret::new(&eph_pub, view_key);
+    let mut shared_bytes = [0u8; 32];
+    shared_bytes.copy_from_slice(&shared.secret_bytes());
+    Some(shared_bytes)
+}
+
 /// Check if a stealth script args matches this wallet's keys.
 ///
 /// Returns true if the cell belongs to this wallet.

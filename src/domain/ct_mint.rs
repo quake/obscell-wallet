@@ -11,7 +11,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek_ng::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
@@ -21,12 +21,25 @@ use crate::{
         account::Account,
         ct::{encrypt_amount, prove_range},
         ct_info::{CtInfoData, MINTABLE},
-        stealth::{derive_stealth_secret, generate_ephemeral_key},
+        stealth::{
+            derive_stealth_secret, generate_ephemeral_key,
+            generate_ephemeral_key_with_shared_secret,
+        },
     },
 };
 
-/// Minimum cell capacity in CKB for a CT cell.
-const MIN_CT_CELL_CAPACITY: u64 = 142_00000000;
+/// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
+/// Calculation:
+/// - Base: 8 bytes (capacity field)
+/// - Lock (stealth-lock): code_hash (32) + hash_type (1) + args (53 = eph_pub 33 + pubkey_hash 20) = 86 bytes
+/// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (64 = ct_info_hash 32 + token_id 32) = 97 bytes
+/// - Data: commitment (32) + encrypted_amount (32) = 64 bytes
+/// Total: 8 + 86 + 97 + 64 = 255 bytes → 255 CKB
+const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
+
+/// Default transaction fee in shannons (0.001 CKB = 100,000 shannons).
+/// This covers the minimum fee rate of 1000 shannons/KB for typical tx sizes.
+const DEFAULT_TX_FEE: u64 = 100_000;
 
 /// A built mint transaction ready for submission.
 #[derive(Debug, Clone)]
@@ -67,6 +80,8 @@ pub struct MintParams {
     pub mint_amount: u64,
     /// Recipient stealth address (66 bytes = view_pub || spend_pub).
     pub recipient_stealth_address: Vec<u8>,
+    /// Funding cell to pay for the new ct-token cell capacity and tx fees.
+    pub funding_cell: FundingCell,
 }
 
 /// Build a CT token mint transaction.
@@ -161,18 +176,46 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     )?;
 
     // Build ct-token type script
+    // Args: ct_info_code_hash (32) || token_id (32) = 64 bytes
+    // The ct-token-type verifies that ct-info-type exists in inputs using the code_hash
     let ct_token_code_hash = config.contracts.ct_token_code_hash.trim_start_matches("0x");
     let ct_token_code_hash_bytes = hex::decode(ct_token_code_hash)?;
+
+    let mut ct_token_type_args = Vec::with_capacity(64);
+    ct_token_type_args.extend_from_slice(&ct_info_code_hash_bytes); // ct-info-type code_hash
+    ct_token_type_args.extend_from_slice(&params.token_id); // token_id
+
     let ct_token_type_script = Script {
         code_hash: H256::from_slice(&ct_token_code_hash_bytes)?,
         hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-        args: JsonBytes::from_vec(params.token_id.to_vec()),
+        args: JsonBytes::from_vec(ct_token_type_args),
     };
 
     // Build cell deps
     let cell_deps = build_mint_cell_deps(config)?;
 
-    // Build inputs
+    // Parse funding cell out point
+    if params.funding_cell.out_point.len() != 36 {
+        return Err(eyre!(
+            "Invalid funding out_point length: {} (expected 36)",
+            params.funding_cell.out_point.len()
+        ));
+    }
+    let funding_tx_hash = H256::from_slice(&params.funding_cell.out_point[0..32])?;
+    let funding_index =
+        u32::from_le_bytes(params.funding_cell.out_point[32..36].try_into().unwrap());
+
+    // Validate funding cell has enough capacity
+    let required_capacity = MIN_CT_CELL_CAPACITY + DEFAULT_TX_FEE;
+    if params.funding_cell.capacity < required_capacity {
+        return Err(eyre!(
+            "Insufficient funding: {} < {} required (CT cell + fee)",
+            params.funding_cell.capacity,
+            required_capacity
+        ));
+    }
+
+    // Build inputs: ct-info cell first, then funding cell
     let ct_info_input = CellInput {
         previous_output: OutPoint {
             tx_hash: ct_info_tx_hash,
@@ -181,8 +224,30 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
         since: Uint64::from(0u64),
     };
 
+    let funding_input = CellInput {
+        previous_output: OutPoint {
+            tx_hash: funding_tx_hash,
+            index: Uint32::from(funding_index),
+        },
+        since: Uint64::from(0u64),
+    };
+
+    // Build funding cell lock script (for change output)
+    let funding_lock_script = Script {
+        code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
+        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+        args: JsonBytes::from_vec(params.funding_cell.lock_script_args.clone()),
+    };
+
+    // Calculate change
+    let change_capacity = params
+        .funding_cell
+        .capacity
+        .saturating_sub(MIN_CT_CELL_CAPACITY)
+        .saturating_sub(DEFAULT_TX_FEE);
+
     // Build outputs
-    let outputs = vec![
+    let mut outputs = vec![
         // Output 0: ct-info-type cell with updated supply
         CellOutput {
             capacity: Uint64::from(params.ct_info_cell.capacity),
@@ -197,10 +262,22 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
         },
     ];
 
-    let outputs_data = vec![
+    let mut outputs_data = vec![
         JsonBytes::from_vec(new_ct_info_data.to_bytes()),
         JsonBytes::from_vec(ct_token_output_data),
     ];
+
+    // Add change output if there's remaining capacity
+    // Stealth-lock change needs: 8 (capacity) + 90 (lock script with 53-byte args) = 98 bytes
+    const MIN_STEALTH_CHANGE_CAPACITY: u64 = 100_00000000;
+    if change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
+        outputs.push(CellOutput {
+            capacity: Uint64::from(change_capacity),
+            lock: funding_lock_script,
+            type_: None,
+        });
+        outputs_data.push(JsonBytes::from_vec(vec![]));
+    }
 
     // Store range proof bytes for later use in signing
     let range_proof_bytes = range_proof.to_bytes();
@@ -210,7 +287,7 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
         version: Uint32::from(0u32),
         cell_deps,
         header_deps: vec![],
-        inputs: vec![ct_info_input],
+        inputs: vec![ct_info_input, funding_input],
         outputs,
         outputs_data,
         witnesses: vec![], // Will be filled in by sign_mint_transaction
@@ -228,45 +305,66 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     })
 }
 
-/// Sign the mint transaction with the account's stealth key.
+/// Sign the mint transaction with the account's stealth keys.
 ///
-/// The ct-info cell is locked with a stealth-lock, so we need to derive
-/// the stealth secret key and sign the transaction.
+/// Both the ct-info cell and funding cell are locked with stealth-locks,
+/// so we need to derive the stealth secret keys and sign the transaction.
 pub fn sign_mint_transaction(
     built_tx: BuiltMintTransaction,
     account: &Account,
     ct_info_lock_args: &[u8],
+    funding_lock_args: &[u8],
 ) -> Result<Transaction> {
     let secp = Secp256k1::new();
     let message = Message::from_digest(built_tx.tx_hash.0);
 
-    // Derive the stealth secret key for the ct-info cell
-    let stealth_secret = derive_stealth_secret(
+    // Derive the stealth secret key for the ct-info cell (input 0)
+    let ct_info_secret = derive_stealth_secret(
         ct_info_lock_args,
         &account.view_secret_key(),
         &account.spend_secret_key(),
     )
     .ok_or_else(|| eyre!("Failed to derive stealth secret for ct-info cell"))?;
 
-    // Sign with recoverable signature
-    let sig = secp.sign_ecdsa_recoverable(&message, &stealth_secret);
-    let (recovery_id, signature_bytes) = sig.serialize_compact();
+    // Derive the stealth secret key for the funding cell (input 1)
+    let funding_secret = derive_stealth_secret(
+        funding_lock_args,
+        &account.view_secret_key(),
+        &account.spend_secret_key(),
+    )
+    .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
 
-    // Build witness 0 for ct-info cell:
+    // Sign ct-info cell with recoverable signature
+    let ct_info_sig = secp.sign_ecdsa_recoverable(&message, &ct_info_secret);
+    let (ct_info_recovery_id, ct_info_signature_bytes) = ct_info_sig.serialize_compact();
+
+    // Sign funding cell with recoverable signature
+    let funding_sig = secp.sign_ecdsa_recoverable(&message, &funding_secret);
+    let (funding_recovery_id, funding_signature_bytes) = funding_sig.serialize_compact();
+
+    // Build witness 0 for ct-info cell (input 0):
     // WitnessArgs { lock: signature, input_type: None, output_type: mint_commitment }
+    // The output_type contains mint_commitment for ct-info-type to verify minting
     let witness0 = build_witness_args_with_lock_and_output_type(
-        &signature_bytes,
-        recovery_id.to_i32() as u8,
+        &ct_info_signature_bytes,
+        ct_info_recovery_id.to_i32() as u8,
         &built_tx.mint_commitment,
     );
 
-    // Build witness 1 for ct-token cell:
-    // WitnessArgs { lock: None, input_type: mint_commitment, output_type: range_proof }
-    // For ct-token-type, we need to provide:
-    // - input_type: mint_commitment (32 bytes)
-    // - output_type: range_proof
-    let witness1 =
-        build_witness_args_for_ct_token(&built_tx.mint_commitment, &built_tx.range_proof_bytes);
+    // Build witness 1 for funding cell (input 1) AND ct-token (output 1):
+    // WitnessArgs {
+    //   lock: funding signature (for stealth-lock to unlock input 1),
+    //   input_type: mint_commitment (for ct-token-type to verify mint),
+    //   output_type: range_proof (for ct-token-type to verify range)
+    // }
+    // Note: ct-token-type uses load_witness_args(0, Source::GroupOutput), which loads
+    // witness at the same index as the first output with this type script (output index 1).
+    let witness1 = build_witness_args_full(
+        &funding_signature_bytes,
+        funding_recovery_id.to_i32() as u8,
+        &built_tx.mint_commitment,
+        &built_tx.range_proof_bytes,
+    );
 
     Ok(Transaction {
         version: built_tx.tx.version,
@@ -319,6 +417,17 @@ fn build_mint_cell_deps(config: &Config) -> Result<Vec<CellDep>> {
         dep_type: DepType::Code,
     });
 
+    // ckb-auth cell dep (required for stealth-lock signature verification)
+    let ckb_auth_tx_hash = config.cell_deps.ckb_auth.tx_hash.trim_start_matches("0x");
+    let ckb_auth_hash = H256::from_slice(&hex::decode(ckb_auth_tx_hash)?)?;
+    deps.push(CellDep {
+        out_point: OutPoint {
+            tx_hash: ckb_auth_hash,
+            index: Uint32::from(config.cell_deps.ckb_auth.index),
+        },
+        dep_type: DepType::Code,
+    });
+
     Ok(deps)
 }
 
@@ -339,8 +448,9 @@ fn build_ct_token_output(
     let view_pub = PublicKey::from_slice(&stealth_address[0..33])?;
     let spend_pub = PublicKey::from_slice(&stealth_address[33..66])?;
 
-    // Generate ephemeral key and derive one-time address
-    let (eph_pub, stealth_pub) = generate_ephemeral_key(&view_pub, &spend_pub);
+    // Generate ephemeral key, derive one-time address, and get shared secret for encryption
+    let (eph_pub, stealth_pub, shared_secret) =
+        generate_ephemeral_key_with_shared_secret(&view_pub, &spend_pub);
     let pubkey_hash = blake2b_256(stealth_pub.serialize());
 
     // Build lock script args: eph_pub (33) || pubkey_hash[0..20] (20)
@@ -360,10 +470,8 @@ fn build_ct_token_output(
         args: JsonBytes::from_vec(script_args),
     };
 
-    // For mint, we use zero blinding, so the encrypted amount can be computed differently
-    // But we still encrypt using shared secret for consistency
-    // Use deterministic shared secret from ephemeral key for mint
-    let shared_secret = blake2b_256(eph_pub.serialize());
+    // Encrypt amount using the shared secret from ECDH
+    // This allows the recipient to decrypt using their view key
     let encrypted = encrypt_amount(amount, &shared_secret);
 
     // Build output data: commitment (32B) || encrypted_amount (32B)
@@ -398,14 +506,28 @@ fn build_witness_args_with_lock_and_output_type(
     JsonBytes::from_vec(witness.as_bytes().to_vec())
 }
 
-fn build_witness_args_for_ct_token(mint_commitment: &[u8], range_proof: &[u8]) -> JsonBytes {
+/// Build WitnessArgs with lock, input_type, and output_type.
+/// Used for witness that serves both input lock verification and output type verification.
+fn build_witness_args_full(
+    signature: &[u8],
+    recovery_id: u8,
+    input_type_data: &[u8],
+    output_type_data: &[u8],
+) -> JsonBytes {
     use ckb_types::packed::{Bytes, BytesOpt, WitnessArgs};
     use ckb_types::prelude::*;
 
-    let input_type_bytes: Bytes = mint_commitment.to_vec().pack();
-    let output_type_bytes: Bytes = range_proof.to_vec().pack();
+    // Lock: signature (64 bytes) || recovery_id (1 byte)
+    let mut lock_data = Vec::with_capacity(65);
+    lock_data.extend_from_slice(signature);
+    lock_data.push(recovery_id);
+
+    let lock_bytes: Bytes = lock_data.pack();
+    let input_type_bytes: Bytes = input_type_data.to_vec().pack();
+    let output_type_bytes: Bytes = output_type_data.to_vec().pack();
 
     let witness = WitnessArgs::new_builder()
+        .lock(BytesOpt::new_builder().set(Some(lock_bytes)).build())
         .input_type(BytesOpt::new_builder().set(Some(input_type_bytes)).build())
         .output_type(BytesOpt::new_builder().set(Some(output_type_bytes)).build())
         .build();
@@ -550,8 +672,10 @@ fn calculate_tx_hash(tx: &Transaction) -> H256 {
 // Genesis functionality
 // ============================================================================
 
-/// Minimum cell capacity for ct-info cell (57 bytes data + overhead).
-const MIN_CT_INFO_CELL_CAPACITY: u64 = 150_00000000;
+/// Minimum cell capacity for ct-info cell.
+/// Calculation: 8 (capacity) + 90 (stealth-lock) + 70 (ct-info-type) + 57 (data) = 225 bytes
+/// Adding buffer for serialization overhead = 230 CKB
+const MIN_CT_INFO_CELL_CAPACITY: u64 = 230_00000000;
 
 /// Parameters for creating a new CT token (genesis).
 #[derive(Debug, Clone)]
@@ -645,12 +769,14 @@ pub fn build_genesis_transaction(
         since: Uint64::from(0u64),
     };
 
-    // Calculate Type ID: blake2b(inputs[0] || output_index)
-    // inputs[0] = tx_hash (32) || index (4) || since (8) = 44 bytes
-    let mut type_id_input = Vec::with_capacity(48);
-    type_id_input.extend_from_slice(funding_tx_hash.as_bytes());
-    type_id_input.extend_from_slice(&funding_index.to_le_bytes());
-    type_id_input.extend_from_slice(&0u64.to_le_bytes()); // since = 0
+    // Calculate Type ID: blake2b(inputs[0].as_molecule() || output_index)
+    // inputs[0] in molecule format = since (8) || tx_hash (32) || index (4) = 44 bytes
+    // output_index = 8 bytes (u64 little-endian)
+    // Total = 52 bytes
+    let mut type_id_input = Vec::with_capacity(52);
+    type_id_input.extend_from_slice(&0u64.to_le_bytes()); // since = 0 (comes first in molecule)
+    type_id_input.extend_from_slice(funding_tx_hash.as_bytes()); // tx_hash
+    type_id_input.extend_from_slice(&funding_index.to_le_bytes()); // index
     type_id_input.extend_from_slice(&0u64.to_le_bytes()); // output_index = 0
     let token_id = blake2b_256(&type_id_input);
 
@@ -706,10 +832,11 @@ pub fn build_genesis_transaction(
     // Build cell deps
     let cell_deps = build_genesis_cell_deps(config)?;
 
-    // Build outputs
+    // Build outputs (accounting for transaction fee)
     let change_capacity = funding_cell
         .capacity
-        .saturating_sub(MIN_CT_INFO_CELL_CAPACITY);
+        .saturating_sub(MIN_CT_INFO_CELL_CAPACITY)
+        .saturating_sub(DEFAULT_TX_FEE);
 
     let mut outputs = vec![
         // Output 0: ct-info-type cell
@@ -723,7 +850,9 @@ pub fn build_genesis_transaction(
     let mut outputs_data = vec![JsonBytes::from_vec(ct_info_data.to_bytes())];
 
     // Add change output if there's remaining capacity
-    if change_capacity > 0 {
+    // Stealth-lock change needs: 8 (capacity) + 90 (lock script with 53-byte args) = 98 bytes
+    const MIN_STEALTH_CHANGE_CAPACITY: u64 = 100_00000000;
+    if change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
         outputs.push(CellOutput {
             capacity: Uint64::from(change_capacity),
             lock: funding_lock_script,
@@ -817,6 +946,17 @@ fn build_genesis_cell_deps(config: &Config) -> Result<Vec<CellDep>> {
         dep_type: DepType::Code,
     });
 
+    // ckb-auth cell dep (required for stealth-lock signature verification)
+    let ckb_auth_tx_hash = config.cell_deps.ckb_auth.tx_hash.trim_start_matches("0x");
+    let ckb_auth_hash = H256::from_slice(&hex::decode(ckb_auth_tx_hash)?)?;
+    deps.push(CellDep {
+        out_point: OutPoint {
+            tx_hash: ckb_auth_hash,
+            index: Uint32::from(config.cell_deps.ckb_auth.index),
+        },
+        dep_type: DepType::Code,
+    });
+
     Ok(deps)
 }
 
@@ -844,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_min_capacities() {
-        assert_eq!(MIN_CT_CELL_CAPACITY, 142_00000000);
+        assert_eq!(MIN_CT_CELL_CAPACITY, 255_00000000);
         assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 150_00000000);
     }
 }

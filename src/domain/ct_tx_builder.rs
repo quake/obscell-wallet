@@ -8,7 +8,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek_ng::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
@@ -22,9 +22,9 @@ use crate::{
     },
 };
 
-/// Minimum cell capacity in CKB for a CT cell.
-/// CT cell needs: capacity (8B) + lock (stealth 53B args) + type (32B hash) + data (64B)
-const MIN_CT_CELL_CAPACITY: u64 = 142_00000000;
+/// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
+/// CT cell needs: capacity (8B) + lock (stealth 86B) + type (97B) + data (64B) = 255 bytes
+const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
 
 /// Transaction fee in shannons.
 const DEFAULT_TX_FEE: u64 = 100_000;
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_min_ct_cell_capacity() {
-        // 142 CKB minimum for CT cell
-        assert_eq!(MIN_CT_CELL_CAPACITY, 142_00000000);
+        // 255 CKB minimum for CT cell with stealth-lock
+        assert_eq!(MIN_CT_CELL_CAPACITY, 255_00000000);
     }
 }

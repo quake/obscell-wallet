@@ -803,11 +803,46 @@ impl App {
                         capacity: ct_info_cell.capacity,
                     };
 
+                    // Find a suitable funding cell from the account's stealth cells
+                    // Need at least 255 CKB (MIN_CT_CELL_CAPACITY) + fees
+                    let min_funding_capacity = 256_00000000u64; // 256 CKB (255 for CT cell + 1 for fees)
+                    let stealth_cells = match self.store.get_stealth_cells(account.id) {
+                        Ok(cells) => cells,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Failed to get stealth cells: {}", e));
+                            self.status_message = "CT mint failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    let funding_cell = stealth_cells.iter().find(|c| c.capacity >= min_funding_capacity);
+
+                    let funding_cell = match funding_cell {
+                        Some(cell) => cell,
+                        None => {
+                            self.tokens_component.error_message = Some(format!(
+                                "No cell with at least {} CKB available for minting. Receive CKB first.",
+                                min_funding_capacity / 100_000_000
+                            ));
+                            self.status_message = "CT mint failed: insufficient funds".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Build funding cell input
+                    let funding_input = FundingCell {
+                        out_point: funding_cell.out_point.clone(),
+                        capacity: funding_cell.capacity,
+                        lock_script_args: funding_cell.stealth_script_args.clone(),
+                    };
+
                     let mint_params = MintParams {
                         ct_info_cell: ct_info_input,
                         token_id: token_balance.token_type_hash,
                         mint_amount: amount_value,
                         recipient_stealth_address: stealth_addr.clone(),
+                        funding_cell: funding_input.clone(),
                     };
 
                     // Build the mint transaction
@@ -826,6 +861,7 @@ impl App {
                         built_tx,
                         account,
                         &ct_info_cell.lock_script_args,
+                        &funding_input.lock_script_args,
                     ) {
                         Ok(tx) => tx,
                         Err(e) => {
@@ -909,8 +945,8 @@ impl App {
                         }
                     };
 
-                    // Need at least 150 CKB for ct-info cell
-                    let min_capacity = 150_00000000u64;
+                    // Need at least 230 CKB for ct-info cell
+                    let min_capacity = 230_00000000u64;
                     let funding_cell = stealth_cells.iter().find(|c| c.capacity >= min_capacity);
 
                     let funding_cell = match funding_cell {

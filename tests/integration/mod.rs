@@ -10,6 +10,7 @@ pub mod contract_deployer;
 pub mod devnet;
 pub mod e2e_basic_flow;
 pub mod e2e_ct_flow;
+pub mod e2e_ct_genesis_mint;
 pub mod e2e_user_flow;
 pub mod faucet;
 
