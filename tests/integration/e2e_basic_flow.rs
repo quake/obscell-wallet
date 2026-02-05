@@ -7,13 +7,13 @@
 //! 4. Verify cells can be found via scanning
 
 use ckb_hash::blake2b_256;
-use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
 use ckb_sdk::CkbRpcClient;
+use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use super::devnet::DevNet;
-use super::{contract_deployer::SIGHASH_ALL_CODE_HASH, TestEnv};
+use super::{TestEnv, contract_deployer::SIGHASH_ALL_CODE_HASH};
 
 /// Generate stealth script args for a one-time address.
 ///
