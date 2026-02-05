@@ -27,7 +27,7 @@ pub struct CtBalance {
 impl Account {
     /// Create a new account with random keys.
     pub fn new(id: u64, name: String) -> Self {
-        let secp = Secp256k1::new();
+        let _secp = Secp256k1::new();
         let mut rng = OsRng;
 
         let view_secret = SecretKey::new(&mut rng);

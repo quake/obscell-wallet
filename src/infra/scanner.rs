@@ -10,7 +10,11 @@ use tracing::{debug, info};
 
 use crate::{
     config::Config,
-    domain::{account::Account, cell::StealthCell, stealth::matches_key},
+    domain::{
+        account::Account,
+        cell::{StealthCell, TxRecord},
+        stealth::matches_key,
+    },
     infra::{rpc::RpcClient, store::Store},
 };
 
@@ -42,6 +46,17 @@ pub struct ScanResult {
     pub stealth_cells: Vec<StealthCell>,
     pub total_capacity: u64,
     pub progress: ScanProgress,
+}
+
+/// Result for a single account from multi-account scan.
+#[derive(Debug)]
+pub struct AccountScanResult {
+    pub account_id: u64,
+    pub cells: Vec<StealthCell>,
+    /// New cells found that weren't in the previous scan.
+    pub new_cells: Vec<StealthCell>,
+    /// Total capacity of all cells (new and existing).
+    pub total_capacity: u64,
 }
 
 impl Scanner {
@@ -224,8 +239,9 @@ impl Scanner {
 
     /// Scan for stealth cells belonging to multiple accounts.
     ///
-    /// Returns a Vec of (account_id, Vec<StealthCell>) tuples.
-    pub fn scan_all_accounts(&self, accounts: &[Account]) -> Result<Vec<(u64, Vec<StealthCell>)>> {
+    /// Returns a Vec of AccountScanResult with both existing and new cells.
+    /// Also persists found cells and transaction records to the store.
+    pub fn scan_all_accounts(&self, accounts: &[Account]) -> Result<Vec<AccountScanResult>> {
         if accounts.is_empty() {
             return Ok(Vec::new());
         }
@@ -237,14 +253,33 @@ impl Scanner {
 
         let code_hash = self.stealth_lock_code_hash()?;
 
+        // Load existing cells for each account to detect new ones
+        let mut existing_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+        for account in accounts {
+            let cells = self.store.get_stealth_cells(account.id)?;
+            let out_points: std::collections::HashSet<_> =
+                cells.iter().map(|c| c.out_point.clone()).collect();
+            existing_out_points.insert(account.id, out_points);
+        }
+
         // Prepare keys for all accounts
         let account_keys: Vec<_> = accounts
             .iter()
             .map(|a| (a.id, a.view_secret_key(), a.spend_public_key()))
             .collect();
 
-        let mut results: Vec<(u64, Vec<StealthCell>)> =
-            accounts.iter().map(|a| (a.id, Vec::new())).collect();
+        let mut results: Vec<AccountScanResult> = accounts
+            .iter()
+            .map(|a| AccountScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+                total_capacity: 0,
+            })
+            .collect();
         let mut total_scanned = 0u64;
 
         loop {
@@ -268,13 +303,24 @@ impl Scanner {
                             .extend_from_slice(&cell.out_point.index.value().to_le_bytes());
 
                         let stealth_cell =
-                            StealthCell::new(out_point_bytes, capacity, lock_args.to_vec());
+                            StealthCell::new(out_point_bytes.clone(), capacity, lock_args.to_vec());
 
-                        // Find the account's result vector
-                        if let Some((_, cells)) =
-                            results.iter_mut().find(|(id, _)| id == account_id)
+                        // Find the account's result
+                        if let Some(result) =
+                            results.iter_mut().find(|r| r.account_id == *account_id)
                         {
-                            cells.push(stealth_cell);
+                            result.total_capacity += capacity;
+                            result.cells.push(stealth_cell.clone());
+
+                            // Check if this is a new cell
+                            let is_new = existing_out_points
+                                .get(account_id)
+                                .map(|set| !set.contains(&out_point_bytes))
+                                .unwrap_or(true);
+
+                            if is_new {
+                                result.new_cells.push(stealth_cell);
+                            }
                         }
 
                         // A cell can only belong to one account, so break
@@ -292,6 +338,37 @@ impl Scanner {
             self.save_cursor(Some(&cells_result.last_cursor))?;
         }
 
+        // Persist cells and transaction records to store
+        for result in &results {
+            // Save all cells
+            if let Err(e) = self
+                .store
+                .save_stealth_cells(result.account_id, &result.cells)
+            {
+                info!(
+                    "Failed to save cells for account {}: {}",
+                    result.account_id, e
+                );
+            }
+
+            // Save transaction records for new cells (receives)
+            for new_cell in &result.new_cells {
+                // Extract tx_hash from out_point (first 32 bytes)
+                if new_cell.out_point.len() >= 32 {
+                    let mut tx_hash = [0u8; 32];
+                    tx_hash.copy_from_slice(&new_cell.out_point[..32]);
+
+                    let tx_record = TxRecord::stealth_receive(tx_hash, new_cell.capacity);
+                    if let Err(e) = self.store.save_tx_record(result.account_id, &tx_record) {
+                        info!(
+                            "Failed to save tx record for account {}: {}",
+                            result.account_id, e
+                        );
+                    }
+                }
+            }
+        }
+
         info!(
             "Multi-account scan complete: {} cells scanned",
             total_scanned
@@ -303,6 +380,11 @@ impl Scanner {
     /// Get the current tip block number.
     pub fn get_tip_block_number(&self) -> Result<u64> {
         self.rpc.get_tip_block_number()
+    }
+
+    /// Get a reference to the RPC client.
+    pub fn rpc(&self) -> &RpcClient {
+        &self.rpc
     }
 }
 

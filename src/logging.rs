@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use tracing::error;
 use tracing_error::ErrorLayer;
-use tracing_subscriber::{self, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{self, EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::get_data_dir;
 

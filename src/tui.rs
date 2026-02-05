@@ -1,5 +1,5 @@
 use std::{
-    io::{self, stdout, Stdout},
+    io::{self, Stdout, stdout},
     ops::{Deref, DerefMut},
     time::Duration,
 };
@@ -11,7 +11,7 @@ use crossterm::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind, MouseEvent,
     },
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::{FutureExt, StreamExt};
 use ratatui::backend::CrosstermBackend;

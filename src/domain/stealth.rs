@@ -1,5 +1,5 @@
 use ckb_hash::blake2b_256;
-use secp256k1::{ecdh::SharedSecret, PublicKey, Scalar, SecretKey};
+use secp256k1::{PublicKey, Scalar, SecretKey, ecdh::SharedSecret};
 use sha2::{Digest, Sha256};
 
 /// Generate an ephemeral keypair and derive the stealth public key.
@@ -37,12 +37,11 @@ pub fn matches_key(
 
     if let Ok(eph_pub) = PublicKey::from_slice(&stealth_script_args[0..33]) {
         let shared = SharedSecret::new(&eph_pub, view_key);
-        if let Ok(hashed_key) = hash_shared_to_secret(&shared) {
-            if let Ok(stealth_pub) =
+        if let Ok(hashed_key) = hash_shared_to_secret(&shared)
+            && let Ok(stealth_pub) =
                 spend_pub.combine(&PublicKey::from_secret_key_global(&hashed_key))
-            {
-                return blake2b_256(stealth_pub.serialize())[0..20] == stealth_script_args[33..53];
-            }
+        {
+            return blake2b_256(stealth_pub.serialize())[0..20] == stealth_script_args[33..53];
         }
     }
 

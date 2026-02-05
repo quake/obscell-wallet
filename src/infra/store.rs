@@ -1,10 +1,16 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
+use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::get_data_dir, domain::account::Account};
+use crate::{
+    config::get_data_dir,
+    domain::{
+        account::Account,
+        cell::{StealthCell, TxRecord},
+    },
+};
 
 /// Wrapper around LMDB database for persistent storage.
 #[derive(Clone)]
@@ -102,5 +108,122 @@ impl Store {
             Some(db) => Ok(db.get(&rtxn, key)?),
             None => Ok(None),
         }
+    }
+
+    // ==================== Stealth Cell Storage ====================
+
+    /// Save stealth cells for an account (replaces existing cells).
+    pub fn save_stealth_cells(&self, account_id: u64, cells: &[StealthCell]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<Vec<StealthCell>>> =
+            self.env.create_database(&mut wtxn, Some("stealth_cells"))?;
+        db.put(&mut wtxn, &account_id, &cells.to_vec())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get stealth cells for an account.
+    pub fn get_stealth_cells(&self, account_id: u64) -> Result<Vec<StealthCell>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<Vec<StealthCell>>>> =
+            self.env.open_database(&rtxn, Some("stealth_cells"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &account_id)?.unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Remove spent cells from an account's stored cells.
+    pub fn remove_spent_cells(&self, account_id: u64, spent_out_points: &[Vec<u8>]) -> Result<()> {
+        let mut cells = self.get_stealth_cells(account_id)?;
+        cells.retain(|cell| !spent_out_points.contains(&cell.out_point));
+        self.save_stealth_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    /// Add new stealth cells to an account (for incremental scan updates).
+    pub fn add_stealth_cells(&self, account_id: u64, new_cells: &[StealthCell]) -> Result<()> {
+        let mut cells = self.get_stealth_cells(account_id)?;
+
+        // Avoid duplicates by checking out_point
+        for new_cell in new_cells {
+            if !cells.iter().any(|c| c.out_point == new_cell.out_point) {
+                cells.push(new_cell.clone());
+            }
+        }
+
+        self.save_stealth_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    // ==================== Transaction History ====================
+
+    /// Save a transaction record to the history.
+    pub fn save_tx_record(&self, account_id: u64, record: &TxRecord) -> Result<()> {
+        let mut records = self.get_tx_history(account_id)?;
+
+        // Check if tx already exists (by hash), update if so
+        if let Some(existing) = records.iter_mut().find(|r| r.tx_hash == record.tx_hash) {
+            *existing = record.clone();
+        } else {
+            records.push(record.clone());
+        }
+
+        // Sort by timestamp descending (newest first)
+        records.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        self.save_tx_history(account_id, &records)
+    }
+
+    /// Save all transaction records for an account (internal).
+    fn save_tx_history(&self, account_id: u64, records: &[TxRecord]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<Vec<TxRecord>>> =
+            self.env.create_database(&mut wtxn, Some("tx_history"))?;
+        db.put(&mut wtxn, &account_id, &records.to_vec())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get transaction history for an account.
+    pub fn get_tx_history(&self, account_id: u64) -> Result<Vec<TxRecord>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<Vec<TxRecord>>>> =
+            self.env.open_database(&rtxn, Some("tx_history"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &account_id)?.unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Get transaction history for an account with limit.
+    pub fn get_tx_history_limited(&self, account_id: u64, limit: usize) -> Result<Vec<TxRecord>> {
+        let records = self.get_tx_history(account_id)?;
+        Ok(records.into_iter().take(limit).collect())
+    }
+
+    /// Get a transaction record by hash.
+    pub fn get_tx_by_hash(&self, account_id: u64, tx_hash: &[u8; 32]) -> Result<Option<TxRecord>> {
+        let records = self.get_tx_history(account_id)?;
+        Ok(records.into_iter().find(|r| &r.tx_hash == tx_hash))
+    }
+
+    /// Update transaction status.
+    pub fn update_tx_status(
+        &self,
+        account_id: u64,
+        tx_hash: &[u8; 32],
+        status: crate::domain::cell::TxStatus,
+        block_number: Option<u64>,
+    ) -> Result<()> {
+        let mut records = self.get_tx_history(account_id)?;
+        if let Some(record) = records.iter_mut().find(|r| &r.tx_hash == tx_hash) {
+            record.status = status;
+            record.block_number = block_number;
+            self.save_tx_history(account_id, &records)?;
+        }
+        Ok(())
     }
 }

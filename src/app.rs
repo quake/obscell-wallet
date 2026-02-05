@@ -11,10 +11,17 @@ use tracing::{debug, info};
 
 use crate::{
     action::Action,
-    components::{accounts::AccountsComponent, Component},
+    components::{
+        Component, accounts::AccountsComponent, history::HistoryComponent,
+        receive::ReceiveComponent, send::SendComponent,
+    },
     config::Config,
-    domain::account::AccountManager,
-    infra::store::Store,
+    domain::{
+        account::AccountManager,
+        cell::TxRecord,
+        tx_builder::{StealthTxBuilder, parse_stealth_address},
+    },
+    infra::{scanner::Scanner, store::Store},
     tui::{Event, Frame, Tui},
 };
 
@@ -80,9 +87,15 @@ pub struct App {
     pub action_rx: UnboundedReceiver<Action>,
     pub tui: Tui,
     pub store: Store,
+    pub scanner: Scanner,
     pub account_manager: AccountManager,
     pub accounts_component: AccountsComponent,
+    pub receive_component: ReceiveComponent,
+    pub send_component: SendComponent,
+    pub history_component: HistoryComponent,
     pub status_message: String,
+    pub tip_block_number: Option<u64>,
+    pub is_scanning: bool,
 }
 
 impl App {
@@ -90,8 +103,12 @@ impl App {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         let config = Config::default();
         let store = Store::new()?;
+        let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
         let accounts_component = AccountsComponent::new(action_tx.clone());
+        let receive_component = ReceiveComponent::new(action_tx.clone());
+        let send_component = SendComponent::new(action_tx.clone());
+        let history_component = HistoryComponent::new();
 
         let tui = Tui::new()?
             .tick_rate(tick_rate)
@@ -109,9 +126,15 @@ impl App {
             action_rx,
             tui,
             store,
+            scanner,
             account_manager,
             accounts_component,
+            receive_component,
+            send_component,
+            history_component,
             status_message: "Ready".to_string(),
+            tip_block_number: None,
+            is_scanning: false,
         })
     }
 
@@ -119,8 +142,33 @@ impl App {
         self.tui.enter()?;
 
         // Load accounts
-        self.accounts_component
-            .set_accounts(self.account_manager.list_accounts()?);
+        let accounts = self.account_manager.list_accounts()?;
+        self.accounts_component.set_accounts(accounts.clone());
+
+        // Set first account as active for receive and send components
+        if let Some(first_account) = accounts.first() {
+            self.receive_component
+                .set_account(Some(first_account.clone()));
+            self.send_component.set_account(Some(first_account.clone()));
+            self.history_component
+                .set_account(Some(first_account.clone()));
+
+            // Load transaction history for first account
+            if let Ok(history) = self.store.get_tx_history(first_account.id) {
+                self.history_component.set_transactions(history);
+            }
+        }
+
+        // Fetch tip block number
+        match self.scanner.get_tip_block_number() {
+            Ok(tip) => {
+                self.tip_block_number = Some(tip);
+                info!("Current tip block: {}", tip);
+            }
+            Err(e) => {
+                info!("Failed to fetch tip block: {}", e);
+            }
+        }
 
         loop {
             // Handle events
@@ -188,6 +236,9 @@ impl App {
             KeyCode::Char('?') => {
                 self.action_tx.send(Action::Help)?;
             }
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                self.action_tx.send(Action::Rescan)?;
+            }
             // Tab switching
             KeyCode::Char('1') => {
                 self.active_tab = Tab::Accounts;
@@ -217,14 +268,21 @@ impl App {
                 self.active_tab = Tab::from_index(prev_index);
             }
             // Component-specific key handling
-            _ => {
-                match self.active_tab {
-                    Tab::Accounts => {
-                        self.accounts_component.handle_key_event(key)?;
-                    }
-                    _ => {}
+            _ => match self.active_tab {
+                Tab::Accounts => {
+                    self.accounts_component.handle_key_event(key)?;
                 }
-            }
+                Tab::Send => {
+                    self.send_component.handle_key_event(key)?;
+                }
+                Tab::Receive => {
+                    self.receive_component.handle_key_event(key)?;
+                }
+                Tab::History => {
+                    self.history_component.handle_key_event(key)?;
+                }
+                _ => {}
+            },
         }
         Ok(())
     }
@@ -239,20 +297,220 @@ impl App {
                 self.should_suspend = true;
             }
             Action::CreateAccount => {
-                let account = self.account_manager.create_account(
-                    format!("Account {}", self.account_manager.list_accounts()?.len() + 1),
-                )?;
+                let account = self.account_manager.create_account(format!(
+                    "Account {}",
+                    self.account_manager.list_accounts()?.len() + 1
+                ))?;
                 self.accounts_component
                     .set_accounts(self.account_manager.list_accounts()?);
                 self.status_message = format!("Created account: {}", account.name);
             }
             Action::SelectAccount(index) => {
                 self.account_manager.set_active_account(index)?;
+                // Update receive, send, and history components with selected account
+                let accounts = self.account_manager.list_accounts()?;
+                if let Some(account) = accounts.get(index) {
+                    self.receive_component.set_account(Some(account.clone()));
+                    self.send_component.set_account(Some(account.clone()));
+                    self.history_component.set_account(Some(account.clone()));
+
+                    // Load transaction history for this account
+                    if let Ok(history) = self.store.get_tx_history(account.id) {
+                        self.history_component.set_transactions(history);
+                    }
+                }
                 self.status_message = format!("Selected account {}", index);
             }
             Action::Rescan => {
                 self.status_message = "Rescanning...".to_string();
-                // TODO: Implement rescan
+                self.is_scanning = true;
+
+                // Get accounts to scan
+                let accounts = self.account_manager.list_accounts()?;
+                if accounts.is_empty() {
+                    self.status_message = "No accounts to scan".to_string();
+                    self.is_scanning = false;
+                } else {
+                    // Scan all accounts
+                    match self.scanner.scan_all_accounts(&accounts) {
+                        Ok(results) => {
+                            let mut total_cells = 0usize;
+                            let mut total_capacity = 0u64;
+                            let mut new_receives = 0usize;
+
+                            for result in &results {
+                                total_cells += result.cells.len();
+                                total_capacity += result.total_capacity;
+                                new_receives += result.new_cells.len();
+
+                                // Update account balance
+                                if let Err(e) = self
+                                    .account_manager
+                                    .update_balance(result.account_id, result.total_capacity)
+                                {
+                                    info!(
+                                        "Failed to update balance for account {}: {}",
+                                        result.account_id, e
+                                    );
+                                }
+                            }
+
+                            // Refresh accounts display
+                            self.accounts_component
+                                .set_accounts(self.account_manager.list_accounts()?);
+
+                            // Refresh history for current account
+                            if let Some(account) = &self.history_component.account
+                                && let Ok(history) = self.store.get_tx_history(account.id)
+                            {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            let ckb_amount = total_capacity as f64 / 100_000_000.0;
+                            if new_receives > 0 {
+                                self.status_message = format!(
+                                    "Scan complete: {} cells, {:.8} CKB (+{} new)",
+                                    total_cells, ckb_amount, new_receives
+                                );
+                            } else {
+                                self.status_message = format!(
+                                    "Scan complete: {} cells, {:.8} CKB",
+                                    total_cells, ckb_amount
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Scan failed: {}", e);
+                        }
+                    }
+                    self.is_scanning = false;
+                }
+            }
+            Action::SendTransaction => {
+                // Get send parameters
+                let recipient = self.send_component.recipient.clone();
+                let amount = self.send_component.parse_amount();
+
+                if let (Some(ref account), Some(amount_shannon)) =
+                    (self.send_component.account.clone(), amount)
+                {
+                    // Parse the recipient stealth address
+                    let stealth_addr = match parse_stealth_address(&recipient) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Invalid recipient: {}", e));
+                            self.status_message = "Send failed: invalid address".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Get available cells for this account
+                    let available_cells = match self.store.get_stealth_cells(account.id) {
+                        Ok(cells) => cells,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Failed to get cells: {}", e));
+                            self.status_message = "Send failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    if available_cells.is_empty() {
+                        self.send_component.error_message =
+                            Some("No available cells. Try rescanning first.".to_string());
+                        self.status_message = "Send failed: no cells".to_string();
+                        return Ok(());
+                    }
+
+                    // Build the transaction
+                    let builder = StealthTxBuilder::new(self.config.clone());
+                    let builder = match builder
+                        .add_output(stealth_addr, amount_shannon)
+                        .select_inputs(&available_cells, amount_shannon)
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Input selection failed: {}", e));
+                            self.status_message = "Send failed: insufficient funds".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Get the selected input cells for signing
+                    let input_cells = builder.inputs.clone();
+
+                    let built_tx = match builder.build(account) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Build failed: {}", e));
+                            self.status_message = "Send failed: build error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Sign the transaction
+                    let signed_tx =
+                        match StealthTxBuilder::sign(built_tx.clone(), account, &input_cells) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                self.send_component.error_message =
+                                    Some(format!("Signing failed: {}", e));
+                                self.status_message = "Send failed: signing error".to_string();
+                                return Ok(());
+                            }
+                        };
+
+                    // Submit the transaction
+                    match self.scanner.rpc().send_transaction(signed_tx) {
+                        Ok(tx_hash) => {
+                            let amount_ckb = amount_shannon as f64 / 100_000_000.0;
+                            self.send_component.success_message = Some(format!(
+                                "Transaction sent! Hash: {}...{}",
+                                &hex::encode(&tx_hash.0[..4]),
+                                &hex::encode(&tx_hash.0[28..])
+                            ));
+                            self.status_message = format!("Sent {:.8} CKB", amount_ckb);
+
+                            // Save transaction record to history
+                            let tx_record = TxRecord::stealth_send(
+                                tx_hash.0,
+                                recipient.clone(),
+                                amount_shannon,
+                            );
+                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
+                                info!("Failed to save transaction record: {}", e);
+                            }
+
+                            // Refresh history display
+                            if let Ok(history) = self.store.get_tx_history(account.id) {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            // Remove spent cells from store
+                            let spent_out_points: Vec<_> =
+                                input_cells.iter().map(|c| c.out_point.clone()).collect();
+                            if let Err(e) =
+                                self.store.remove_spent_cells(account.id, &spent_out_points)
+                            {
+                                info!("Failed to remove spent cells: {}", e);
+                            }
+
+                            // Clear send form
+                            self.send_component.clear();
+                        }
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Submission failed: {}", e));
+                            self.status_message = "Send failed: RPC error".to_string();
+                        }
+                    }
+                } else {
+                    self.send_component.error_message =
+                        Some("No account selected or invalid amount".to_string());
+                }
             }
             _ => {}
         }
@@ -266,6 +524,17 @@ impl App {
         let status_message = self.status_message.clone();
         let accounts = self.accounts_component.accounts.clone();
         let selected_index = self.accounts_component.selected_index;
+        let tip_block_number = self.tip_block_number;
+        let receive_account = self.receive_component.account.clone();
+        let receive_one_time_address = self.receive_component.one_time_address.clone();
+        let receive_script_args = self.receive_component.script_args.clone();
+        let send_account = self.send_component.account.clone();
+        let send_recipient = self.send_component.recipient.clone();
+        let send_amount = self.send_component.amount.clone();
+        let send_focused_field = self.send_component.focused_field;
+        let send_is_editing = self.send_component.is_editing;
+        let send_error_message = self.send_component.error_message.clone();
+        let send_success_message = self.send_component.success_message.clone();
 
         self.tui.draw(|f| {
             let chunks = Layout::vertical([
@@ -303,10 +572,7 @@ impl App {
                 .enumerate()
                 .map(|(i, t)| {
                     Line::from(vec![
-                        Span::styled(
-                            format!("[{}]", i + 1),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("[{}]", i + 1), Style::default().fg(Color::DarkGray)),
                         Span::raw(t.title()),
                     ])
                 })
@@ -329,24 +595,26 @@ impl App {
                     AccountsComponent::draw_static(f, chunks[2], &accounts, selected_index);
                 }
                 Tab::Send => {
-                    let block = Block::default()
-                        .title("Send")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray));
-                    let paragraph = Paragraph::new("Send view - Coming soon...")
-                        .block(block)
-                        .style(Style::default().fg(Color::Gray));
-                    f.render_widget(paragraph, chunks[2]);
+                    SendComponent::draw_static(
+                        f,
+                        chunks[2],
+                        send_account.as_ref(),
+                        &send_recipient,
+                        &send_amount,
+                        send_focused_field,
+                        send_is_editing,
+                        send_error_message.as_deref(),
+                        send_success_message.as_deref(),
+                    );
                 }
                 Tab::Receive => {
-                    let block = Block::default()
-                        .title("Receive")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray));
-                    let paragraph = Paragraph::new("Receive view - Coming soon...")
-                        .block(block)
-                        .style(Style::default().fg(Color::Gray));
-                    f.render_widget(paragraph, chunks[2]);
+                    ReceiveComponent::draw_static(
+                        f,
+                        chunks[2],
+                        receive_account.as_ref(),
+                        receive_one_time_address.as_deref(),
+                        receive_script_args.as_deref(),
+                    );
                 }
                 Tab::Tokens => {
                     let block = Block::default()
@@ -371,12 +639,17 @@ impl App {
             }
 
             // Draw status
+            let tip_str = tip_block_number
+                .map(|n| format!("Block: {}", n))
+                .unwrap_or_else(|| "Block: -".to_string());
             let status = Paragraph::new(vec![Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&status_message, Style::default().fg(Color::Green)),
                 Span::raw("  |  "),
+                Span::styled(&tip_str, Style::default().fg(Color::Yellow)),
+                Span::raw("  |  "),
                 Span::styled(
-                    "[q]Quit [?]Help [Tab]Switch",
+                    "[r]Rescan [q]Quit [?]Help",
                     Style::default().fg(Color::DarkGray),
                 ),
             ])])
@@ -433,10 +706,7 @@ impl App {
             .enumerate()
             .map(|(i, t)| {
                 Line::from(vec![
-                    Span::styled(
-                        format!("[{}]", i + 1),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("[{}]", i + 1), Style::default().fg(Color::DarkGray)),
                     Span::raw(t.title()),
                 ])
             })
@@ -491,14 +761,7 @@ impl App {
                 f.render_widget(paragraph, area);
             }
             Tab::History => {
-                let block = Block::default()
-                    .title("History")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("History view - Coming soon...")
-                    .block(block)
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(paragraph, area);
+                self.history_component.draw(f, area);
             }
         }
     }

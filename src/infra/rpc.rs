@@ -1,7 +1,7 @@
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_sdk::{
-    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode},
     CkbRpcClient,
+    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode},
 };
 use color_eyre::eyre::Result;
 
@@ -33,7 +33,7 @@ impl RpcClient {
         after_cursor: Option<JsonBytes>,
     ) -> Result<ckb_sdk::rpc::ckb_indexer::Pagination<ckb_sdk::rpc::ckb_indexer::Cell>> {
         let script = ckb_jsonrpc_types::Script {
-            code_hash: ckb_types::H256::from_slice(code_hash)?.into(),
+            code_hash: ckb_types::H256::from_slice(code_hash)?,
             hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
             args: JsonBytes::default(), // Empty args for prefix search
         };
@@ -56,7 +56,7 @@ impl RpcClient {
 
     /// Send a transaction.
     pub fn send_transaction(&self, tx: ckb_jsonrpc_types::Transaction) -> Result<ckb_types::H256> {
-        let hash = self.client.send_transaction(tx.into(), None)?;
+        let hash = self.client.send_transaction(tx, None)?;
         Ok(hash)
     }
 

@@ -1,3 +1,6 @@
+// Allow some dead code for now - these are planned features
+#![allow(dead_code)]
+
 use color_eyre::Result;
 
 mod action;
