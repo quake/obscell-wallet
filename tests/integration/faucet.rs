@@ -1,0 +1,555 @@
+//! Faucet for integration tests.
+//!
+//! Transfers CKB from the genesis miner address to test accounts.
+
+use std::fs;
+use std::path::PathBuf;
+
+use ckb_hash::blake2b_256;
+use ckb_jsonrpc_types::{
+    CellDep, CellInput, CellOutput, DepType, JsonBytes, OutPoint, Script, Transaction, Uint32,
+    Uint64,
+};
+use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
+use ckb_sdk::CkbRpcClient;
+use ckb_types::packed;
+use ckb_types::prelude::*;
+use ckb_types::H256;
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+
+use super::contract_deployer::SIGHASH_ALL_CODE_HASH;
+
+/// Faucet for transferring CKB to test accounts.
+pub struct Faucet {
+    client: CkbRpcClient,
+    miner_key: SecretKey,
+    miner_lock_args: [u8; 20],
+}
+
+impl Faucet {
+    /// Create a new faucet.
+    pub fn new(rpc_url: &str, miner_key: SecretKey, miner_lock_args: [u8; 20]) -> Self {
+        let client = CkbRpcClient::new(rpc_url);
+        Self {
+            client,
+            miner_key,
+            miner_lock_args,
+        }
+    }
+
+    /// Load miner key from the fixtures directory.
+    pub fn load_miner_key() -> Result<(SecretKey, [u8; 20]), String> {
+        let key_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("devnet")
+            .join("miner.key");
+
+        let content = fs::read_to_string(&key_path)
+            .map_err(|e| format!("Failed to read miner key: {}", e))?;
+
+        // Find the first line that looks like a hex key (skip comments and empty lines)
+        let key_hex = content
+            .lines()
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty() && !l.starts_with('#'))
+            .ok_or_else(|| "No key found in miner.key file".to_string())?;
+
+        let key_bytes =
+            hex::decode(key_hex).map_err(|e| format!("Failed to decode miner key: {}", e))?;
+
+        let secret_key =
+            SecretKey::from_slice(&key_bytes).map_err(|e| format!("Invalid miner key: {}", e))?;
+
+        // Derive lock args from public key
+        let secp = Secp256k1::new();
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        let pubkey_hash = blake2b_256(public_key.serialize());
+        let mut lock_args = [0u8; 20];
+        lock_args.copy_from_slice(&pubkey_hash[0..20]);
+
+        Ok((secret_key, lock_args))
+    }
+
+    /// Transfer CKB to a recipient address.
+    ///
+    /// `recipient_lock_args` is the 20-byte lock args for sighash_all lock.
+    /// `amount` is in shannons (1 CKB = 100_000_000 shannons).
+    pub fn transfer(&self, recipient_lock_args: &[u8; 20], amount: u64) -> Result<H256, String> {
+        // Get miner cells
+        let miner_cells = self.get_miner_cells()?;
+        if miner_cells.is_empty() {
+            return Err("No miner cells available for transfer".to_string());
+        }
+
+        let fee = 100_000u64; // 0.001 CKB fee
+        let min_cell_capacity = 61_00000000u64; // 61 CKB minimum for a cell
+
+        if amount < min_cell_capacity {
+            return Err(format!(
+                "Amount too small: {} shannons (min {} shannons)",
+                amount, min_cell_capacity
+            ));
+        }
+
+        // Select inputs
+        let mut selected_inputs = Vec::new();
+        let mut total_input: u64 = 0;
+
+        for cell in &miner_cells {
+            if total_input >= amount + fee + min_cell_capacity {
+                // Need extra for change
+                break;
+            }
+            total_input += cell.1;
+            selected_inputs.push(cell.clone());
+        }
+
+        if total_input < amount + fee {
+            return Err(format!(
+                "Insufficient balance: need {} CKB, have {} CKB",
+                (amount + fee) / 100_000_000,
+                total_input / 100_000_000
+            ));
+        }
+
+        // Build inputs
+        let inputs: Vec<CellInput> = selected_inputs
+            .iter()
+            .map(|(out_point, _)| CellInput {
+                previous_output: out_point.clone(),
+                since: Uint64::from(0u64),
+            })
+            .collect();
+
+        // Build outputs
+        let miner_lock = self.build_miner_lock();
+        let recipient_lock = Script {
+            code_hash: H256::from_slice(&hex::decode(SIGHASH_ALL_CODE_HASH).unwrap()).unwrap(),
+            hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+            args: JsonBytes::from_vec(recipient_lock_args.to_vec()),
+        };
+
+        let mut outputs = vec![CellOutput {
+            capacity: Uint64::from(amount),
+            lock: recipient_lock,
+            type_: None,
+        }];
+
+        let mut outputs_data = vec![JsonBytes::default()];
+
+        // Add change if enough
+        let change_amount = total_input - amount - fee;
+        if change_amount >= min_cell_capacity {
+            outputs.push(CellOutput {
+                capacity: Uint64::from(change_amount),
+                lock: miner_lock,
+                type_: None,
+            });
+            outputs_data.push(JsonBytes::default());
+        }
+
+        // Build cell deps
+        let dep_group_out_point = self.get_sighash_dep_group()?;
+        let cell_deps = vec![CellDep {
+            out_point: dep_group_out_point,
+            dep_type: DepType::DepGroup,
+        }];
+
+        // Build transaction
+        let tx = Transaction {
+            version: Uint32::from(0u32),
+            cell_deps,
+            header_deps: vec![],
+            inputs,
+            outputs,
+            outputs_data,
+            witnesses: vec![JsonBytes::default(); selected_inputs.len()],
+        };
+
+        // Sign and send
+        let tx_hash = self.calculate_tx_hash(&tx);
+        let signed_tx = self.sign_transaction(tx, &tx_hash)?;
+
+        let sent_hash = self
+            .client
+            .send_transaction(signed_tx, None)
+            .map_err(|e| format!("Failed to send transfer tx: {}", e))?;
+
+        Ok(sent_hash)
+    }
+
+    /// Transfer CKB to a stealth lock address.
+    ///
+    /// `stealth_lock_args` is the 53-byte args for stealth lock.
+    /// `stealth_lock_code_hash` is the code_hash of the deployed stealth-lock contract.
+    pub fn transfer_to_stealth(
+        &self,
+        stealth_lock_args: &[u8],
+        stealth_lock_code_hash: &H256,
+        amount: u64,
+    ) -> Result<H256, String> {
+        // Get miner cells
+        let miner_cells = self.get_miner_cells()?;
+        if miner_cells.is_empty() {
+            return Err("No miner cells available for transfer".to_string());
+        }
+
+        let fee = 100_000u64;
+        let min_cell_capacity = 61_00000000u64;
+
+        if amount < min_cell_capacity {
+            return Err(format!(
+                "Amount too small: {} shannons (min {} shannons)",
+                amount, min_cell_capacity
+            ));
+        }
+
+        // Select inputs
+        let mut selected_inputs = Vec::new();
+        let mut total_input: u64 = 0;
+
+        for cell in &miner_cells {
+            if total_input >= amount + fee + min_cell_capacity {
+                break;
+            }
+            total_input += cell.1;
+            selected_inputs.push(cell.clone());
+        }
+
+        if total_input < amount + fee {
+            return Err(format!(
+                "Insufficient balance: need {} CKB, have {} CKB",
+                (amount + fee) / 100_000_000,
+                total_input / 100_000_000
+            ));
+        }
+
+        // Build inputs
+        let inputs: Vec<CellInput> = selected_inputs
+            .iter()
+            .map(|(out_point, _)| CellInput {
+                previous_output: out_point.clone(),
+                since: Uint64::from(0u64),
+            })
+            .collect();
+
+        // Build stealth lock script
+        let stealth_lock = Script {
+            code_hash: stealth_lock_code_hash.clone(),
+            hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+            args: JsonBytes::from_vec(stealth_lock_args.to_vec()),
+        };
+
+        let miner_lock = self.build_miner_lock();
+
+        let mut outputs = vec![CellOutput {
+            capacity: Uint64::from(amount),
+            lock: stealth_lock,
+            type_: None,
+        }];
+
+        let mut outputs_data = vec![JsonBytes::default()];
+
+        // Add change
+        let change_amount = total_input - amount - fee;
+        if change_amount >= min_cell_capacity {
+            outputs.push(CellOutput {
+                capacity: Uint64::from(change_amount),
+                lock: miner_lock,
+                type_: None,
+            });
+            outputs_data.push(JsonBytes::default());
+        }
+
+        // Build cell deps
+        let dep_group_out_point = self.get_sighash_dep_group()?;
+        let cell_deps = vec![CellDep {
+            out_point: dep_group_out_point,
+            dep_type: DepType::DepGroup,
+        }];
+
+        // Build transaction
+        let tx = Transaction {
+            version: Uint32::from(0u32),
+            cell_deps,
+            header_deps: vec![],
+            inputs,
+            outputs,
+            outputs_data,
+            witnesses: vec![JsonBytes::default(); selected_inputs.len()],
+        };
+
+        // Sign and send
+        let tx_hash = self.calculate_tx_hash(&tx);
+        let signed_tx = self.sign_transaction(tx, &tx_hash)?;
+
+        let sent_hash = self
+            .client
+            .send_transaction(signed_tx, None)
+            .map_err(|e| format!("Failed to send stealth transfer tx: {}", e))?;
+
+        Ok(sent_hash)
+    }
+
+    /// Get the sighash_all dep group out point from genesis.
+    fn get_sighash_dep_group(&self) -> Result<OutPoint, String> {
+        use ckb_jsonrpc_types::BlockNumber;
+
+        // Get the genesis block
+        let genesis = self
+            .client
+            .get_block_by_number(BlockNumber::from(0u64))
+            .map_err(|e| format!("Failed to get genesis block: {}", e))?
+            .ok_or_else(|| "Genesis block not found".to_string())?;
+
+        // The dep group is in the second transaction (index 1), output 0
+        if genesis.transactions.len() < 2 {
+            return Err("Genesis block doesn't have dep group transaction".to_string());
+        }
+
+        let dep_group_tx = &genesis.transactions[1];
+        Ok(OutPoint {
+            tx_hash: dep_group_tx.hash.clone(),
+            index: Uint32::from(0u32), // secp256k1_blake160_sighash_all dep group at index 0
+        })
+    }
+
+    /// Get cells owned by the miner.
+    fn get_miner_cells(&self) -> Result<Vec<(OutPoint, u64)>, String> {
+        let miner_lock = self.build_miner_lock();
+
+        let search_key = SearchKey {
+            script: miner_lock,
+            script_type: ScriptType::Lock,
+            script_search_mode: Some(SearchMode::Exact),
+            filter: None,
+            with_data: Some(false),
+            group_by_transaction: None,
+        };
+
+        let result = self
+            .client
+            .get_cells(search_key, Order::Asc, 100.into(), None)
+            .map_err(|e| format!("Failed to get miner cells: {}", e))?;
+
+        let cells: Vec<(OutPoint, u64)> = result
+            .objects
+            .into_iter()
+            .map(|cell| {
+                let out_point = OutPoint {
+                    tx_hash: cell.out_point.tx_hash,
+                    index: cell.out_point.index,
+                };
+                let capacity: u64 = cell.output.capacity.into();
+                (out_point, capacity)
+            })
+            .collect();
+
+        Ok(cells)
+    }
+
+    /// Build miner's lock script.
+    fn build_miner_lock(&self) -> Script {
+        Script {
+            code_hash: H256::from_slice(&hex::decode(SIGHASH_ALL_CODE_HASH).unwrap()).unwrap(),
+            hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+            args: JsonBytes::from_vec(self.miner_lock_args.to_vec()),
+        }
+    }
+
+    /// Calculate transaction hash.
+    fn calculate_tx_hash(&self, tx: &Transaction) -> H256 {
+        let raw_tx = packed::RawTransaction::new_builder()
+            .version(packed::Uint32::from_slice(&tx.version.value().to_le_bytes()).unwrap())
+            .cell_deps(
+                tx.cell_deps
+                    .iter()
+                    .map(|dep| {
+                        packed::CellDep::new_builder()
+                            .out_point(
+                                packed::OutPoint::new_builder()
+                                    .tx_hash(
+                                        packed::Byte32::from_slice(
+                                            dep.out_point.tx_hash.as_bytes(),
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .index(
+                                        packed::Uint32::from_slice(
+                                            &dep.out_point.index.value().to_le_bytes(),
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .build(),
+                            )
+                            .dep_type(match dep.dep_type {
+                                DepType::Code => packed::Byte::new(0),
+                                DepType::DepGroup => packed::Byte::new(1),
+                            })
+                            .build()
+                    })
+                    .collect::<Vec<_>>()
+                    .pack(),
+            )
+            .inputs(
+                tx.inputs
+                    .iter()
+                    .map(|input| {
+                        packed::CellInput::new_builder()
+                            .previous_output(
+                                packed::OutPoint::new_builder()
+                                    .tx_hash(
+                                        packed::Byte32::from_slice(
+                                            input.previous_output.tx_hash.as_bytes(),
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .index(
+                                        packed::Uint32::from_slice(
+                                            &input.previous_output.index.value().to_le_bytes(),
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .build(),
+                            )
+                            .since(
+                                packed::Uint64::from_slice(&input.since.value().to_le_bytes())
+                                    .unwrap(),
+                            )
+                            .build()
+                    })
+                    .collect::<Vec<_>>()
+                    .pack(),
+            )
+            .outputs(
+                tx.outputs
+                    .iter()
+                    .map(|output| {
+                        let lock = packed::Script::new_builder()
+                            .code_hash(
+                                packed::Byte32::from_slice(output.lock.code_hash.as_bytes())
+                                    .unwrap(),
+                            )
+                            .hash_type(match output.lock.hash_type {
+                                ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
+                                ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
+                                ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
+                                ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
+                                _ => packed::Byte::new(1),
+                            })
+                            .args(output.lock.args.as_bytes().to_vec().pack())
+                            .build();
+
+                        packed::CellOutput::new_builder()
+                            .capacity(
+                                packed::Uint64::from_slice(&output.capacity.value().to_le_bytes())
+                                    .unwrap(),
+                            )
+                            .lock(lock)
+                            .build()
+                    })
+                    .collect::<Vec<_>>()
+                    .pack(),
+            )
+            .outputs_data(
+                tx.outputs_data
+                    .iter()
+                    .map(|d| d.as_bytes().to_vec().pack())
+                    .collect::<Vec<packed::Bytes>>()
+                    .pack(),
+            )
+            .build();
+
+        let hash = blake2b_256(raw_tx.as_slice());
+        H256::from_slice(&hash).unwrap()
+    }
+
+    /// Sign the transaction.
+    fn sign_transaction(&self, tx: Transaction, tx_hash: &H256) -> Result<Transaction, String> {
+        let secp = Secp256k1::new();
+
+        // Build witness args with placeholder
+        let placeholder_witness = packed::WitnessArgs::new_builder()
+            .lock(
+                packed::BytesOpt::new_builder()
+                    .set(Some(vec![0u8; 65].pack()))
+                    .build(),
+            )
+            .build();
+
+        // Calculate message
+        let mut hasher_data = Vec::new();
+        hasher_data.extend_from_slice(tx_hash.as_bytes());
+
+        let witness_bytes = placeholder_witness.as_bytes();
+        hasher_data.extend_from_slice(&(witness_bytes.len() as u64).to_le_bytes());
+        hasher_data.extend_from_slice(&witness_bytes);
+
+        for _ in 1..tx.inputs.len() {
+            let empty_witness = packed::WitnessArgs::new_builder().build();
+            let witness_bytes = empty_witness.as_bytes();
+            hasher_data.extend_from_slice(&(witness_bytes.len() as u64).to_le_bytes());
+            hasher_data.extend_from_slice(&witness_bytes);
+        }
+
+        let message_hash = blake2b_256(&hasher_data);
+        let message = Message::from_digest(message_hash);
+
+        // Sign
+        let sig = secp.sign_ecdsa_recoverable(&message, &self.miner_key);
+        let (recovery_id, signature_bytes) = sig.serialize_compact();
+
+        let mut signature = signature_bytes.to_vec();
+        signature.push(recovery_id.to_i32() as u8);
+
+        let signed_witness = packed::WitnessArgs::new_builder()
+            .lock(
+                packed::BytesOpt::new_builder()
+                    .set(Some(signature.pack()))
+                    .build(),
+            )
+            .build();
+
+        let mut witnesses: Vec<JsonBytes> =
+            vec![JsonBytes::from_vec(signed_witness.as_bytes().to_vec())];
+
+        for _ in 1..tx.inputs.len() {
+            witnesses.push(JsonBytes::default());
+        }
+
+        Ok(Transaction {
+            version: tx.version,
+            cell_deps: tx.cell_deps,
+            header_deps: tx.header_deps,
+            inputs: tx.inputs,
+            outputs: tx.outputs,
+            outputs_data: tx.outputs_data,
+            witnesses,
+        })
+    }
+}
+
+/// Derive lock args from a public key.
+pub fn derive_lock_args(public_key: &PublicKey) -> [u8; 20] {
+    let pubkey_hash = blake2b_256(public_key.serialize());
+    let mut lock_args = [0u8; 20];
+    lock_args.copy_from_slice(&pubkey_hash[0..20]);
+    lock_args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_miner_key() {
+        let result = Faucet::load_miner_key();
+        assert!(result.is_ok());
+
+        let (_, lock_args) = result.unwrap();
+        // Expected lock args from dev.toml
+        let expected = hex::decode("c8328aabcd9b9e8e64fbc566c4385c3bdeb219d7").unwrap();
+        assert_eq!(lock_args.to_vec(), expected);
+    }
+}

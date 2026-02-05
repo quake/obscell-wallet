@@ -3,3 +3,10 @@ Cargo.lock
 .data/
 .config/
 *.log
+
+# Test fixtures - binaries and runtime data
+tests/fixtures/ckb
+tests/fixtures/stealth-lock
+tests/fixtures/devnet/data/
+tests/fixtures/devnet/.checkpoint
+tests/fixtures/devnet/.contracts
