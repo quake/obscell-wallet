@@ -11,8 +11,9 @@ use tracing::{debug, info};
 
 use crate::{
     action::Action,
+    cli::Args,
     components::{
-        Component, accounts::AccountsComponent, history::HistoryComponent,
+        Component, accounts::AccountsComponent, dev::DevComponent, history::HistoryComponent,
         receive::ReceiveComponent, send::SendComponent, tokens::TokensComponent,
     },
     config::Config,
@@ -27,7 +28,7 @@ use crate::{
         ct_tx_builder::CtTxBuilder,
         tx_builder::{StealthTxBuilder, parse_stealth_address},
     },
-    infra::{scanner::Scanner, store::Store},
+    infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::Store},
     tui::{Event, Frame, Tui},
 };
 
@@ -38,17 +39,22 @@ pub enum Tab {
     Receive,
     Tokens,
     History,
+    Dev,
 }
 
 impl Tab {
-    pub fn all() -> Vec<Tab> {
-        vec![
+    pub fn all(dev_mode: bool) -> Vec<Tab> {
+        let mut tabs = vec![
             Tab::Accounts,
             Tab::Send,
             Tab::Receive,
             Tab::Tokens,
             Tab::History,
-        ]
+        ];
+        if dev_mode {
+            tabs.push(Tab::Dev);
+        }
+        tabs
     }
 
     pub fn title(&self) -> &'static str {
@@ -58,6 +64,7 @@ impl Tab {
             Tab::Receive => "Receive",
             Tab::Tokens => "Tokens",
             Tab::History => "History",
+            Tab::Dev => "Dev",
         }
     }
 
@@ -68,16 +75,18 @@ impl Tab {
             Tab::Receive => 2,
             Tab::Tokens => 3,
             Tab::History => 4,
+            Tab::Dev => 5,
         }
     }
 
-    pub fn from_index(index: usize) -> Tab {
+    pub fn from_index(index: usize, dev_mode: bool) -> Tab {
         match index {
             0 => Tab::Accounts,
             1 => Tab::Send,
             2 => Tab::Receive,
             3 => Tab::Tokens,
             4 => Tab::History,
+            5 if dev_mode => Tab::Dev,
             _ => Tab::Accounts,
         }
     }
@@ -103,12 +112,21 @@ pub struct App {
     pub status_message: String,
     pub tip_block_number: Option<u64>,
     pub is_scanning: bool,
+    // Dev mode fields
+    pub dev_mode: bool,
+    pub dev_component: Option<DevComponent>,
+    pub devnet: Option<DevNet>,
+    pub faucet: Option<Faucet>,
+    pub auto_mining_enabled: bool,
+    pub auto_mining_interval: u64,
+    pub indexer_synced: bool,
+    pub checkpoint_block: Option<u64>,
 }
 
 impl App {
-    pub fn new(tick_rate: f64, frame_rate: f64) -> Result<Self> {
+    pub fn new(args: &Args) -> Result<Self> {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
-        let config = Config::default();
+        let config = Config::new(&args.network, args.rpc_url.as_deref());
         let store = Store::new()?;
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
@@ -119,10 +137,29 @@ impl App {
         let tokens_component = TokensComponent::new(action_tx.clone());
 
         let tui = Tui::new()?
-            .tick_rate(tick_rate)
-            .frame_rate(frame_rate)
+            .tick_rate(args.tick_rate)
+            .frame_rate(args.frame_rate)
             .mouse(false)
             .paste(false);
+
+        // Initialize dev mode components if enabled
+        let dev_mode = args.dev_mode;
+        let (dev_component, devnet, faucet) = if dev_mode {
+            let dev_component = DevComponent::new(action_tx.clone());
+            let devnet = DevNet::with_defaults();
+            // Use devnet miner key (from ckb genesis spec)
+            // This is the well-known devnet miner private key
+            let miner_key_bytes =
+                hex::decode("d00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc")
+                    .expect("Invalid miner key hex");
+            let miner_key =
+                secp256k1::SecretKey::from_slice(&miner_key_bytes).expect("Invalid miner key");
+            let miner_lock_args = Faucet::derive_lock_args(&miner_key);
+            let faucet = Faucet::new(&config.network.rpc_url, miner_key, miner_lock_args);
+            (Some(dev_component), Some(devnet), Some(faucet))
+        } else {
+            (None, None, None)
+        };
 
         Ok(Self {
             should_quit: false,
@@ -144,6 +181,15 @@ impl App {
             status_message: "Ready".to_string(),
             tip_block_number: None,
             is_scanning: false,
+            // Dev mode
+            dev_mode,
+            dev_component,
+            devnet,
+            faucet,
+            auto_mining_enabled: false,
+            auto_mining_interval: 3,
+            indexer_synced: false,
+            checkpoint_block: None,
         })
     }
 
@@ -154,7 +200,7 @@ impl App {
         let accounts = self.account_manager.list_accounts()?;
         self.accounts_component.set_accounts(accounts.clone());
 
-        // Set first account as active for receive and send components
+        // Set first account as active for receive, send, and dev components
         if let Some(first_account) = accounts.first() {
             self.receive_component
                 .set_account(Some(first_account.clone()));
@@ -163,6 +209,10 @@ impl App {
                 .set_account(Some(first_account.clone()));
             self.tokens_component
                 .set_account(Some(first_account.clone()));
+            // Set dev component account if in dev mode
+            if let Some(ref mut dev) = self.dev_component {
+                dev.set_account(Some(first_account.clone()));
+            }
 
             // Load transaction history for first account
             if let Ok(history) = self.store.get_tx_history(first_account.id) {
@@ -278,17 +328,22 @@ impl App {
             KeyCode::Char('5') => {
                 self.active_tab = Tab::History;
             }
+            KeyCode::Char('6') if self.dev_mode => {
+                self.active_tab = Tab::Dev;
+            }
             KeyCode::Tab => {
-                let next_index = (self.active_tab.index() + 1) % Tab::all().len();
-                self.active_tab = Tab::from_index(next_index);
+                let tabs = Tab::all(self.dev_mode);
+                let next_index = (self.active_tab.index() + 1) % tabs.len();
+                self.active_tab = Tab::from_index(next_index, self.dev_mode);
             }
             KeyCode::BackTab => {
+                let tabs = Tab::all(self.dev_mode);
                 let prev_index = if self.active_tab.index() == 0 {
-                    Tab::all().len() - 1
+                    tabs.len() - 1
                 } else {
                     self.active_tab.index() - 1
                 };
-                self.active_tab = Tab::from_index(prev_index);
+                self.active_tab = Tab::from_index(prev_index, self.dev_mode);
             }
             // Component-specific key handling
             _ => match self.active_tab {
@@ -306,6 +361,11 @@ impl App {
                 }
                 Tab::History => {
                     self.history_component.handle_key_event(key)?;
+                }
+                Tab::Dev => {
+                    if let Some(ref mut dev_component) = self.dev_component {
+                        dev_component.handle_key_event(key)?;
+                    }
                 }
             },
         }
@@ -332,13 +392,17 @@ impl App {
             }
             Action::SelectAccount(index) => {
                 self.account_manager.set_active_account(index)?;
-                // Update receive, send, history, and tokens components with selected account
+                // Update receive, send, history, tokens, and dev components with selected account
                 let accounts = self.account_manager.list_accounts()?;
                 if let Some(account) = accounts.get(index) {
                     self.receive_component.set_account(Some(account.clone()));
                     self.send_component.set_account(Some(account.clone()));
                     self.history_component.set_account(Some(account.clone()));
                     self.tokens_component.set_account(Some(account.clone()));
+                    // Update dev component if in dev mode
+                    if let Some(ref mut dev) = self.dev_component {
+                        dev.set_account(Some(account.clone()));
+                    }
 
                     // Load transaction history for this account
                     if let Ok(history) = self.store.get_tx_history(account.id) {
@@ -1068,6 +1132,216 @@ impl App {
                     self.status_message = "Genesis failed: no account".to_string();
                 }
             }
+            // Dev mode actions
+            Action::TabDev if self.dev_mode => {
+                self.active_tab = Tab::Dev;
+            }
+            Action::GenerateBlock if self.dev_mode => {
+                if let Some(ref devnet) = self.devnet {
+                    match devnet.generate_block() {
+                        Ok(hash) => {
+                            self.status_message = format!(
+                                "Generated block: {}...{}",
+                                &hex::encode(&hash.0[..4]),
+                                &hex::encode(&hash.0[28..])
+                            );
+                            // Refresh tip block number
+                            if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                self.tip_block_number = Some(tip);
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Block generation failed: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Action::GenerateBlocks(count) if self.dev_mode => {
+                if let Some(ref devnet) = self.devnet {
+                    match devnet.generate_blocks(count) {
+                        Ok(()) => {
+                            self.status_message = format!("Generated {} blocks", count);
+                            if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                self.tip_block_number = Some(tip);
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Block generation failed: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Action::SaveCheckpoint if self.dev_mode => {
+                if let Some(ref devnet) = self.devnet {
+                    match devnet.save_current_as_checkpoint() {
+                        Ok(tip) => {
+                            self.checkpoint_block = Some(tip);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.set_checkpoint(Some(tip));
+                                dev.success_message =
+                                    Some(format!("Checkpoint saved at block #{}", tip));
+                            }
+                            self.status_message = format!("Checkpoint saved at block #{}", tip);
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Failed to save checkpoint: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Action::ResetToCheckpoint if self.dev_mode => {
+                if let Some(ref devnet) = self.devnet {
+                    match devnet.reset_to_checkpoint() {
+                        Ok(()) => {
+                            if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                self.tip_block_number = Some(tip);
+                                self.status_message =
+                                    format!("Reset to checkpoint (now at block #{})", tip);
+                            } else {
+                                self.status_message = "Reset to checkpoint".to_string();
+                            }
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.success_message = Some("Reset to checkpoint".to_string());
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Reset failed: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Action::ToggleAutoMining if self.dev_mode => {
+                self.auto_mining_enabled = !self.auto_mining_enabled;
+                if let Some(ref mut dev) = self.dev_component {
+                    dev.auto_mining = self.auto_mining_enabled;
+                }
+                let status = if self.auto_mining_enabled {
+                    "ON"
+                } else {
+                    "OFF"
+                };
+                self.status_message = format!("Auto-mining: {}", status);
+            }
+            Action::SetMiningInterval(interval) if self.dev_mode => {
+                self.auto_mining_interval = interval.clamp(1, 10);
+                if let Some(ref mut dev) = self.dev_component {
+                    dev.mining_interval = self.auto_mining_interval;
+                }
+                self.status_message = format!("Mining interval: {}s", self.auto_mining_interval);
+            }
+            Action::SendFaucet if self.dev_mode => {
+                // Get the faucet amount from dev component
+                let amount = self
+                    .dev_component
+                    .as_ref()
+                    .and_then(|d| d.parse_faucet_amount());
+                let account = self.dev_component.as_ref().and_then(|d| d.account.clone());
+
+                if let (Some(faucet), Some(amount), Some(account)) =
+                    (&self.faucet, amount, account)
+                {
+                    // Get stealth address (hex encoded) and decode to bytes
+                    let stealth_address_hex = account.stealth_address();
+                    let stealth_lock_args = match hex::decode(&stealth_address_hex) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            self.status_message = format!("Invalid stealth address: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                            return Ok(());
+                        }
+                    };
+
+                    // Get stealth lock code hash from config and convert to H256
+                    let code_hash_str = self
+                        .config
+                        .contracts
+                        .stealth_lock_code_hash
+                        .trim_start_matches("0x");
+                    let code_hash_bytes = match hex::decode(code_hash_str) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.status_message = format!("Invalid code hash: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                            return Ok(());
+                        }
+                    };
+                    let stealth_lock_code_hash =
+                        match ckb_types::H256::from_slice(&code_hash_bytes) {
+                            Ok(h) => h,
+                            Err(e) => {
+                                self.status_message = format!("Invalid code hash: {}", e);
+                                if let Some(ref mut dev) = self.dev_component {
+                                    dev.error_message = Some(format!("{:?}", e));
+                                }
+                                return Ok(());
+                            }
+                        };
+
+                    match faucet.transfer_to_stealth(
+                        &stealth_lock_args,
+                        &stealth_lock_code_hash,
+                        amount,
+                    ) {
+                        Ok(tx_hash) => {
+                            let ckb_amount = amount as f64 / 100_000_000.0;
+                            self.status_message = format!("Faucet sent {:.8} CKB", ckb_amount);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.success_message = Some(format!(
+                                    "Sent {:.8} CKB! Tx: {}...{}",
+                                    ckb_amount,
+                                    &hex::encode(&tx_hash.0[..4]),
+                                    &hex::encode(&tx_hash.0[28..])
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Faucet failed: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(e.to_string());
+                            }
+                        }
+                    }
+                } else {
+                    self.status_message = "Faucet failed: missing account or amount".to_string();
+                    if let Some(ref mut dev) = self.dev_component {
+                        dev.error_message = Some("Missing account or amount".to_string());
+                    }
+                }
+            }
+            Action::RefreshDevStatus if self.dev_mode => {
+                // Refresh tip block and indexer status
+                if let Ok(tip) = self.scanner.get_tip_block_number() {
+                    self.tip_block_number = Some(tip);
+                }
+                if let Some(ref devnet) = self.devnet {
+                    self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
+                }
+                // Refresh miner balance
+                if let Some(ref faucet) = self.faucet {
+                    if let Ok(balance) = faucet.get_miner_balance() {
+                        if let Some(ref mut dev) = self.dev_component {
+                            dev.set_miner_balance(Some(balance));
+                        }
+                    }
+                }
+                self.status_message = "Dev status refreshed".to_string();
+            }
             _ => {}
         }
         Ok(())
@@ -1108,6 +1382,18 @@ impl App {
         let tokens_is_editing = self.tokens_component.is_editing;
         let tokens_error_message = self.tokens_component.error_message.clone();
         let tokens_success_message = self.tokens_component.success_message.clone();
+        // Dev mode data
+        let dev_mode = self.dev_mode;
+        let indexer_synced = self.indexer_synced;
+        let dev_account = self.dev_component.as_ref().and_then(|d| d.account.clone());
+        let dev_checkpoint = self.dev_component.as_ref().and_then(|d| d.checkpoint);
+        let dev_auto_mining = self.dev_component.as_ref().map(|d| d.auto_mining).unwrap_or(false);
+        let dev_mining_interval = self.dev_component.as_ref().map(|d| d.mining_interval).unwrap_or(3);
+        let dev_miner_balance = self.dev_component.as_ref().and_then(|d| d.miner_balance);
+        let dev_faucet_amount = self.dev_component.as_ref().map(|d| d.faucet_amount.clone()).unwrap_or_default();
+        let dev_is_editing = self.dev_component.as_ref().map(|d| d.is_editing).unwrap_or(false);
+        let dev_error_message = self.dev_component.as_ref().and_then(|d| d.error_message.clone());
+        let dev_success_message = self.dev_component.as_ref().and_then(|d| d.success_message.clone());
 
         self.tui.draw(|f| {
             let chunks = Layout::vertical([
@@ -1118,8 +1404,8 @@ impl App {
             ])
             .split(f.area());
 
-            // Draw header
-            let title = Paragraph::new(vec![Line::from(vec![
+            // Draw header with dev mode indicator
+            let mut header_spans = vec![
                 Span::styled(
                     "Obscell Wallet",
                     Style::default()
@@ -1131,16 +1417,32 @@ impl App {
                     format!("[{}]", config_network_name),
                     Style::default().fg(Color::Yellow),
                 ),
-            ])])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            );
+            ];
+            if dev_mode {
+                header_spans.push(Span::raw("  "));
+                header_spans.push(Span::styled(
+                    "[DEV]",
+                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                ));
+                // Show indexer sync status
+                let sync_status = if indexer_synced { "Synced" } else { "Syncing..." };
+                let sync_color = if indexer_synced { Color::Green } else { Color::Yellow };
+                header_spans.push(Span::raw("  "));
+                header_spans.push(Span::styled(
+                    format!("Indexer: {}", sync_status),
+                    Style::default().fg(sync_color),
+                ));
+            }
+            let title = Paragraph::new(vec![Line::from(header_spans)])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                );
             f.render_widget(title, chunks[0]);
 
             // Draw tabs
-            let titles: Vec<Line> = Tab::all()
+            let titles: Vec<Line> = Tab::all(dev_mode)
                 .iter()
                 .enumerate()
                 .map(|(i, t)| {
@@ -1221,6 +1523,21 @@ impl App {
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(paragraph, chunks[2]);
                 }
+                Tab::Dev => {
+                    DevComponent::draw_static(
+                        f,
+                        chunks[2],
+                        dev_account.as_ref(),
+                        dev_checkpoint,
+                        dev_auto_mining,
+                        dev_mining_interval,
+                        dev_miner_balance,
+                        &dev_faucet_amount,
+                        dev_is_editing,
+                        dev_error_message.as_deref(),
+                        dev_success_message.as_deref(),
+                    );
+                }
             }
 
             // Draw status
@@ -1286,7 +1603,7 @@ impl App {
     }
 
     fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let titles: Vec<Line> = Tab::all()
+        let titles: Vec<Line> = Tab::all(self.dev_mode)
             .iter()
             .enumerate()
             .map(|(i, t)| {
@@ -1347,6 +1664,11 @@ impl App {
             }
             Tab::History => {
                 self.history_component.draw(f, area);
+            }
+            Tab::Dev => {
+                if let Some(ref mut dev) = self.dev_component {
+                    dev.draw(f, area);
+                }
             }
         }
     }
