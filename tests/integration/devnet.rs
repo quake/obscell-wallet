@@ -221,6 +221,9 @@ impl DevNet {
                     self.clear_tx_pool()?;
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
+                // Generate a few blocks after truncation to ensure indexer processes the rollback
+                println!("Generating blocks after truncation to ensure indexer sync...");
+                self.generate_blocks(3)?;
                 // Wait for indexer to re-sync after reorg
                 self.wait_for_indexer_sync()?;
             }
