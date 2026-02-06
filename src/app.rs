@@ -375,6 +375,46 @@ impl App {
     async fn handle_action(&mut self, action: Action) -> Result<()> {
         debug!("Handling action: {:?}", action);
         match action {
+            Action::Tick => {
+                // Handle auto-mining in dev mode
+                if self.dev_mode && self.auto_mining_enabled {
+                    // Use a simple counter to track ticks for mining interval
+                    // Tick rate is typically 4 Hz, so interval * 4 ticks = interval seconds
+                    // We'll use a simpler approach: check every tick and use a timestamp
+                    static LAST_MINE_TIME: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let last = LAST_MINE_TIME.load(std::sync::atomic::Ordering::Relaxed);
+                    
+                    if now >= last + self.auto_mining_interval {
+                        LAST_MINE_TIME.store(now, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(ref devnet) = self.devnet {
+                            if let Ok(hash) = devnet.generate_block() {
+                                self.status_message = format!(
+                                    "Auto-mined block: {}...{}",
+                                    &hex::encode(&hash.0[..4]),
+                                    &hex::encode(&hash.0[28..])
+                                );
+                                // Refresh tip block number
+                                if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                    self.tip_block_number = Some(tip);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Periodically refresh indexer sync status in dev mode
+                if self.dev_mode {
+                    if let Some(ref devnet) = self.devnet {
+                        self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
+                    }
+                }
+            }
             Action::Quit => {
                 self.should_quit = true;
             }
