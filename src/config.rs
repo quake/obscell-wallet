@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 /// Get the data directory for the application.
 pub fn get_data_dir() -> PathBuf {
@@ -165,6 +166,9 @@ impl Config {
         }
     }
 
+    /// Devnet configuration with deterministic contract addresses.
+    /// These addresses are stable when using genesis message "obscell-wallet-test".
+    /// Run integration tests once to deploy contracts before using the wallet.
     pub fn devnet() -> Self {
         Self {
             network: NetworkConfig {
@@ -174,32 +178,32 @@ impl Config {
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                    "0xe5e49e1d9e89a41e74830c2286489876723b976b530214ac00318a933f7b3335".to_string(),
                 ct_token_code_hash:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                    "0x328278274e32b6fd33deedabfb1dfbd6c8dde7d2b6c5fb5fb3a864fc43bb9fea".to_string(),
                 ct_info_code_hash:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                    "0xadb7badbb57e9712ed1d95bec81287a2329afb7c3ff1d55ac75cbac178da06b7".to_string(),
                 ckb_auth_code_hash:
-                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                    "0x24cbc0576afd0bb1e73871363d4724d5a09f428c16090a0f2cb71de6a4221372".to_string(),
             },
             cell_deps: CellDepsConfig {
                 ckb_auth: CellDepConfig {
-                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    tx_hash: "0x87c82ca69e0e8273320120e17667b6264818cc7cc6e9cad58eb08452d933efef"
                         .to_string(),
                     index: 0,
                 },
                 stealth_lock: CellDepConfig {
-                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    tx_hash: "0x71c34864af8700efcc7346ece7aeb83d13fea99eae7a341cab30d1672c69bd0c"
                         .to_string(),
-                    index: 1,
+                    index: 0,
                 },
                 ct_token: CellDepConfig {
-                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    tx_hash: "0x4e2fdebd1e5348b932e2cc3ffbdb1c89a44df9a3f5946e17a874ed0c9580fb89"
                         .to_string(),
                     index: 0,
                 },
                 ct_info: CellDepConfig {
-                    tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    tx_hash: "0xa44bca576ae0aae6e797da31709cb442f50cda74b8863d479563e88fefdf4fd4"
                         .to_string(),
                     index: 0,
                 },
@@ -207,11 +211,84 @@ impl Config {
         }
     }
 
+    /// Load config from network name.
+    ///
+    /// Tries to load from config file first, falls back to hardcoded defaults.
+    /// Config file search order:
+    /// 1. `./config/{network}.toml` (project directory)
+    /// 2. `$OBSCELL_WALLET_CONFIG/{network}.toml` (env var)
+    /// 3. System config directory `/{network}.toml`
+    /// 4. Hardcoded defaults
     pub fn from_network(network: &str) -> Self {
+        // Try to load from config file
+        if let Some(config) = Self::load_from_file(network) {
+            info!("Loaded config from file for network: {}", network);
+            return config;
+        }
+
+        // Fall back to hardcoded defaults
+        debug!(
+            "No config file found for network '{}', using hardcoded defaults",
+            network
+        );
         match network {
             "mainnet" => Self::mainnet(),
             "devnet" => Self::devnet(),
             _ => Self::testnet(),
         }
+    }
+
+    /// Try to load config from file.
+    fn load_from_file(network: &str) -> Option<Self> {
+        let filename = format!("{}.toml", network);
+
+        // Search paths in order of priority
+        let search_paths = vec![
+            // 1. Project directory ./config/
+            PathBuf::from("config").join(&filename),
+            // 2. Test fixtures directory (for devnet)
+            PathBuf::from("tests/fixtures/devnet").join(&filename),
+            // 3. System config directory
+            get_config_dir().join(&filename),
+        ];
+
+        for path in search_paths {
+            if path.exists() {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => match toml::from_str::<Config>(&content) {
+                        Ok(mut config) => {
+                            // Ensure network name matches
+                            config.network.name = network.to_string();
+                            info!("Loaded config from: {}", path.display());
+                            return Some(config);
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse config file {}: {}", path.display(), e);
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to read config file {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Save config to file.
+    pub fn save_to_file(&self, path: &PathBuf) -> Result<(), String> {
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+
+        std::fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))?;
+
+        Ok(())
     }
 }

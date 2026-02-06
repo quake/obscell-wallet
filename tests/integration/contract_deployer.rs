@@ -184,6 +184,95 @@ impl ContractDeployer {
         })
     }
 
+    /// Get the path to the devnet config file.
+    fn devnet_config_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("devnet")
+            .join("devnet.toml")
+    }
+
+    /// Generate devnet.toml config file from deployed contracts.
+    ///
+    /// This creates a TOML config file that can be loaded by the wallet application
+    /// to use the actual deployed contract addresses instead of hardcoded defaults.
+    pub fn generate_devnet_config(info: &DeployedContracts) -> Result<(), String> {
+        use obscell_wallet::config::{
+            CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
+        };
+
+        let config = Config {
+            network: NetworkConfig {
+                name: "devnet".to_string(),
+                rpc_url: "http://127.0.0.1:8114".to_string(),
+                indexer_url: "http://127.0.0.1:8114/indexer".to_string(),
+            },
+            contracts: ContractConfig {
+                // For stealth_lock, ct_info, ct_token: use type_id_hash (referenced by Type)
+                // For ckb_auth: use data_hash (referenced by Data)
+                stealth_lock_code_hash: format!(
+                    "0x{}",
+                    hex::encode(
+                        info.stealth_lock
+                            .type_id_hash
+                            .as_ref()
+                            .expect("stealth_lock should have type_id_hash")
+                            .as_bytes()
+                    )
+                ),
+                ct_token_code_hash: format!(
+                    "0x{}",
+                    hex::encode(
+                        info.ct_token_type
+                            .type_id_hash
+                            .as_ref()
+                            .expect("ct_token_type should have type_id_hash")
+                            .as_bytes()
+                    )
+                ),
+                ct_info_code_hash: format!(
+                    "0x{}",
+                    hex::encode(
+                        info.ct_info_type
+                            .type_id_hash
+                            .as_ref()
+                            .expect("ct_info_type should have type_id_hash")
+                            .as_bytes()
+                    )
+                ),
+                ckb_auth_code_hash: format!(
+                    "0x{}",
+                    hex::encode(info.ckb_auth.data_hash.as_bytes())
+                ),
+            },
+            cell_deps: CellDepsConfig {
+                ckb_auth: CellDepConfig {
+                    tx_hash: format!("0x{}", hex::encode(info.ckb_auth.tx_hash.as_bytes())),
+                    index: info.ckb_auth.output_index,
+                },
+                stealth_lock: CellDepConfig {
+                    tx_hash: format!("0x{}", hex::encode(info.stealth_lock.tx_hash.as_bytes())),
+                    index: info.stealth_lock.output_index,
+                },
+                ct_token: CellDepConfig {
+                    tx_hash: format!("0x{}", hex::encode(info.ct_token_type.tx_hash.as_bytes())),
+                    index: info.ct_token_type.output_index,
+                },
+                ct_info: CellDepConfig {
+                    tx_hash: format!("0x{}", hex::encode(info.ct_info_type.tx_hash.as_bytes())),
+                    index: info.ct_info_type.output_index,
+                },
+            },
+        };
+
+        let path = Self::devnet_config_file();
+        config.save_to_file(&path)?;
+
+        println!("Generated devnet config: {}", path.display());
+        Ok(())
+    }
+
     /// Save deployed contracts info to file.
     fn save_deployed_info(info: &DeployedContracts) -> Result<(), String> {
         let path = Self::contracts_info_file();
@@ -334,6 +423,9 @@ impl ContractDeployer {
 
         // Save deployment info
         Self::save_deployed_info(&info)?;
+
+        // Generate devnet.toml config file for the wallet application
+        Self::generate_devnet_config(&info)?;
 
         Ok(info)
     }
@@ -877,6 +969,10 @@ impl ContractDeployer {
     }
 
     /// Get cells owned by the miner.
+    ///
+    /// Filters out cells that should not be spent:
+    /// - Cells with type scripts (contract cells using type_id)
+    /// - Cells with non-empty data (data cells like ckb-auth)
     fn get_miner_cells(&self) -> Result<Vec<(OutPoint, u64)>, String> {
         let miner_lock = self.build_miner_lock();
 
@@ -885,7 +981,7 @@ impl ContractDeployer {
             script_type: ScriptType::Lock,
             script_search_mode: Some(SearchMode::Exact),
             filter: None,
-            with_data: Some(false),
+            with_data: Some(true), // Request data to check if cell has content
             group_by_transaction: None,
         };
 
@@ -894,9 +990,21 @@ impl ContractDeployer {
             .get_cells(search_key, Order::Asc, 100.into(), None)
             .map_err(|e| format!("Failed to get miner cells: {}", e))?;
 
+        // Filter out:
+        // 1. Cells with type scripts (contract cells using type_id for upgradability)
+        // 2. Cells with non-empty data (data cells like ckb-auth that store contract code)
+        // This ensures we only spend plain CKB cells from mining rewards.
         let cells: Vec<(OutPoint, u64)> = result
             .objects
             .into_iter()
+            .filter(|cell| {
+                cell.output.type_.is_none()
+                    && cell
+                        .output_data
+                        .as_ref()
+                        .map(|d| d.is_empty())
+                        .unwrap_or(true)
+            })
             .map(|cell| {
                 let out_point = OutPoint {
                     tx_hash: cell.out_point.tx_hash,

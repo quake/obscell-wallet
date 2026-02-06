@@ -10,11 +10,11 @@ use ckb_jsonrpc_types::{
     CellDep, CellInput, CellOutput, DepType, JsonBytes, OutPoint, Script, Transaction, Uint32,
     Uint64,
 };
-use ckb_sdk::CkbRpcClient;
 use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
-use ckb_types::H256;
+use ckb_sdk::CkbRpcClient;
 use ckb_types::packed;
 use ckb_types::prelude::*;
+use ckb_types::H256;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use super::contract_deployer::SIGHASH_ALL_CODE_HASH;
@@ -316,6 +316,10 @@ impl Faucet {
     }
 
     /// Get cells owned by the miner.
+    ///
+    /// Filters out cells that should not be spent:
+    /// - Cells with type scripts (contract cells using type_id)
+    /// - Cells with non-empty data (data cells like ckb-auth)
     fn get_miner_cells(&self) -> Result<Vec<(OutPoint, u64)>, String> {
         let miner_lock = self.build_miner_lock();
 
@@ -324,7 +328,7 @@ impl Faucet {
             script_type: ScriptType::Lock,
             script_search_mode: Some(SearchMode::Exact),
             filter: None,
-            with_data: Some(false),
+            with_data: Some(true), // Request data to check if cell has content
             group_by_transaction: None,
         };
 
@@ -333,9 +337,21 @@ impl Faucet {
             .get_cells(search_key, Order::Asc, 100.into(), None)
             .map_err(|e| format!("Failed to get miner cells: {}", e))?;
 
+        // Filter out:
+        // 1. Cells with type scripts (contract cells using type_id for upgradability)
+        // 2. Cells with non-empty data (data cells like ckb-auth that store contract code)
+        // This ensures we only spend plain CKB cells from mining rewards.
         let cells: Vec<(OutPoint, u64)> = result
             .objects
             .into_iter()
+            .filter(|cell| {
+                cell.output.type_.is_none()
+                    && cell
+                        .output_data
+                        .as_ref()
+                        .map(|d| d.is_empty())
+                        .unwrap_or(true)
+            })
             .map(|cell| {
                 let out_point = OutPoint {
                     tx_hash: cell.out_point.tx_hash,

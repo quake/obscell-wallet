@@ -142,6 +142,12 @@ impl Store {
         Ok(())
     }
 
+    /// Clear all stealth cells for an account.
+    pub fn clear_stealth_cells(&self, account_id: u64) -> Result<()> {
+        self.save_stealth_cells(account_id, &[])?;
+        Ok(())
+    }
+
     /// Add new stealth cells to an account (for incremental scan updates).
     pub fn add_stealth_cells(&self, account_id: u64, new_cells: &[StealthCell]) -> Result<()> {
         let mut cells = self.get_stealth_cells(account_id)?;
@@ -278,6 +284,12 @@ impl Store {
         Ok(())
     }
 
+    /// Clear all CT cells for an account.
+    pub fn clear_ct_cells(&self, account_id: u64) -> Result<()> {
+        self.save_ct_cells(account_id, &[])?;
+        Ok(())
+    }
+
     /// Get CT cells filtered by token ID.
     pub fn get_ct_cells_by_token(
         &self,
@@ -349,6 +361,34 @@ impl Store {
         let mut cells = self.get_ct_info_cells(account_id)?;
         cells.retain(|cell| !spent_out_points.contains(&cell.out_point));
         self.save_ct_info_cells(account_id, &cells)?;
+        Ok(())
+    }
+
+    /// Clear all ct-info cells for an account.
+    pub fn clear_ct_info_cells(&self, account_id: u64) -> Result<()> {
+        self.save_ct_info_cells(account_id, &[])?;
+        Ok(())
+    }
+
+    /// Delete a metadata key.
+    pub fn delete_metadata(&self, key: &str) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        // Try to open the metadata database; if it doesn't exist, nothing to delete
+        let db: Option<Database<Str, Bytes>> = self.env.open_database(&wtxn, Some("metadata"))?;
+
+        if let Some(db) = db {
+            db.delete(&mut wtxn, key)?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Clear all cells (stealth, CT, CT-info) for an account and reset scan cursor.
+    /// Used for full rescan to purge potentially corrupted data.
+    pub fn clear_all_cells_for_account(&self, account_id: u64) -> Result<()> {
+        self.clear_stealth_cells(account_id)?;
+        self.clear_ct_cells(account_id)?;
+        self.clear_ct_info_cells(account_id)?;
         Ok(())
     }
 }

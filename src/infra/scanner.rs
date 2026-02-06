@@ -182,6 +182,17 @@ impl Scanner {
                 out_point_bytes.extend_from_slice(cell.out_point.tx_hash.as_bytes());
                 out_point_bytes.extend_from_slice(&cell.out_point.index.value().to_le_bytes());
 
+                // Validate that tx_hash is not all zeros (sanity check)
+                let is_zero_hash = cell.out_point.tx_hash.as_bytes().iter().all(|&b| b == 0);
+                if is_zero_hash {
+                    info!(
+                        "WARNING: Scanned cell has zero tx_hash! This should not happen. \
+                        Lock code_hash: 0x{}, capacity: {} shannons",
+                        hex::encode(cell.output.lock.code_hash.as_bytes()),
+                        capacity
+                    );
+                }
+
                 stealth_cells.push(StealthCell::new(
                     out_point_bytes,
                     capacity,
@@ -282,6 +293,18 @@ impl Scanner {
 
         let code_hash = self.stealth_lock_code_hash()?;
 
+        // Log the code_hash being used for debugging
+        let is_zero_code_hash = code_hash.iter().all(|&b| b == 0);
+        if is_zero_code_hash {
+            info!(
+                "WARNING: Scanning with all-zero stealth_lock_code_hash! \
+                This is likely a config issue. Please update your devnet config \
+                with the actual deployed contract code_hash."
+            );
+        } else {
+            debug!("Scanning with stealth_lock_code_hash: 0x{}", hex::encode(&code_hash));
+        }
+
         // Load existing cells for each account to detect new ones
         let mut existing_out_points: std::collections::HashMap<
             u64,
@@ -330,6 +353,18 @@ impl Scanner {
                         out_point_bytes.extend_from_slice(cell.out_point.tx_hash.as_bytes());
                         out_point_bytes
                             .extend_from_slice(&cell.out_point.index.value().to_le_bytes());
+
+                        // Validate that tx_hash is not all zeros (sanity check)
+                        let is_zero_hash = cell.out_point.tx_hash.as_bytes().iter().all(|&b| b == 0);
+                        if is_zero_hash {
+                            info!(
+                                "WARNING: scan_all_accounts found cell with zero tx_hash! \
+                                Account {}, capacity: {} shannons, lock code_hash: 0x{}",
+                                account_id,
+                                capacity,
+                                hex::encode(cell.output.lock.code_hash.as_bytes())
+                            );
+                        }
 
                         let stealth_cell =
                             StealthCell::new(out_point_bytes.clone(), capacity, lock_args.to_vec());

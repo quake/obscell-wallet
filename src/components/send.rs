@@ -389,57 +389,59 @@ impl Component for SendComponent {
         // Clear previous messages on any input
         self.error_message = None;
 
-        if self.is_editing {
-            match key.code {
-                KeyCode::Esc => {
-                    self.is_editing = false;
-                }
-                KeyCode::Tab | KeyCode::Down => {
+        // When focused on input fields (Recipient or Amount), handle input directly
+        let on_input_field =
+            self.focused_field == SendField::Recipient || self.focused_field == SendField::Amount;
+
+        match key.code {
+            // Navigation keys work everywhere
+            KeyCode::Tab | KeyCode::Down => {
+                self.is_editing = false;
+                self.next_field();
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.is_editing = false;
+                self.prev_field();
+            }
+            KeyCode::Esc => {
+                self.is_editing = false;
+            }
+            // Enter on Confirm sends transaction, otherwise moves to next field
+            KeyCode::Enter => {
+                if self.focused_field == SendField::Confirm {
+                    if let Some(err) = self.validate() {
+                        self.error_message = Some(err);
+                    } else {
+                        self.action_tx.send(Action::SendTransaction)?;
+                    }
+                } else {
                     self.is_editing = false;
                     self.next_field();
                 }
-                KeyCode::BackTab | KeyCode::Up => {
-                    self.is_editing = false;
-                    self.prev_field();
-                }
-                KeyCode::Char(c) => {
+            }
+            // Character input - direct input when on input fields
+            KeyCode::Char(c) => {
+                if on_input_field {
+                    self.is_editing = true;
                     self.handle_char(c);
+                } else if c == 'j' {
+                    self.next_field();
+                } else if c == 'k' {
+                    self.prev_field();
+                } else if c == 'c' {
+                    self.clear();
+                } else if c == 'e' {
+                    // 'e' on Confirm does nothing, otherwise no-op
                 }
-                KeyCode::Backspace => {
+            }
+            // Backspace works on input fields
+            KeyCode::Backspace => {
+                if on_input_field {
+                    self.is_editing = true;
                     self.handle_backspace();
                 }
-                KeyCode::Enter => {
-                    self.is_editing = false;
-                    self.next_field();
-                }
-                _ => {}
             }
-        } else {
-            match key.code {
-                KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
-                    self.next_field();
-                }
-                KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
-                    self.prev_field();
-                }
-                KeyCode::Enter | KeyCode::Char('e') => {
-                    if self.focused_field == SendField::Confirm {
-                        // Validate and send
-                        if let Some(err) = self.validate() {
-                            self.error_message = Some(err);
-                        } else {
-                            // Send the transaction
-                            self.action_tx.send(Action::SendTransaction)?;
-                        }
-                    } else {
-                        self.is_editing = true;
-                    }
-                }
-                KeyCode::Char('c') => {
-                    self.clear();
-                }
-                _ => {}
-            }
+            _ => {}
         }
         Ok(())
     }

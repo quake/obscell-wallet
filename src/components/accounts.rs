@@ -110,7 +110,7 @@ impl AccountsComponent {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Accounts [n]New [i]Import [r]Rescan")
+                    .title("Accounts [n]New [i]Import [r]Rescan [R]Full")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
@@ -211,6 +211,9 @@ impl Component for AccountsComponent {
             KeyCode::Char('r') => {
                 self.action_tx.send(Action::Rescan)?;
             }
+            KeyCode::Char('R') => {
+                self.action_tx.send(Action::FullRescan)?;
+            }
             _ => {}
         }
         Ok(())
@@ -247,7 +250,7 @@ impl Component for AccountsComponent {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Accounts [n]New [i]Import [r]Rescan")
+                    .title("Accounts [n]New [i]Import [r]Rescan [R]Full")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )

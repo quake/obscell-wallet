@@ -430,7 +430,7 @@ impl TokensComponent {
         genesis_supply_cap: &str,
         genesis_unlimited: bool,
         genesis_field: GenesisField,
-        is_editing: bool,
+        _is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
     ) {
@@ -447,7 +447,7 @@ impl TokensComponent {
                     transfer_recipient,
                     transfer_amount,
                     transfer_field,
-                    is_editing,
+                    _is_editing,
                     error_message,
                     success_message,
                 );
@@ -460,7 +460,7 @@ impl TokensComponent {
                     mint_recipient,
                     mint_amount,
                     mint_field,
-                    is_editing,
+                    _is_editing,
                     error_message,
                     success_message,
                 );
@@ -473,7 +473,7 @@ impl TokensComponent {
                     genesis_supply_cap,
                     genesis_unlimited,
                     genesis_field,
-                    is_editing,
+                    _is_editing,
                     error_message,
                     success_message,
                 );
@@ -613,7 +613,7 @@ impl TokensComponent {
         recipient: &str,
         amount: &str,
         focused_field: TransferField,
-        is_editing: bool,
+        _is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
     ) {
@@ -662,13 +662,9 @@ impl TokensComponent {
         );
         f.render_widget(info_widget, chunks[0]);
 
-        // Recipient input
+        // Recipient input - always show cursor when focused (direct input mode)
         let recipient_style = if focused_field == TransferField::Recipient {
-            if is_editing {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Cyan)
-            }
+            Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
             Style::default().fg(Color::White)
         };
@@ -682,7 +678,7 @@ impl TokensComponent {
         };
 
         let mut recipient_display = recipient_text.to_string();
-        if is_editing && focused_field == TransferField::Recipient {
+        if focused_field == TransferField::Recipient && !recipient.is_empty() {
             recipient_display.push('|');
         }
 
@@ -706,13 +702,9 @@ impl TokensComponent {
         );
         f.render_widget(recipient_widget, chunks[1]);
 
-        // Amount input
+        // Amount input - always show cursor when focused (direct input mode)
         let amount_style = if focused_field == TransferField::Amount {
-            if is_editing {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Cyan)
-            }
+            Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
             Style::default().fg(Color::White)
         };
@@ -726,7 +718,7 @@ impl TokensComponent {
         };
 
         let mut amount_display = amount_text.to_string();
-        if is_editing && focused_field == TransferField::Amount {
+        if focused_field == TransferField::Amount && !amount.is_empty() {
             amount_display.push('|');
         }
 
@@ -797,11 +789,7 @@ impl TokensComponent {
 
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
-            if is_editing {
-                "[Esc] Stop editing  [Tab] Next field  [Shift+Tab] Prev field"
-            } else {
-                "[Enter/e] Edit  [Tab] Next  [c] Clear  [Esc] Back to list"
-            },
+            "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back to list",
             Style::default().fg(Color::DarkGray),
         )]));
 
@@ -822,7 +810,7 @@ impl TokensComponent {
         recipient: &str,
         amount: &str,
         focused_field: TransferField,
-        is_editing: bool,
+        _is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
     ) {
@@ -864,13 +852,9 @@ impl TokensComponent {
         );
         f.render_widget(info_widget, chunks[0]);
 
-        // Recipient input
+        // Recipient input - always show cursor when focused (direct input mode)
         let recipient_style = if focused_field == TransferField::Recipient {
-            if is_editing {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Cyan)
-            }
+            Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
             Style::default().fg(Color::White)
         };
@@ -884,7 +868,7 @@ impl TokensComponent {
         };
 
         let mut recipient_display = recipient_text.to_string();
-        if is_editing && focused_field == TransferField::Recipient {
+        if focused_field == TransferField::Recipient && !recipient.is_empty() {
             recipient_display.push('|');
         }
 
@@ -908,13 +892,9 @@ impl TokensComponent {
         );
         f.render_widget(recipient_widget, chunks[1]);
 
-        // Amount input
+        // Amount input - always show cursor when focused (direct input mode)
         let amount_style = if focused_field == TransferField::Amount {
-            if is_editing {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Cyan)
-            }
+            Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
             Style::default().fg(Color::White)
         };
@@ -928,7 +908,7 @@ impl TokensComponent {
         };
 
         let mut amount_display = amount_text.to_string();
-        if is_editing && focused_field == TransferField::Amount {
+        if focused_field == TransferField::Amount && !amount.is_empty() {
             amount_display.push('|');
         }
 
@@ -999,11 +979,7 @@ impl TokensComponent {
 
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
-            if is_editing {
-                "[Esc] Stop editing  [Tab] Next field  [Shift+Tab] Prev field"
-            } else {
-                "[Enter/e] Edit  [Tab] Next  [c] Clear  [Esc] Back to list"
-            },
+            "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back to list",
             Style::default().fg(Color::DarkGray),
         )]));
 
@@ -1024,7 +1000,7 @@ impl TokensComponent {
         supply_cap: &str,
         unlimited: bool,
         focused_field: GenesisField,
-        is_editing: bool,
+        _is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
     ) {
@@ -1069,12 +1045,12 @@ impl TokensComponent {
         );
         f.render_widget(info_widget, chunks[0]);
 
-        // Supply cap input
+        // Supply cap input - always show cursor when focused (direct input mode)
         let supply_style = if focused_field == GenesisField::SupplyCap {
-            if is_editing {
-                Style::default().fg(Color::Yellow)
+            if unlimited {
+                Style::default().fg(Color::DarkGray) // Disabled when unlimited is checked
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(Color::Yellow) // Always "editing" style when focused and not unlimited
             }
         } else if unlimited {
             Style::default().fg(Color::DarkGray)
@@ -1093,7 +1069,7 @@ impl TokensComponent {
         };
 
         let mut supply_display = supply_text;
-        if is_editing && focused_field == GenesisField::SupplyCap && !unlimited {
+        if focused_field == GenesisField::SupplyCap && !unlimited && !supply_cap.is_empty() {
             supply_display.push('|');
         }
 
@@ -1197,12 +1173,10 @@ impl TokensComponent {
 
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
-            if is_editing {
-                "[Esc] Stop editing  [Tab] Next field"
-            } else if focused_field == GenesisField::Unlimited {
+            if focused_field == GenesisField::Unlimited {
                 "[Space/Enter] Toggle  [Tab] Next  [Esc] Back"
             } else {
-                "[Enter/e] Edit  [Tab] Next  [c] Clear  [Esc] Back"
+                "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back"
             },
             Style::default().fg(Color::DarkGray),
         )]));
@@ -1214,6 +1188,24 @@ impl TokensComponent {
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
         f.render_widget(status_widget, chunks[4]);
+    }
+
+    /// Check if we're on an input field that needs direct character input.
+    pub fn needs_direct_input(&self) -> bool {
+        match self.mode {
+            TokensMode::List => false,
+            TokensMode::Transfer => matches!(
+                self.transfer_field,
+                TransferField::Recipient | TransferField::Amount
+            ),
+            TokensMode::Mint => matches!(
+                self.mint_field,
+                TransferField::Recipient | TransferField::Amount
+            ),
+            TokensMode::Genesis => {
+                self.genesis_field == GenesisField::SupplyCap && !self.genesis_unlimited
+            }
+        }
     }
 }
 
@@ -1264,17 +1256,20 @@ impl Component for TokensComponent {
                 }
             }
             TokensMode::Transfer | TokensMode::Mint | TokensMode::Genesis => {
-                if self.is_editing {
+                // Check if we're on an input field (Recipient or Amount)
+                let on_input_field = self.needs_direct_input();
+
+                if on_input_field {
+                    // Direct input mode - process characters immediately
                     match key.code {
                         KeyCode::Esc => {
-                            self.is_editing = false;
+                            // Return to list mode
+                            self.mode = TokensMode::List;
                         }
                         KeyCode::Tab | KeyCode::Down => {
-                            self.is_editing = false;
                             self.next_field();
                         }
                         KeyCode::BackTab | KeyCode::Up => {
-                            self.is_editing = false;
                             self.prev_field();
                         }
                         KeyCode::Char(c) => {
@@ -1284,12 +1279,12 @@ impl Component for TokensComponent {
                             self.handle_backspace();
                         }
                         KeyCode::Enter => {
-                            self.is_editing = false;
                             self.next_field();
                         }
                         _ => {}
                     }
                 } else {
+                    // Not on input field - handle navigation and actions
                     match key.code {
                         KeyCode::Esc => {
                             // Return to list mode
@@ -1307,7 +1302,7 @@ impl Component for TokensComponent {
                                 self.genesis_unlimited = !self.genesis_unlimited;
                             }
                         }
-                        KeyCode::Enter | KeyCode::Char('e') => {
+                        KeyCode::Enter => {
                             let is_confirm = match self.mode {
                                 TokensMode::Transfer => {
                                     self.transfer_field == TransferField::Confirm
@@ -1350,13 +1345,6 @@ impl Component for TokensComponent {
                                         }
                                         TokensMode::List => {}
                                     }
-                                }
-                            } else {
-                                // Don't enter edit mode for the Unlimited field
-                                if !(self.mode == TokensMode::Genesis
-                                    && self.genesis_field == GenesisField::Unlimited)
-                                {
-                                    self.is_editing = true;
                                 }
                             }
                         }

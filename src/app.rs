@@ -305,12 +305,56 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        // Global key bindings
+        // Check if current component needs direct input (on input fields)
+        // If so, pass key events directly to the component (except Ctrl+C and Esc)
+        let needs_input = match self.active_tab {
+            Tab::Send => {
+                // Pass input directly when focused on Recipient or Amount fields
+                self.send_component.focused_field == crate::components::send::SendField::Recipient
+                    || self.send_component.focused_field
+                        == crate::components::send::SendField::Amount
+            }
+            Tab::Tokens => {
+                // Pass input directly when on Recipient/Amount fields in Transfer/Mint/Genesis modes
+                self.tokens_component.needs_direct_input()
+            }
+            Tab::Dev => self
+                .dev_component
+                .as_ref()
+                .map(|d| d.is_editing)
+                .unwrap_or(false),
+            _ => false,
+        };
+
+        // Always allow Ctrl+C to quit
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.action_tx.send(Action::Quit)?;
+            return Ok(());
+        }
+
+        // If component needs input, pass key events to component
+        // But allow Esc to potentially exit input mode, and Tab/BackTab for navigation
+        if needs_input {
+            match self.active_tab {
+                Tab::Send => {
+                    self.send_component.handle_key_event(key)?;
+                }
+                Tab::Tokens => {
+                    self.tokens_component.handle_key_event(key)?;
+                }
+                Tab::Dev => {
+                    if let Some(ref mut dev_component) = self.dev_component {
+                        dev_component.handle_key_event(key)?;
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Global key bindings (only when not in input mode)
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => {
-                self.action_tx.send(Action::Quit)?;
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.action_tx.send(Action::Quit)?;
             }
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -573,6 +617,82 @@ impl App {
                         Err(e) => {
                             info!("CT-info scan failed: {}", e);
                         }
+                    }
+
+                    self.is_scanning = false;
+                }
+            }
+            Action::FullRescan => {
+                // Full rescan: clear all cells and scan from beginning
+                self.status_message = "Full rescan: clearing data...".to_string();
+                self.is_scanning = true;
+
+                let accounts = self.account_manager.list_accounts()?;
+                if accounts.is_empty() {
+                    self.status_message = "No accounts to scan".to_string();
+                    self.is_scanning = false;
+                } else {
+                    // Clear all stored cells for each account
+                    for account in &accounts {
+                        if let Err(e) = self.store.clear_all_cells_for_account(account.id) {
+                            info!("Failed to clear cells for account {}: {}", account.id, e);
+                        }
+                    }
+
+                    // Clear the scan cursor to start from block 0
+                    if let Err(e) = self.scanner.clear_cursor() {
+                        info!("Failed to clear scan cursor: {}", e);
+                    }
+
+                    self.status_message = "Full rescan: scanning from block 0...".to_string();
+
+                    // Scan all accounts
+                    match self.scanner.scan_all_accounts(&accounts) {
+                        Ok(results) => {
+                            let mut total_cells = 0usize;
+                            let mut total_capacity = 0u64;
+
+                            for result in &results {
+                                total_cells += result.cells.len();
+                                total_capacity += result.total_capacity;
+
+                                // Update account balance
+                                if let Err(e) = self
+                                    .account_manager
+                                    .update_balance(result.account_id, result.total_capacity)
+                                {
+                                    info!(
+                                        "Failed to update balance for account {}: {}",
+                                        result.account_id, e
+                                    );
+                                }
+                            }
+
+                            // Refresh accounts display
+                            self.accounts_component
+                                .set_accounts(self.account_manager.list_accounts()?);
+
+                            // Refresh history for current account
+                            if let Some(account) = &self.history_component.account
+                                && let Ok(history) = self.store.get_tx_history(account.id)
+                            {
+                                self.history_component.set_transactions(history);
+                            }
+
+                            let ckb_amount = total_capacity as f64 / 100_000_000.0;
+                            self.status_message = format!(
+                                "Full rescan complete: {} cells, {:.8} CKB",
+                                total_cells, ckb_amount
+                            );
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Full rescan failed: {}", e);
+                        }
+                    }
+
+                    // Also scan for ct-info cells
+                    if let Err(e) = self.scanner.scan_ct_info_cells(&accounts) {
+                        info!("CT-info scan failed during full rescan: {}", e);
                     }
 
                     self.is_scanning = false;
@@ -1308,18 +1428,17 @@ impl App {
                 if let (Some(faucet), Some(amount), Some(account)) =
                     (&self.faucet, amount, account)
                 {
-                    // Get stealth address (hex encoded) and decode to bytes
-                    let stealth_address_hex = account.stealth_address();
-                    let stealth_lock_args = match hex::decode(&stealth_address_hex) {
-                        Ok(args) => args,
-                        Err(e) => {
-                            self.status_message = format!("Invalid stealth address: {}", e);
-                            if let Some(ref mut dev) = self.dev_component {
-                                dev.error_message = Some(e.to_string());
-                            }
-                            return Ok(());
-                        }
-                    };
+                    // Generate a one-time stealth lock args from the account's public keys
+                    // The stealth_address() returns view_pub || spend_pub (66 bytes meta address)
+                    // But we need to generate a proper one-time address:
+                    // ephemeral_pubkey (33B) || pubkey_hash (20B) = 53 bytes
+                    let view_pub = account.view_public_key();
+                    let spend_pub = account.spend_public_key();
+                    let (eph_pub, stealth_pub) =
+                        crate::domain::stealth::generate_ephemeral_key(&view_pub, &spend_pub);
+                    let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
+                    let stealth_lock_args =
+                        [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
 
                     // Get stealth lock code hash from config and convert to H256
                     let code_hash_str = self

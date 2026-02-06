@@ -42,6 +42,7 @@ pub enum Action {
     // Transaction actions
     SendTransaction,
     Rescan,
+    FullRescan,
 
     // Token actions
     SelectToken(usize),

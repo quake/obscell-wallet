@@ -97,11 +97,13 @@ setup_devnet() {
         --ba-arg "$BA_ARG" \
         --force
 
-    # Enable IntegrationTest RPC module for generate_block/truncate
+    # Enable IntegrationTest and Indexer RPC modules
+    # - IntegrationTest: for generate_block/truncate
+    # - Indexer: for get_cells/get_transactions queries
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' 's/modules = \[/modules = ["IntegrationTest", /' "$DEVNET_DIR/ckb.toml"
+        sed -i '' 's/modules = \[/modules = ["IntegrationTest", "Indexer", /' "$DEVNET_DIR/ckb.toml"
     else
-        sed -i 's/modules = \[/modules = ["IntegrationTest", /' "$DEVNET_DIR/ckb.toml"
+        sed -i 's/modules = \[/modules = ["IntegrationTest", "Indexer", /' "$DEVNET_DIR/ckb.toml"
     fi
 
     # Save miner key for faucet
@@ -118,8 +120,17 @@ main() {
     info "Setting up integration test environment..."
     setup_ckb
     setup_devnet
-    info "Done! Run tests with:"
-    echo "  cargo test --test integration -- --test-threads=1 --nocapture"
+    info "Done! To complete setup:"
+    echo ""
+    echo "  1. Start CKB node: $CKB_PATH run -C $DEVNET_DIR"
+    echo "  2. Run integration tests to deploy contracts:"
+    echo "     cargo test --test integration -- --test-threads=1 --nocapture"
+    echo ""
+    echo "  After running tests once, contracts are deployed and you can use:"
+    echo "     cargo run -- --network devnet"
+    echo ""
+    echo "  Note: Contract addresses in config/devnet.toml and src/config.rs"
+    echo "  are deterministic with genesis message '$GENESIS_MESSAGE'"
 }
 
 main "$@"

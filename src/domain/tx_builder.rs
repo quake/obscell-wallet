@@ -9,7 +9,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 use crate::{
@@ -157,8 +157,8 @@ impl StealthTxBuilder {
         // Build cell deps
         let cell_deps = self.build_cell_deps()?;
 
-        // Build inputs
-        let inputs = self.build_inputs();
+        // Build inputs (with validation)
+        let inputs = self.build_inputs()?;
 
         // Build outputs
         let mut outputs = Vec::new();
@@ -294,23 +294,49 @@ impl StealthTxBuilder {
         }
     }
 
-    fn build_inputs(&self) -> Vec<CellInput> {
-        self.inputs
-            .iter()
-            .map(|cell| {
-                // Parse out_point from cell (tx_hash: 32 bytes, index: 4 bytes LE)
-                let tx_hash = H256::from_slice(&cell.out_point[0..32]).expect("valid tx hash");
-                let index = u32::from_le_bytes(cell.out_point[32..36].try_into().unwrap());
+    fn build_inputs(&self) -> Result<Vec<CellInput>> {
+        let mut inputs = Vec::with_capacity(self.inputs.len());
 
-                CellInput {
-                    previous_output: OutPoint {
-                        tx_hash,
-                        index: Uint32::from(index),
-                    },
-                    since: Uint64::from(0u64),
-                }
-            })
-            .collect()
+        for (i, cell) in self.inputs.iter().enumerate() {
+            // Validate out_point length
+            if cell.out_point.len() != 36 {
+                return Err(eyre!(
+                    "Input {}: Invalid out_point length {} (expected 36 bytes)",
+                    i,
+                    cell.out_point.len()
+                ));
+            }
+
+            // Parse out_point from cell (tx_hash: 32 bytes, index: 4 bytes LE)
+            let tx_hash_bytes = &cell.out_point[0..32];
+            let index = u32::from_le_bytes(cell.out_point[32..36].try_into().unwrap());
+
+            // Validate tx_hash is not all zeros - this indicates corrupted cell data
+            let is_zero_hash = tx_hash_bytes.iter().all(|&b| b == 0);
+            if is_zero_hash {
+                return Err(eyre!(
+                    "Input {}: Cell has zero tx_hash! This indicates corrupted cell data. \
+                    OutPoint: 0x{} (index {}). \
+                    Please run a Full Rescan (press 'R' on Accounts tab) to refresh cell data. \
+                    If the problem persists, check that your devnet config has valid contract addresses.",
+                    i,
+                    hex::encode(&cell.out_point),
+                    index
+                ));
+            }
+
+            let tx_hash = H256::from_slice(tx_hash_bytes)?;
+
+            inputs.push(CellInput {
+                previous_output: OutPoint {
+                    tx_hash,
+                    index: Uint32::from(index),
+                },
+                since: Uint64::from(0u64),
+            });
+        }
+
+        Ok(inputs)
     }
 
     /// Build a stealth lock script for an output.
