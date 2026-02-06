@@ -64,6 +64,7 @@ pub enum Action {
     TabDev,
     GenerateBlock,
     GenerateBlocks(u64),
+    SaveCheckpoint,
     ResetToCheckpoint,
     ToggleAutoMining,
     SetMiningInterval(u64),

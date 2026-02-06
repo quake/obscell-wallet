@@ -251,7 +251,7 @@ impl DevComponent {
 
         let mut amount_display = faucet_amount.to_string();
         if is_editing {
-            amount_display.push('|');
+            amount_display.push('│');
         }
 
         let content = vec![
@@ -370,7 +370,7 @@ impl Component for DevComponent {
                     self.action_tx.send(Action::ResetToCheckpoint)?;
                 }
                 KeyCode::Char('s') => {
-                    self.action_tx.send(Action::RefreshDevStatus)?;
+                    self.action_tx.send(Action::SaveCheckpoint)?;
                 }
                 KeyCode::Char('f') => {
                     if self.account.is_none() {
