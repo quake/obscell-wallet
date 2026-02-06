@@ -1,7 +1,7 @@
 # Integration Test Design
 
 **Date:** 2026-02-05
-**Status:** Approved
+**Status:** Completed ✅
 
 ## Overview
 
@@ -171,6 +171,6 @@ These need to be manually updated when contracts change.
 
 ## Future Extensions
 
-- CT token mint/transfer tests (Phase 3)
-- Multi-account scenarios
+- ~~CT token mint/transfer tests (Phase 3)~~ ✅ Implemented in `e2e_ct_genesis_mint.rs`
+- ~~Multi-account scenarios~~ ✅ Implemented in `test_scanner_finds_ct_cells_multi_account`
 - Error handling tests (insufficient balance, invalid address)

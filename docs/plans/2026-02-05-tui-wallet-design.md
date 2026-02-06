@@ -285,30 +285,30 @@ tracing-subscriber = "0.3"
 
 ## Implementation Phases
 
-### Phase 1: MVP (~1-2 weeks)
-- [ ] Project scaffolding (cargo generate ratatui component)
-- [ ] Basic TUI shell with tab navigation
-- [ ] Account management (create, import, list)
-- [ ] Network config (testnet/mainnet/devnet)
-- [ ] Cell scanning (stealth-lock only)
-- [ ] Basic send (CKB to stealth address)
+### Phase 1: MVP (~1-2 weeks) ✅
+- [x] Project scaffolding (cargo generate ratatui component)
+- [x] Basic TUI shell with tab navigation
+- [x] Account management (create, import, list)
+- [x] Network config (testnet/mainnet/devnet)
+- [x] Cell scanning (stealth-lock only)
+- [x] Basic send (CKB to stealth address)
 
-### Phase 2: Full Stealth (~1 week)
-- [ ] Transaction history persistence
-- [ ] Receive view with fresh address generation
-- [ ] LMDB persistence for accounts, cells, cursor
+### Phase 2: Full Stealth (~1 week) ✅
+- [x] Transaction history persistence
+- [x] Receive view with fresh address generation
+- [x] LMDB persistence for accounts, cells, cursor
 
-### Phase 3: CT Token Support (~2 weeks)
-- [ ] CT cell scanning with amount decryption
-- [ ] CT token balance display
-- [ ] CT transfer with Bulletproofs
-- [ ] CT minting (issuer functionality)
+### Phase 3: CT Token Support (~2 weeks) ✅
+- [x] CT cell scanning with amount decryption
+- [x] CT token balance display
+- [x] CT transfer with Bulletproofs
+- [x] CT minting (issuer functionality)
 
-### Phase 4: Polish (~1 week)
-- [ ] Error handling improvements
-- [ ] Full rescan functionality
-- [ ] Configuration (keybindings, RPC endpoints)
-- [ ] Integration tests
+### Phase 4: Polish (~1 week) ⚠️ Partial
+- [x] Error handling improvements
+- [x] Full rescan functionality
+- [ ] Configuration (keybindings, RPC endpoints) - keybindings are hardcoded
+- [x] Integration tests
 
 ## Network Configuration
 
