@@ -68,6 +68,19 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Create config from CLI args.
+    pub fn new(network: &str, rpc_url: Option<&str>) -> Self {
+        let mut config = Self::from_network(network);
+        if let Some(url) = rpc_url {
+            config.network.rpc_url = url.to_string();
+            // Also update indexer URL if it's the default pattern
+            if config.network.indexer_url.ends_with("/indexer") {
+                config.network.indexer_url = format!("{}/indexer", url);
+            }
+        }
+        config
+    }
+
     pub fn testnet() -> Self {
         Self {
             network: NetworkConfig {
