@@ -25,6 +25,10 @@ pub struct Args {
     /// Data directory path
     #[arg(long)]
     pub data_dir: Option<String>,
+
+    /// Enable developer mode with devnet controls
+    #[arg(long, default_value_t = false)]
+    pub dev_mode: bool,
 }
 
 impl Args {
