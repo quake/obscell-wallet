@@ -3,6 +3,7 @@ pub mod dev;
 pub mod history;
 pub mod receive;
 pub mod send;
+pub mod settings;
 pub mod tokens;
 
 use color_eyre::eyre::Result;

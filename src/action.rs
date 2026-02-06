@@ -22,11 +22,15 @@ pub enum Action {
     Cancel,
 
     // Tab switching
+    TabSettings,
     TabAccounts,
     TabSend,
     TabReceive,
     TabTokens,
     TabHistory,
+
+    // Settings actions
+    SwitchNetwork(String),
 
     // Account actions
     CreateAccount,

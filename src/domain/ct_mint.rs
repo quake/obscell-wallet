@@ -34,6 +34,7 @@ use crate::{
 /// - Lock (stealth-lock): code_hash (32) + hash_type (1) + args (53 = eph_pub 33 + pubkey_hash 20) = 86 bytes
 /// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (64 = ct_info_hash 32 + token_id 32) = 97 bytes
 /// - Data: commitment (32) + encrypted_amount (32) = 64 bytes
+///
 /// Total: 8 + 86 + 97 + 64 = 255 bytes → 255 CKB
 const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
 
@@ -985,6 +986,6 @@ mod tests {
     #[test]
     fn test_min_capacities() {
         assert_eq!(MIN_CT_CELL_CAPACITY, 255_00000000);
-        assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 150_00000000);
+        assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 230_00000000);
     }
 }

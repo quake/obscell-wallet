@@ -14,7 +14,8 @@ use crate::{
     cli::Args,
     components::{
         Component, accounts::AccountsComponent, dev::DevComponent, history::HistoryComponent,
-        receive::ReceiveComponent, send::SendComponent, tokens::TokensComponent,
+        receive::ReceiveComponent, send::SendComponent, settings::SettingsComponent,
+        tokens::TokensComponent,
     },
     config::Config,
     domain::{
@@ -34,6 +35,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    Settings,
     Accounts,
     Send,
     Receive,
@@ -45,6 +47,7 @@ pub enum Tab {
 impl Tab {
     pub fn all(dev_mode: bool) -> Vec<Tab> {
         let mut tabs = vec![
+            Tab::Settings,
             Tab::Accounts,
             Tab::Send,
             Tab::Receive,
@@ -59,6 +62,7 @@ impl Tab {
 
     pub fn title(&self) -> &'static str {
         match self {
+            Tab::Settings => "Settings",
             Tab::Accounts => "Accounts",
             Tab::Send => "Send",
             Tab::Receive => "Receive",
@@ -68,26 +72,29 @@ impl Tab {
         }
     }
 
-    pub fn index(&self) -> usize {
+    pub fn index(&self, dev_mode: bool) -> usize {
         match self {
-            Tab::Accounts => 0,
-            Tab::Send => 1,
-            Tab::Receive => 2,
-            Tab::Tokens => 3,
-            Tab::History => 4,
-            Tab::Dev => 5,
+            Tab::Settings => 0,
+            Tab::Accounts => 1,
+            Tab::Send => 2,
+            Tab::Receive => 3,
+            Tab::Tokens => 4,
+            Tab::History => 5,
+            Tab::Dev if dev_mode => 6,
+            Tab::Dev => 5, // Fallback if somehow Dev tab is accessed without dev_mode
         }
     }
 
     pub fn from_index(index: usize, dev_mode: bool) -> Tab {
         match index {
-            0 => Tab::Accounts,
-            1 => Tab::Send,
-            2 => Tab::Receive,
-            3 => Tab::Tokens,
-            4 => Tab::History,
-            5 if dev_mode => Tab::Dev,
-            _ => Tab::Accounts,
+            0 => Tab::Settings,
+            1 => Tab::Accounts,
+            2 => Tab::Send,
+            3 => Tab::Receive,
+            4 => Tab::Tokens,
+            5 => Tab::History,
+            6 if dev_mode => Tab::Dev,
+            _ => Tab::Settings,
         }
     }
 }
@@ -104,6 +111,7 @@ pub struct App {
     pub store: Store,
     pub scanner: Scanner,
     pub account_manager: AccountManager,
+    pub settings_component: SettingsComponent,
     pub accounts_component: AccountsComponent,
     pub receive_component: ReceiveComponent,
     pub send_component: SendComponent,
@@ -130,6 +138,7 @@ impl App {
         let store = Store::new()?;
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
+        let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
         let accounts_component = AccountsComponent::new(action_tx.clone());
         let receive_component = ReceiveComponent::new(action_tx.clone());
         let send_component = SendComponent::new(action_tx.clone());
@@ -142,8 +151,8 @@ impl App {
             .mouse(false)
             .paste(false);
 
-        // Initialize dev mode components if enabled
-        let dev_mode = args.dev_mode;
+        // Dev mode is enabled when network is "devnet"
+        let dev_mode = config.network.name == "devnet";
         let (dev_component, devnet, faucet) = if dev_mode {
             let dev_component = DevComponent::new(action_tx.clone());
             let devnet = DevNet::with_defaults();
@@ -165,7 +174,7 @@ impl App {
             should_quit: false,
             should_suspend: false,
             config,
-            active_tab: Tab::Accounts,
+            active_tab: Tab::Settings,
             last_tick_key_events: Vec::new(),
             action_tx,
             action_rx,
@@ -173,6 +182,7 @@ impl App {
             store,
             scanner,
             account_manager,
+            settings_component,
             accounts_component,
             receive_component,
             send_component,
@@ -312,41 +322,47 @@ impl App {
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            // Tab switching
+            // Tab switching (1-7, with 7 being Dev only in dev mode)
             KeyCode::Char('1') => {
-                self.active_tab = Tab::Accounts;
+                self.active_tab = Tab::Settings;
             }
             KeyCode::Char('2') => {
-                self.active_tab = Tab::Send;
+                self.active_tab = Tab::Accounts;
             }
             KeyCode::Char('3') => {
-                self.active_tab = Tab::Receive;
+                self.active_tab = Tab::Send;
             }
             KeyCode::Char('4') => {
-                self.active_tab = Tab::Tokens;
+                self.active_tab = Tab::Receive;
             }
             KeyCode::Char('5') => {
+                self.active_tab = Tab::Tokens;
+            }
+            KeyCode::Char('6') => {
                 self.active_tab = Tab::History;
             }
-            KeyCode::Char('6') if self.dev_mode => {
+            KeyCode::Char('7') if self.dev_mode => {
                 self.active_tab = Tab::Dev;
             }
             KeyCode::Tab => {
                 let tabs = Tab::all(self.dev_mode);
-                let next_index = (self.active_tab.index() + 1) % tabs.len();
+                let next_index = (self.active_tab.index(self.dev_mode) + 1) % tabs.len();
                 self.active_tab = Tab::from_index(next_index, self.dev_mode);
             }
             KeyCode::BackTab => {
                 let tabs = Tab::all(self.dev_mode);
-                let prev_index = if self.active_tab.index() == 0 {
+                let prev_index = if self.active_tab.index(self.dev_mode) == 0 {
                     tabs.len() - 1
                 } else {
-                    self.active_tab.index() - 1
+                    self.active_tab.index(self.dev_mode) - 1
                 };
                 self.active_tab = Tab::from_index(prev_index, self.dev_mode);
             }
             // Component-specific key handling
             _ => match self.active_tab {
+                Tab::Settings => {
+                    self.settings_component.handle_key_event(key)?;
+                }
                 Tab::Accounts => {
                     self.accounts_component.handle_key_event(key)?;
                 }
@@ -392,27 +408,27 @@ impl App {
                     
                     if now >= last + self.auto_mining_interval {
                         LAST_MINE_TIME.store(now, std::sync::atomic::Ordering::Relaxed);
-                        if let Some(ref devnet) = self.devnet {
-                            if let Ok(hash) = devnet.generate_block() {
-                                self.status_message = format!(
-                                    "Auto-mined block: {}...{}",
-                                    &hex::encode(&hash.0[..4]),
-                                    &hex::encode(&hash.0[28..])
-                                );
-                                // Refresh tip block number
-                                if let Ok(tip) = self.scanner.get_tip_block_number() {
-                                    self.tip_block_number = Some(tip);
-                                }
+                        if let Some(ref devnet) = self.devnet
+                            && let Ok(hash) = devnet.generate_block()
+                        {
+                            self.status_message = format!(
+                                "Auto-mined block: {}...{}",
+                                &hex::encode(&hash.0[..4]),
+                                &hex::encode(&hash.0[28..])
+                            );
+                            // Refresh tip block number
+                            if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                self.tip_block_number = Some(tip);
                             }
                         }
                     }
                 }
 
                 // Periodically refresh indexer sync status in dev mode
-                if self.dev_mode {
-                    if let Some(ref devnet) = self.devnet {
-                        self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
-                    }
+                if self.dev_mode
+                    && let Some(ref devnet) = self.devnet
+                {
+                    self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
                 }
             }
             Action::Quit => {
@@ -1373,14 +1389,77 @@ impl App {
                     self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
                 }
                 // Refresh miner balance
-                if let Some(ref faucet) = self.faucet {
-                    if let Ok(balance) = faucet.get_miner_balance() {
-                        if let Some(ref mut dev) = self.dev_component {
-                            dev.set_miner_balance(Some(balance));
-                        }
-                    }
+                if let Some(ref faucet) = self.faucet
+                    && let Ok(balance) = faucet.get_miner_balance()
+                    && let Some(ref mut dev) = self.dev_component
+                {
+                    dev.set_miner_balance(Some(balance));
                 }
                 self.status_message = "Dev status refreshed".to_string();
+            }
+            Action::SwitchNetwork(ref network) => {
+                // Switch to a different network
+                let new_config = Config::from_network(network);
+                let new_dev_mode = new_config.network.name == "devnet";
+
+                // Update config and scanner
+                self.config = new_config.clone();
+                self.scanner = Scanner::new(self.config.clone(), self.store.clone());
+
+                // Update settings component
+                self.settings_component.set_network(&self.config.network.name);
+
+                // Handle dev mode transition
+                if new_dev_mode && !self.dev_mode {
+                    // Entering dev mode - create dev components
+                    let dev_component = DevComponent::new(self.action_tx.clone());
+                    let devnet = DevNet::with_defaults();
+                    let miner_key_bytes =
+                        hex::decode("d00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc")
+                            .expect("Invalid miner key hex");
+                    let miner_key =
+                        secp256k1::SecretKey::from_slice(&miner_key_bytes).expect("Invalid miner key");
+                    let miner_lock_args = Faucet::derive_lock_args(&miner_key);
+                    let faucet = Faucet::new(&self.config.network.rpc_url, miner_key, miner_lock_args);
+
+                    self.dev_component = Some(dev_component);
+                    self.devnet = Some(devnet);
+                    self.faucet = Some(faucet);
+
+                    // Set account for dev component if we have one
+                    if let Some(account) = self.accounts_component.accounts.first()
+                        && let Some(ref mut dev) = self.dev_component
+                    {
+                        dev.set_account(Some(account.clone()));
+                    }
+                } else if !new_dev_mode && self.dev_mode {
+                    // Leaving dev mode - cleanup dev components
+                    self.dev_component = None;
+                    self.devnet = None;
+                    self.faucet = None;
+                    self.auto_mining_enabled = false;
+                    self.indexer_synced = false;
+                    self.checkpoint_block = None;
+
+                    // If currently on Dev tab, switch to Settings
+                    if self.active_tab == Tab::Dev {
+                        self.active_tab = Tab::Settings;
+                    }
+                }
+
+                self.dev_mode = new_dev_mode;
+
+                // Refresh tip block for new network
+                match self.scanner.get_tip_block_number() {
+                    Ok(tip) => {
+                        self.tip_block_number = Some(tip);
+                    }
+                    Err(_) => {
+                        self.tip_block_number = None;
+                    }
+                }
+
+                self.status_message = format!("Switched to {}", self.config.network.name);
             }
             _ => {}
         }
@@ -1405,6 +1484,9 @@ impl App {
         let send_is_editing = self.send_component.is_editing;
         let send_error_message = self.send_component.error_message.clone();
         let send_success_message = self.send_component.success_message.clone();
+        // Settings component data
+        let settings_current_network = self.settings_component.current_network.clone();
+        let settings_selected_index = self.settings_component.selected_index;
         // Tokens component data
         let tokens_account = self.tokens_component.account.clone();
         let tokens_balances = self.tokens_component.balances.clone();
@@ -1495,7 +1577,7 @@ impl App {
 
             let tabs = Tabs::new(titles)
                 .block(Block::default().borders(Borders::ALL))
-                .select(active_tab.index())
+                .select(active_tab.index(dev_mode))
                 .style(Style::default().fg(Color::White))
                 .highlight_style(
                     Style::default()
@@ -1506,6 +1588,14 @@ impl App {
 
             // Draw content
             match active_tab {
+                Tab::Settings => {
+                    SettingsComponent::draw_static(
+                        f,
+                        chunks[2],
+                        &settings_current_network,
+                        settings_selected_index,
+                    );
+                }
                 Tab::Accounts => {
                     AccountsComponent::draw_static(f, chunks[2], &accounts, selected_index);
                 }
@@ -1656,7 +1746,7 @@ impl App {
 
         let tabs = Tabs::new(titles)
             .block(Block::default().borders(Borders::ALL))
-            .select(self.active_tab.index())
+            .select(self.active_tab.index(self.dev_mode))
             .style(Style::default().fg(Color::White))
             .highlight_style(
                 Style::default()
@@ -1669,6 +1759,9 @@ impl App {
 
     fn draw_content(&mut self, f: &mut Frame, area: Rect) {
         match self.active_tab {
+            Tab::Settings => {
+                self.settings_component.draw(f, area);
+            }
             Tab::Accounts => {
                 self.accounts_component.draw(f, area);
             }
