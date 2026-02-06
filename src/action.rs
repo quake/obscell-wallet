@@ -59,4 +59,14 @@ pub enum Action {
     PageDown,
     Home,
     End,
+
+    // Dev mode actions
+    TabDev,
+    GenerateBlock,
+    GenerateBlocks(u64),
+    ResetToCheckpoint,
+    ToggleAutoMining,
+    SetMiningInterval(u64),
+    SendFaucet,
+    RefreshDevStatus,
 }
