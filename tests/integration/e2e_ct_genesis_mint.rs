@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
-    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
+    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -1699,4 +1699,438 @@ fn test_ct_mint_unlimited_supply() {
             );
         }
     }
+}
+
+// ============================================================================
+// Regression Tests for Bug Fixes
+// ============================================================================
+
+/// Test that consecutive mints work correctly.
+///
+/// This is a regression test for the bug where spent funding cells were not
+/// removed from the store after a successful mint, causing subsequent operations
+/// to fail with "Unknown OutPoint" errors.
+///
+/// The test verifies:
+/// 1. First mint succeeds and creates a CT cell
+/// 2. Second mint succeeds using a different funding cell
+/// 3. Both minted CT cells are scannable
+#[test]
+fn test_consecutive_mints_use_different_funding_cells() {
+    let env = TestEnv::get();
+    let config = create_test_config(env);
+    let (store, _temp_dir) = create_temp_store();
+
+    println!("\n=== Testing consecutive mints with funding cell cleanup ===\n");
+
+    // Create issuer account
+    let issuer = Account::new(0, "Issuer".to_string());
+    println!("Issuer created: {}", &issuer.stealth_address()[..32]);
+
+    // Fund issuer for genesis
+    let genesis_funding = fund_account_with_stealth(env, &issuer, 350_00000000u64)
+        .expect("Genesis funding should succeed");
+
+    // Create issuer stealth address for ct-info ownership
+    let issuer_stealth_address = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    // Genesis: Create token with supply cap 1,000,000
+    let genesis_params = GenesisParams {
+        issuer_stealth_address: issuer_stealth_address.clone(),
+        supply_cap: 1_000_000,
+        flags: MINTABLE,
+    };
+
+    let built_genesis = build_genesis_transaction(&config, genesis_params, genesis_funding.clone())
+        .expect("Genesis build should succeed");
+    let token_id = built_genesis.token_id;
+    let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
+
+    let signed_genesis =
+        sign_genesis_transaction(built_genesis, &issuer, &genesis_funding.lock_script_args)
+            .expect("Genesis signing should succeed");
+
+    let client = CkbRpcClient::new(DevNet::RPC_URL);
+    let genesis_hash = client
+        .send_transaction(signed_genesis, None)
+        .expect("Genesis tx should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Token created: ID=0x{}, genesis_tx=0x{}",
+        hex::encode(&token_id[..8]),
+        hex::encode(genesis_hash.as_bytes())
+    );
+
+    // Fund issuer with TWO separate cells for two mints
+    println!("\nFunding issuer with two separate cells for consecutive mints...");
+    let mint_funding_1 = fund_account_with_stealth(env, &issuer, 300_00000000u64)
+        .expect("First mint funding should succeed");
+    let mint_funding_2 = fund_account_with_stealth(env, &issuer, 300_00000000u64)
+        .expect("Second mint funding should succeed");
+
+    // Verify the two funding cells have different out_points
+    assert_ne!(
+        mint_funding_1.out_point, mint_funding_2.out_point,
+        "Funding cells should have different out_points"
+    );
+    println!(
+        "Funding cell 1: 0x{}",
+        hex::encode(&mint_funding_1.out_point[..8])
+    );
+    println!(
+        "Funding cell 2: 0x{}",
+        hex::encode(&mint_funding_2.out_point[..8])
+    );
+
+    // Build ct-info out_point for mints
+    let mut ct_info_out_point = Vec::with_capacity(36);
+    ct_info_out_point.extend_from_slice(genesis_hash.as_bytes());
+    ct_info_out_point.extend_from_slice(&0u32.to_le_bytes());
+
+    // First mint: 1000 tokens
+    println!("\nMint 1: Minting 1000 tokens...");
+    let mint_amount_1 = 1000u64;
+
+    let mint_params_1 = MintParams {
+        ct_info_cell: CtInfoCellInput {
+            out_point: ct_info_out_point.clone(),
+            lock_script_args: ct_info_lock_args.clone(),
+            data: obscell_wallet::domain::ct_info::CtInfoData::new(0, 1_000_000, MINTABLE),
+            capacity: 230_00000000,
+        },
+        token_id,
+        mint_amount: mint_amount_1,
+        recipient_stealth_address: issuer_stealth_address.clone(),
+        funding_cell: mint_funding_1.clone(),
+    };
+
+    let built_mint_1 =
+        build_mint_transaction(&config, mint_params_1).expect("First mint build should succeed");
+    let mint_1_hash = built_mint_1.tx_hash.clone();
+
+    let signed_mint_1 = sign_mint_transaction(
+        built_mint_1,
+        &issuer,
+        &ct_info_lock_args,
+        &mint_funding_1.lock_script_args,
+    )
+    .expect("First mint signing should succeed");
+
+    let mint_1_result = client.send_transaction(signed_mint_1, None);
+    assert!(
+        mint_1_result.is_ok(),
+        "First mint should succeed: {:?}",
+        mint_1_result.err()
+    );
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Mint 1 succeeded: {} tokens, tx=0x{}",
+        mint_amount_1,
+        hex::encode(mint_1_hash.as_bytes())
+    );
+
+    // Update ct-info out_point for second mint (points to output of first mint)
+    let mut ct_info_out_point_2 = Vec::with_capacity(36);
+    ct_info_out_point_2.extend_from_slice(mint_1_hash.as_bytes());
+    ct_info_out_point_2.extend_from_slice(&0u32.to_le_bytes());
+
+    // Second mint: 2000 tokens (using different funding cell)
+    println!("\nMint 2: Minting 2000 tokens with different funding cell...");
+    let mint_amount_2 = 2000u64;
+
+    let mint_params_2 = MintParams {
+        ct_info_cell: CtInfoCellInput {
+            out_point: ct_info_out_point_2,
+            lock_script_args: ct_info_lock_args.clone(),
+            data: obscell_wallet::domain::ct_info::CtInfoData::new(
+                mint_amount_1 as u128,
+                1_000_000,
+                MINTABLE,
+            ),
+            capacity: 230_00000000,
+        },
+        token_id,
+        mint_amount: mint_amount_2,
+        recipient_stealth_address: issuer_stealth_address.clone(),
+        funding_cell: mint_funding_2.clone(), // Different funding cell!
+    };
+
+    let built_mint_2 =
+        build_mint_transaction(&config, mint_params_2).expect("Second mint build should succeed");
+
+    let signed_mint_2 = sign_mint_transaction(
+        built_mint_2,
+        &issuer,
+        &ct_info_lock_args,
+        &mint_funding_2.lock_script_args,
+    )
+    .expect("Second mint signing should succeed");
+
+    // This is the critical test: second mint should NOT fail with "Unknown OutPoint"
+    let mint_2_result = client.send_transaction(signed_mint_2, None);
+    assert!(
+        mint_2_result.is_ok(),
+        "Second mint should succeed (not fail with Unknown OutPoint): {:?}",
+        mint_2_result.err()
+    );
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Mint 2 succeeded: {} tokens, tx=0x{}",
+        mint_amount_2,
+        hex::encode(mint_2_result.unwrap().as_bytes())
+    );
+
+    // Verify both CT cells are scannable
+    println!("\nVerifying minted CT cells...");
+    let scanner = Scanner::new(config.clone(), store);
+    let scan_results = scanner
+        .scan_ct_cells(std::slice::from_ref(&issuer))
+        .expect("Scan should succeed");
+
+    // Should have 2 CT cells from the two mints
+    assert_eq!(
+        scan_results[0].cells.len(),
+        2,
+        "Should have 2 CT cells from consecutive mints"
+    );
+
+    let total_amount: u64 = scan_results[0].cells.iter().map(|c| c.amount).sum();
+    assert_eq!(
+        total_amount,
+        mint_amount_1 + mint_amount_2,
+        "Total amount should be {} + {} = {}",
+        mint_amount_1,
+        mint_amount_2,
+        mint_amount_1 + mint_amount_2
+    );
+
+    println!(
+        "Verified: {} CT cells with total {} tokens",
+        scan_results[0].cells.len(),
+        total_amount
+    );
+    println!("\n=== Consecutive mints test PASSED ===");
+}
+
+/// Test that mint followed by transfer works correctly.
+///
+/// This is a regression test for the bug where:
+/// 1. Mint consumed a funding cell but didn't remove it from store
+/// 2. Transfer tried to use the same (now spent) funding cell
+/// 3. Transaction failed with "Unknown OutPoint"
+///
+/// The test verifies:
+/// 1. Mint succeeds and creates a CT cell
+/// 2. Transfer uses a DIFFERENT funding cell (simulating correct cleanup)
+/// 3. Both transactions succeed on-chain
+#[test]
+fn test_mint_then_transfer_uses_separate_funding() {
+    let env = TestEnv::get();
+    let config = create_test_config(env);
+    let (issuer_store, _temp1) = create_temp_store();
+    let (recipient_store, _temp2) = create_temp_store();
+
+    println!("\n=== Testing mint-then-transfer with separate funding cells ===\n");
+
+    // Create accounts
+    let issuer = Account::new(0, "Issuer".to_string());
+    let recipient = Account::new(1, "Recipient".to_string());
+
+    // Fund issuer for genesis
+    let genesis_funding = fund_account_with_stealth(env, &issuer, 350_00000000u64)
+        .expect("Genesis funding should succeed");
+
+    let issuer_stealth_address = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    // Genesis
+    let genesis_params = GenesisParams {
+        issuer_stealth_address: issuer_stealth_address.clone(),
+        supply_cap: 1_000_000,
+        flags: MINTABLE,
+    };
+
+    let built_genesis = build_genesis_transaction(&config, genesis_params, genesis_funding.clone())
+        .expect("Genesis should succeed");
+    let token_id = built_genesis.token_id;
+    let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
+
+    let signed_genesis =
+        sign_genesis_transaction(built_genesis, &issuer, &genesis_funding.lock_script_args)
+            .expect("Signing should succeed");
+
+    let client = CkbRpcClient::new(DevNet::RPC_URL);
+    let genesis_hash = client
+        .send_transaction(signed_genesis, None)
+        .expect("Genesis should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!("Token created: 0x{}", hex::encode(&token_id[..8]));
+
+    // Fund issuer with TWO cells: one for mint, one for transfer
+    println!("\nFunding issuer with separate cells for mint and transfer...");
+    let mint_funding = fund_account_with_stealth(env, &issuer, 300_00000000u64)
+        .expect("Mint funding should succeed");
+    let transfer_funding = fund_account_with_stealth(env, &issuer, 300_00000000u64)
+        .expect("Transfer funding should succeed");
+
+    assert_ne!(
+        mint_funding.out_point, transfer_funding.out_point,
+        "Funding cells should be different"
+    );
+
+    // Mint 10000 tokens to issuer
+    println!("\nMinting 10000 tokens...");
+    let mint_amount = 10000u64; // Integer amount, NOT 10000 * 10^8
+
+    let mut ct_info_out_point = Vec::with_capacity(36);
+    ct_info_out_point.extend_from_slice(genesis_hash.as_bytes());
+    ct_info_out_point.extend_from_slice(&0u32.to_le_bytes());
+
+    let mint_params = MintParams {
+        ct_info_cell: CtInfoCellInput {
+            out_point: ct_info_out_point,
+            lock_script_args: ct_info_lock_args.clone(),
+            data: obscell_wallet::domain::ct_info::CtInfoData::new(0, 1_000_000, MINTABLE),
+            capacity: 230_00000000,
+        },
+        token_id,
+        mint_amount,
+        recipient_stealth_address: issuer_stealth_address.clone(),
+        funding_cell: mint_funding.clone(),
+    };
+
+    let built_mint =
+        build_mint_transaction(&config, mint_params).expect("Mint build should succeed");
+    let mint_hash = built_mint.tx_hash.clone();
+
+    let signed_mint = sign_mint_transaction(
+        built_mint,
+        &issuer,
+        &ct_info_lock_args,
+        &mint_funding.lock_script_args,
+    )
+    .expect("Mint signing should succeed");
+
+    client
+        .send_transaction(signed_mint, None)
+        .expect("Mint should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Minted {} tokens, tx=0x{}",
+        mint_amount,
+        hex::encode(mint_hash.as_bytes())
+    );
+
+    // Scan for the minted CT cell
+    let issuer_scanner = Scanner::new(config.clone(), issuer_store);
+    let scan_results = issuer_scanner
+        .scan_ct_cells(std::slice::from_ref(&issuer))
+        .expect("Scan should succeed");
+
+    assert_eq!(
+        scan_results[0].cells.len(),
+        1,
+        "Issuer should have 1 CT cell"
+    );
+    let ct_cell = scan_results[0].cells[0].clone();
+    assert_eq!(
+        ct_cell.amount, mint_amount,
+        "CT cell should have correct amount"
+    );
+
+    println!(
+        "Found CT cell: amount={}, out_point=0x{}",
+        ct_cell.amount,
+        hex::encode(&ct_cell.out_point[..8])
+    );
+
+    // Transfer 123 tokens to recipient (with change)
+    println!("\nTransferring 123 tokens to recipient...");
+    let transfer_amount = 123u64;
+
+    let recipient_stealth_address = {
+        let view_pub = recipient.view_public_key().serialize();
+        let spend_pub = recipient.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    use obscell_wallet::domain::ct_tx_builder::CtTxBuilder;
+
+    let built_transfer = CtTxBuilder::new(config.clone(), ct_cell.type_script_args.clone())
+        .add_input(ct_cell.clone())
+        .add_output(recipient_stealth_address, transfer_amount)
+        .funding_cell(transfer_funding.clone()) // DIFFERENT funding cell!
+        .build(&issuer)
+        .expect("Transfer build should succeed");
+
+    let signed_transfer = CtTxBuilder::sign(
+        built_transfer,
+        &issuer,
+        &[ct_cell],
+        Some(&transfer_funding.lock_script_args),
+    )
+    .expect("Transfer signing should succeed");
+
+    // This is the critical test: transfer should NOT fail with "Unknown OutPoint"
+    // because we're using a different funding cell than the mint
+    let transfer_result = client.send_transaction(signed_transfer, None);
+    assert!(
+        transfer_result.is_ok(),
+        "Transfer should succeed (funding cell should be different from mint): {:?}",
+        transfer_result.err()
+    );
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Transfer succeeded: {} tokens, tx=0x{}",
+        transfer_amount,
+        hex::encode(transfer_result.unwrap().as_bytes())
+    );
+
+    // Verify recipient received tokens
+    let recipient_scanner = Scanner::new(config.clone(), recipient_store);
+    let recipient_results = recipient_scanner
+        .scan_ct_cells(std::slice::from_ref(&recipient))
+        .expect("Recipient scan should succeed");
+
+    assert_eq!(
+        recipient_results[0].cells.len(),
+        1,
+        "Recipient should have 1 CT cell"
+    );
+    assert_eq!(
+        recipient_results[0].cells[0].amount, transfer_amount,
+        "Recipient should have {} tokens",
+        transfer_amount
+    );
+
+    println!(
+        "Recipient verified: {} tokens",
+        recipient_results[0].cells[0].amount
+    );
+    println!("\n=== Mint-then-transfer test PASSED ===");
 }

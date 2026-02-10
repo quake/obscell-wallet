@@ -1452,3 +1452,59 @@ fn parse_token_amount(s: &str) -> Option<u64> {
 fn format_token_amount(amount: u64) -> String {
     amount.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that token amounts are parsed as integers, not with 8 decimal places.
+    ///
+    /// This is a regression test for the bug where `parse_token_amount("10000")`
+    /// returned `1000000000000` (10000 * 10^8) instead of `10000`.
+    ///
+    /// The bug caused minting to fail with InvalidRangeProof because the amount
+    /// exceeded the 32-bit range proof limit (4,294,967,295).
+    #[test]
+    fn test_token_amount_parsing_is_integer() {
+        // Test various amount inputs
+        let test_cases = vec![
+            ("10000", Some(10000u64)),
+            ("1", Some(1u64)),
+            ("100", Some(100u64)),
+            ("4294967295", Some(4294967295u64)), // Max 32-bit value
+            ("0", Some(0u64)),
+            ("", None),
+            ("abc", None),
+            ("10.5", None),            // Decimals not allowed for CT tokens
+            ("  123  ", Some(123u64)), // Whitespace should be trimmed
+        ];
+
+        for (input, expected) in test_cases {
+            let result = parse_token_amount(input);
+            assert_eq!(
+                result, expected,
+                "parse_token_amount({:?}) should return {:?}, got {:?}",
+                input, expected, result
+            );
+        }
+
+        // Critical test: 10000 should NOT become 1000000000000
+        let amount = parse_token_amount("10000").unwrap();
+        assert!(
+            amount <= u32::MAX as u64,
+            "Amount {} should be within 32-bit range (max {}). \
+             If this fails, token amounts are being multiplied by 10^8!",
+            amount,
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn test_format_token_amount_is_integer() {
+        // Format should not add decimal places
+        assert_eq!(format_token_amount(10000), "10000");
+        assert_eq!(format_token_amount(1), "1");
+        assert_eq!(format_token_amount(0), "0");
+        assert_eq!(format_token_amount(4294967295), "4294967295");
+    }
+}
