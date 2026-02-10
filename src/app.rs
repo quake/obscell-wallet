@@ -177,7 +177,7 @@ impl App {
         let tui = Tui::new()?
             .tick_rate(args.tick_rate)
             .frame_rate(args.frame_rate)
-            .mouse(true)
+            .mouse(false)
             .paste(true);
 
         // Dev mode is enabled when network is "devnet"
