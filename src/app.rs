@@ -383,7 +383,7 @@ impl App {
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            KeyCode::Char('t') if key.modifiers.is_empty() => {
+            KeyCode::Char('t') if key.modifiers.is_empty() && self.active_tab != Tab::Tokens => {
                 self.active_tab = Tab::Settings;
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
