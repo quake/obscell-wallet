@@ -633,8 +633,23 @@ impl App {
                     "Account {}",
                     self.account_manager.list_accounts()?.len() + 1
                 ))?;
-                self.accounts_component
-                    .set_accounts(self.account_manager.list_accounts()?);
+                let accounts = self.account_manager.list_accounts()?;
+                let new_index = accounts.len().saturating_sub(1);
+
+                // Update accounts list and select the new account
+                self.accounts_component.set_accounts(accounts);
+                self.accounts_component.select(new_index);
+                self.account_manager.set_active_account(new_index)?;
+
+                // Update all components with the new account
+                self.receive_component.set_account(Some(account.clone()));
+                self.send_component.set_account(Some(account.clone()));
+                self.history_component.set_account(Some(account.clone()));
+                self.tokens_component.set_account(Some(account.clone()));
+                if let Some(ref mut dev) = self.dev_component {
+                    dev.set_account(Some(account.clone()));
+                }
+
                 self.status_message = format!("Created account: {}", account.name);
             }
             Action::SelectAccount(index) => {

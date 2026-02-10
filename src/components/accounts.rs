@@ -45,6 +45,14 @@ impl AccountsComponent {
         self.list_state.select(Some(self.selected_index));
     }
 
+    /// Select an account by index.
+    pub fn select(&mut self, index: usize) {
+        if index < self.accounts.len() {
+            self.selected_index = index;
+            self.list_state.select(Some(index));
+        }
+    }
+
     fn next(&mut self) {
         if self.accounts.is_empty() {
             return;
