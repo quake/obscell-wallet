@@ -176,6 +176,8 @@ fn test_multi_account_scanning() {
         .expect("Alice transfer should succeed");
 
     env.generate_blocks(5).expect("Should generate blocks");
+    env.wait_for_indexer_sync()
+        .expect("Should sync indexer after Alice transfer");
 
     // Generate stealth args for Bob
     let (eph_pub_b, stealth_pub_b) = obscell_wallet::domain::stealth::generate_ephemeral_key(
