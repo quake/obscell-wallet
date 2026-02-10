@@ -8,8 +8,8 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{eyre, Result};
-use curve25519_dalek_ng::scalar::Scalar;
+use color_eyre::eyre::{Result, eyre};
+use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 use crate::{
@@ -174,6 +174,20 @@ impl CtTxBuilder {
 
         if self.outputs.is_empty() {
             return Err(eyre!("No outputs specified"));
+        }
+
+        // Validate all amounts are within 32-bit range (required by bulletproofs)
+        // The contract uses 32-bit range proofs, so max value is 2^32 - 1
+        const MAX_RANGE_PROOF_VALUE: u64 = u32::MAX as u64;
+        for (i, output) in self.outputs.iter().enumerate() {
+            if output.amount > MAX_RANGE_PROOF_VALUE {
+                return Err(eyre!(
+                    "Output {} amount {} exceeds maximum allowed value {} (32-bit range proof limit)",
+                    i,
+                    output.amount,
+                    MAX_RANGE_PROOF_VALUE
+                ));
+            }
         }
 
         let total_input: u64 = self.inputs.iter().map(|c| c.amount).sum();
@@ -493,7 +507,7 @@ impl CtTxBuilder {
         _issuer_account: &Account,
     ) -> Result<BuiltCtTransaction> {
         // For minting, we use zero blinding factor
-        let blinding = Scalar::zero();
+        let blinding = Scalar::ZERO;
         let _commitment = commit(mint_amount, &blinding);
 
         // Generate range proof for single output
@@ -612,7 +626,7 @@ impl CtTxBuilder {
         stealth_address: &[u8],
         amount: u64,
         _blinding: &Scalar,
-        commitment: &curve25519_dalek_ng::ristretto::CompressedRistretto,
+        commitment: &curve25519_dalek::ristretto::CompressedRistretto,
     ) -> Result<(Script, Vec<u8>)> {
         if stealth_address.len() != 66 {
             return Err(eyre!(
@@ -664,7 +678,7 @@ impl CtTxBuilder {
         account: &Account,
         amount: u64,
         _blinding: &Scalar,
-        commitment: &curve25519_dalek_ng::ristretto::CompressedRistretto,
+        commitment: &curve25519_dalek::ristretto::CompressedRistretto,
     ) -> Result<(Script, Vec<u8>)> {
         let view_pub = account.view_public_key();
         let spend_pub = account.spend_public_key();

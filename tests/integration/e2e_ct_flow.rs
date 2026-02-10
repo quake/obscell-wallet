@@ -6,7 +6,7 @@
 //! 3. Amount encryption/decryption
 //! 4. Commitment balance verification
 
-use curve25519_dalek_ng::scalar::Scalar;
+use curve25519_dalek::scalar::Scalar;
 
 use obscell_wallet::domain::ct::{
     commit, decrypt_amount, encrypt_amount, mint_commitment, prove_range, random_blinding,
@@ -143,7 +143,7 @@ fn test_pedersen_commitment_properties() {
 
     // Test mint commitment (zero blinding)
     let mint_c = mint_commitment(value);
-    let manual_mint = commit(value, &Scalar::zero());
+    let manual_mint = commit(value, &Scalar::ZERO);
     assert_eq!(
         mint_c, manual_mint,
         "Mint commitment should equal commit with zero blinding"
@@ -433,13 +433,13 @@ fn test_mint_commitment_zero_blinding() {
 
     // Mint commitment uses zero blinding: C = amount * G
     let c_mint = mint_commitment(amount);
-    let c_manual = commit(amount, &Scalar::zero());
+    let c_manual = commit(amount, &Scalar::ZERO);
 
     assert_eq!(c_mint, c_manual, "Mint commitment should use zero blinding");
 
     // Verify that mint commitment can be used with range proof
     let (proof, commitments) =
-        prove_range(&[amount], &[Scalar::zero()]).expect("Range proof should succeed");
+        prove_range(&[amount], &[Scalar::ZERO]).expect("Range proof should succeed");
     verify_range(&proof, &commitments).expect("Verification should succeed");
 
     // The commitment from prove_range should match our mint commitment

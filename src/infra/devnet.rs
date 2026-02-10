@@ -8,7 +8,7 @@ use std::time::Duration;
 use ckb_jsonrpc_types::BlockNumber;
 use ckb_sdk::CkbRpcClient;
 use ckb_types::H256;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 
 /// DevNet manager for controlling a local CKB devnet.
 pub struct DevNet {

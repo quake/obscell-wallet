@@ -51,10 +51,7 @@ pub fn generate_ephemeral_key_with_shared_secret(
 /// Derive the shared secret from a stealth script args and view key.
 ///
 /// This is the counterpart to `generate_ephemeral_key_with_shared_secret` for the recipient.
-pub fn derive_shared_secret(
-    stealth_script_args: &[u8],
-    view_key: &SecretKey,
-) -> Option<[u8; 32]> {
+pub fn derive_shared_secret(stealth_script_args: &[u8], view_key: &SecretKey) -> Option<[u8; 32]> {
     if stealth_script_args.len() < 33 {
         return None;
     }

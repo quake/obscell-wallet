@@ -303,7 +303,10 @@ impl Scanner {
                 with the actual deployed contract code_hash."
             );
         } else {
-            debug!("Scanning with stealth_lock_code_hash: 0x{}", hex::encode(&code_hash));
+            debug!(
+                "Scanning with stealth_lock_code_hash: 0x{}",
+                hex::encode(code_hash)
+            );
         }
 
         // Load existing cells for each account to detect new ones
@@ -356,7 +359,8 @@ impl Scanner {
                             .extend_from_slice(&cell.out_point.index.value().to_le_bytes());
 
                         // Validate that tx_hash is not all zeros (sanity check)
-                        let is_zero_hash = cell.out_point.tx_hash.as_bytes().iter().all(|&b| b == 0);
+                        let is_zero_hash =
+                            cell.out_point.tx_hash.as_bytes().iter().all(|&b| b == 0);
                         if is_zero_hash {
                             info!(
                                 "WARNING: scan_all_accounts found cell with zero tx_hash! \
@@ -709,9 +713,14 @@ impl Scanner {
     /// New cells are appended to the store via `add_*` methods.
     pub fn incremental_scan(&self, accounts: &[Account]) -> Result<ScanAllResult> {
         let cursor = self.load_cursor()?;
-        info!("Starting incremental scan for {} accounts (cursor: {})",
+        info!(
+            "Starting incremental scan for {} accounts (cursor: {})",
             accounts.len(),
-            if cursor.is_some() { "resuming" } else { "from beginning" }
+            if cursor.is_some() {
+                "resuming"
+            } else {
+                "from beginning"
+            }
         );
         self.scan_with_cursor(accounts, cursor)
     }
@@ -887,14 +896,14 @@ impl Scanner {
                                 }
                             };
 
-                        let shared_secret =
-                            match Self::derive_ct_shared_secret(lock_args, view_key) {
-                                Some(s) => s,
-                                None => {
-                                    debug!("Failed to derive shared secret");
-                                    break;
-                                }
-                            };
+                        let shared_secret = match Self::derive_ct_shared_secret(lock_args, view_key)
+                        {
+                            Some(s) => s,
+                            None => {
+                                debug!("Failed to derive shared secret");
+                                break;
+                            }
+                        };
 
                         let amount = match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
                             Some(a) => a,
@@ -944,9 +953,28 @@ impl Scanner {
                             .unwrap_or_default();
 
                         let ct_info_data = match CtInfoData::from_bytes(&cell_data) {
-                            Ok(data) => data,
+                            Ok(data) => {
+                                // Log ct-info cell details for troubleshooting
+                                tracing::debug!(
+                                    "Parsed ct-info cell: total_supply={}, supply_cap={} ({}), flags=0x{:02x}",
+                                    data.total_supply,
+                                    data.supply_cap,
+                                    if data.supply_cap == 0 {
+                                        "UNLIMITED"
+                                    } else {
+                                        "limited"
+                                    },
+                                    data.flags
+                                );
+                                data
+                            }
                             Err(e) => {
-                                debug!("Invalid ct-info cell data: {}", e);
+                                tracing::warn!(
+                                    "Invalid ct-info cell data (len={}): {}. Raw data: 0x{}",
+                                    cell_data.len(),
+                                    e,
+                                    hex::encode(&cell_data[..cell_data.len().min(64)])
+                                );
                                 break;
                             }
                         };
@@ -978,8 +1006,9 @@ impl Scanner {
                             lock_args.to_vec(),
                         );
 
-                        if let Some(result) =
-                            ct_info_results.iter_mut().find(|r| r.account_id == *account_id)
+                        if let Some(result) = ct_info_results
+                            .iter_mut()
+                            .find(|r| r.account_id == *account_id)
                         {
                             let is_new = existing_ct_info_out_points
                                 .get(account_id)
@@ -995,14 +1024,12 @@ impl Scanner {
                         // Process as stealth cell (plain CKB)
                         let capacity: u64 = cell.output.capacity.into();
 
-                        let stealth_cell = StealthCell::new(
-                            out_point_bytes.clone(),
-                            capacity,
-                            lock_args.to_vec(),
-                        );
+                        let stealth_cell =
+                            StealthCell::new(out_point_bytes.clone(), capacity, lock_args.to_vec());
 
-                        if let Some(result) =
-                            stealth_results.iter_mut().find(|r| r.account_id == *account_id)
+                        if let Some(result) = stealth_results
+                            .iter_mut()
+                            .find(|r| r.account_id == *account_id)
                         {
                             result.total_capacity += capacity;
                             result.cells.push(stealth_cell.clone());
@@ -1237,9 +1264,27 @@ impl Scanner {
                         .unwrap_or_default();
 
                     let ct_info_data = match CtInfoData::from_bytes(&cell_data) {
-                        Ok(data) => data,
+                        Ok(data) => {
+                            tracing::debug!(
+                                "Parsed ct-info cell: total_supply={}, supply_cap={} ({}), flags=0x{:02x}",
+                                data.total_supply,
+                                data.supply_cap,
+                                if data.supply_cap == 0 {
+                                    "UNLIMITED"
+                                } else {
+                                    "limited"
+                                },
+                                data.flags
+                            );
+                            data
+                        }
                         Err(e) => {
-                            debug!("Invalid ct-info cell data: {}", e);
+                            tracing::warn!(
+                                "Invalid ct-info cell data (len={}): {}. Raw data: 0x{}",
+                                cell_data.len(),
+                                e,
+                                hex::encode(&cell_data[..cell_data.len().min(64)])
+                            );
                             continue;
                         }
                     };

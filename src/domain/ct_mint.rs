@@ -11,8 +11,8 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{eyre, Result};
-use curve25519_dalek_ng::scalar::Scalar;
+use color_eyre::eyre::{Result, eyre};
+use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 use crate::{
@@ -94,6 +94,48 @@ pub struct MintParams {
 /// 4. Mint commitment for ct-token-type verification
 /// 5. Range proof for ct-token output
 pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<BuiltMintTransaction> {
+    // === DIAGNOSTIC LOGGING ===
+    // Log contract configuration for troubleshooting version mismatches
+    tracing::info!(
+        "=== CT Mint Transaction Build ===\n  \
+         Token ID: 0x{}\n  \
+         Mint amount: {}\n  \
+         ct-info supply_cap: {} ({})\n  \
+         ct-info total_supply: {}\n  \
+         ct-info flags: 0x{:02x} (mintable={})",
+        hex::encode(&params.token_id[0..8]),
+        params.mint_amount,
+        params.ct_info_cell.data.supply_cap,
+        if params.ct_info_cell.data.supply_cap == 0 {
+            "UNLIMITED"
+        } else {
+            "limited"
+        },
+        params.ct_info_cell.data.total_supply,
+        params.ct_info_cell.data.flags,
+        params.ct_info_cell.data.is_mintable()
+    );
+
+    tracing::debug!(
+        "Contract config:\n  \
+         ct_info_code_hash: {}\n  \
+         ct_token_code_hash: {}\n  \
+         stealth_lock_code_hash: {}",
+        &config.contracts.ct_info_code_hash,
+        &config.contracts.ct_token_code_hash,
+        &config.contracts.stealth_lock_code_hash
+    );
+
+    tracing::debug!(
+        "ct-info cell input:\n  \
+         out_point: 0x{}\n  \
+         capacity: {} CKB\n  \
+         lock_script_args: 0x{}",
+        hex::encode(&params.ct_info_cell.out_point),
+        params.ct_info_cell.capacity as f64 / 100_000_000.0,
+        hex::encode(&params.ct_info_cell.lock_script_args)
+    );
+
     // Validate ct-info data
     if !params.ct_info_cell.data.is_mintable() {
         return Err(eyre!("Token is not mintable (MINTABLE flag not set)"));
@@ -109,6 +151,19 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
             params.ct_info_cell.data.total_supply,
             params.mint_amount,
             params.ct_info_cell.data.supply_cap
+        ));
+    }
+
+    // Validate mint amount is within 32-bit range (required by bulletproofs range proof)
+    // The contract uses 32-bit range proofs, so max value is 2^32 - 1 = 4,294,967,295
+    const MAX_RANGE_PROOF_VALUE: u64 = u32::MAX as u64;
+    if params.mint_amount > MAX_RANGE_PROOF_VALUE {
+        return Err(eyre!(
+            "Mint amount {} exceeds maximum allowed value {} (32-bit range proof limit).\n\
+             The contract uses 32-bit range proofs, limiting individual transaction amounts to ~4.29 billion.\n\
+             To mint larger amounts, split into multiple transactions.",
+            params.mint_amount,
+            MAX_RANGE_PROOF_VALUE
         ));
     }
 
@@ -160,13 +215,44 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     // Compute mint commitment (amount * G with zero blinding)
     let pc_gens = PedersenGens::default();
     let mint_scalar = Scalar::from(params.mint_amount);
-    let mint_commitment = pc_gens.commit(mint_scalar, Scalar::zero());
+    let mint_commitment = pc_gens.commit(mint_scalar, Scalar::ZERO);
     let mint_commitment_bytes = mint_commitment.compress().to_bytes();
 
     // Generate output blinding factor and range proof for minted output
-    let output_blinding = Scalar::zero(); // Mint uses zero blinding for the commitment
+    let output_blinding = Scalar::ZERO; // Mint uses zero blinding for the commitment
     let (range_proof, commitments) = prove_range(&[params.mint_amount], &[output_blinding])
         .map_err(|e| eyre!("Failed to generate range proof: {}", e))?;
+
+    // === RANGE PROOF DIAGNOSTIC ===
+    // This is critical for debugging InvalidRangeProof errors (error code 9)
+    let commitments_match = mint_commitment_bytes == commitments[0].to_bytes();
+    tracing::info!(
+        "Range proof generated:\n  \
+         amount: {}\n  \
+         mint_commitment: 0x{}\n  \
+         range_proof_commitment: 0x{}\n  \
+         commitments_match: {} {}",
+        params.mint_amount,
+        hex::encode(mint_commitment_bytes),
+        hex::encode(commitments[0].as_bytes()),
+        commitments_match,
+        if commitments_match {
+            "(OK)"
+        } else {
+            "(MISMATCH - will fail verification!)"
+        }
+    );
+
+    if !commitments_match {
+        tracing::error!(
+            "CRITICAL: Mint commitment and range proof commitment do not match!\n  \
+             This will cause InvalidRangeProof (error 9) on chain.\n  \
+             Possible causes:\n  \
+             - Bulletproofs library version mismatch with deployed contract\n  \
+             - Different Pedersen generator parameters\n  \
+             - Blinding factor mismatch"
+        );
+    }
 
     // Build ct-token output
     let (ct_token_lock_script, ct_token_output_data) = build_ct_token_output(
@@ -263,6 +349,7 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
         },
     ];
 
+    let ct_token_data_len = ct_token_output_data.len();
     let mut outputs_data = vec![
         JsonBytes::from_vec(new_ct_info_data.to_bytes()),
         JsonBytes::from_vec(ct_token_output_data),
@@ -282,6 +369,19 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
 
     // Store range proof bytes for later use in signing
     let range_proof_bytes = range_proof.to_bytes();
+
+    tracing::debug!(
+        "Transaction structure:\n  \
+         inputs: {} (ct-info, funding)\n  \
+         outputs: {} (ct-info, ct-token{})\n  \
+         range_proof_size: {} bytes\n  \
+         ct_token_data_size: {} bytes (commitment + encrypted amount)",
+        2,
+        outputs.len(),
+        if outputs.len() > 2 { ", change" } else { "" },
+        range_proof_bytes.len(),
+        ct_token_data_len
+    );
 
     // Build transaction (witnesses will be filled after signing)
     let tx = Transaction {
@@ -436,7 +536,7 @@ fn build_ct_token_output(
     config: &Config,
     stealth_address: &[u8],
     amount: u64,
-    commitment: &curve25519_dalek_ng::ristretto::CompressedRistretto,
+    commitment: &curve25519_dalek::ristretto::CompressedRistretto,
 ) -> Result<(Script, Vec<u8>)> {
     if stealth_address.len() != 66 {
         return Err(eyre!(

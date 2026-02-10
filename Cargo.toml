@@ -21,11 +21,12 @@ strum = { version = "0.26", features = ["derive"] }
 
 # Crypto
 secp256k1 = { version = "0.28", features = ["rand-std", "recovery", "global-context"] }
-# bulletproofs uses curve25519-dalek-ng internally, so we must use the same
-bulletproofs = { version = "4", default-features = false, features = ["std"] }
-curve25519-dalek-ng = "4"
+# Use the same bulletproofs as the obscell smart contract (from zkcrypto)
+bulletproofs = { git = "https://github.com/zkcrypto/bulletproofs", default-features = false, features = ["std"] }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
 merlin = "3"
 rand = "0.8"
+rand_core = "0.6"
 sha2 = "0.10"
 hex = "0.4"
 

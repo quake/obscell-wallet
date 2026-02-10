@@ -46,25 +46,16 @@ pub struct ContractConfig {
     pub ckb_auth_code_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CellDepConfig {
+    #[serde(default)]
     pub tx_hash: String,
+    #[serde(default)]
     pub index: u32,
     #[serde(default)]
     pub data_hash: Option<String>,
     #[serde(default)]
     pub type_id_hash: Option<String>,
-}
-
-impl Default for CellDepConfig {
-    fn default() -> Self {
-        Self {
-            tx_hash: String::new(),
-            index: 0,
-            data_hash: None,
-            type_id_hash: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

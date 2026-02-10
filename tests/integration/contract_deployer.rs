@@ -166,28 +166,49 @@ impl ContractDeployer {
                 ckb_auth: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ckb_auth.tx_hash.as_bytes())),
                     index: info.ckb_auth.output_index,
-                    data_hash: Some(format!("0x{}", hex::encode(info.ckb_auth.data_hash.as_bytes()))),
+                    data_hash: Some(format!(
+                        "0x{}",
+                        hex::encode(info.ckb_auth.data_hash.as_bytes())
+                    )),
                     type_id_hash: None,
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.stealth_lock.tx_hash.as_bytes())),
                     index: info.stealth_lock.output_index,
-                    data_hash: Some(format!("0x{}", hex::encode(info.stealth_lock.data_hash.as_bytes()))),
-                    type_id_hash: info.stealth_lock.type_id_hash.as_ref()
+                    data_hash: Some(format!(
+                        "0x{}",
+                        hex::encode(info.stealth_lock.data_hash.as_bytes())
+                    )),
+                    type_id_hash: info
+                        .stealth_lock
+                        .type_id_hash
+                        .as_ref()
                         .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_token: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_token_type.tx_hash.as_bytes())),
                     index: info.ct_token_type.output_index,
-                    data_hash: Some(format!("0x{}", hex::encode(info.ct_token_type.data_hash.as_bytes()))),
-                    type_id_hash: info.ct_token_type.type_id_hash.as_ref()
+                    data_hash: Some(format!(
+                        "0x{}",
+                        hex::encode(info.ct_token_type.data_hash.as_bytes())
+                    )),
+                    type_id_hash: info
+                        .ct_token_type
+                        .type_id_hash
+                        .as_ref()
                         .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_info: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_info_type.tx_hash.as_bytes())),
                     index: info.ct_info_type.output_index,
-                    data_hash: Some(format!("0x{}", hex::encode(info.ct_info_type.data_hash.as_bytes()))),
-                    type_id_hash: info.ct_info_type.type_id_hash.as_ref()
+                    data_hash: Some(format!(
+                        "0x{}",
+                        hex::encode(info.ct_info_type.data_hash.as_bytes())
+                    )),
+                    type_id_hash: info
+                        .ct_info_type
+                        .type_id_hash
+                        .as_ref()
                         .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
             },

@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::devnet::DevNet;
 use super::TestEnv;
+use super::devnet::DevNet;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
-    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
+    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
+    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -1504,4 +1504,199 @@ fn test_ct_balance_aggregation_multiple_cells() {
     println!("  - Cells found: {}", alice_result.cells.len());
     println!("  - Total balance: {}", balance.total_amount);
     println!("  - Cell count: {}", balance.cell_count);
+}
+
+/// Test CT token genesis and mint with UNLIMITED supply (supply_cap = 0).
+/// This specifically tests the scenario where user creates a token without a supply cap.
+#[test]
+fn test_ct_mint_unlimited_supply() {
+    let env = TestEnv::get();
+    let config = create_test_config(env);
+    let (_store, _temp_dir) = create_temp_store();
+
+    // Create issuer and recipient accounts
+    let issuer = Account::new(0, "Issuer".to_string());
+    let recipient = Account::new(1, "Recipient".to_string());
+
+    println!("=== Testing UNLIMITED supply CT token mint ===");
+    println!("Issuer: {}", &issuer.stealth_address()[..32]);
+    println!("Recipient: {}", &recipient.stealth_address()[..32]);
+
+    // Step 1: Create the CT token with UNLIMITED supply (supply_cap = 0)
+    println!("\nStep 1: Creating CT token with UNLIMITED supply (supply_cap = 0)...");
+    let funding_amount = 350_00000000u64;
+    let funding_cell =
+        fund_account_with_stealth(env, &issuer, funding_amount).expect("Funding should succeed");
+
+    let issuer_stealth_address = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    let genesis_params = GenesisParams {
+        supply_cap: 0, // UNLIMITED - this is the key difference!
+        flags: MINTABLE,
+        issuer_stealth_address: issuer_stealth_address.clone(),
+    };
+
+    let genesis_tx = build_genesis_transaction(&config, genesis_params, funding_cell.clone())
+        .expect("Building genesis tx should succeed");
+
+    let token_id = genesis_tx.token_id;
+    let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
+
+    println!(
+        "Genesis tx built: token_id=0x{}, supply_cap=UNLIMITED",
+        hex::encode(&token_id[..8])
+    );
+
+    let signed_genesis =
+        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+            .expect("Signing genesis should succeed");
+
+    let client = CkbRpcClient::new(DevNet::RPC_URL);
+    let genesis_hash = client
+        .send_transaction(signed_genesis, None)
+        .expect("Genesis tx should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Token created: genesis_tx=0x{}",
+        hex::encode(genesis_hash.as_bytes())
+    );
+
+    // Verify the ct-info cell has supply_cap = 0
+    let ct_info_out_point = ckb_jsonrpc_types::OutPoint {
+        tx_hash: genesis_hash.clone(),
+        index: ckb_jsonrpc_types::Uint32::from(0u32),
+    };
+    let cell_with_status = client
+        .get_live_cell(ct_info_out_point, true)
+        .expect("Should get cell")
+        .cell
+        .expect("Cell should exist");
+    let cell_data = cell_with_status.data.unwrap();
+    let data_bytes = cell_data.content.as_bytes();
+    let supply_cap = u128::from_le_bytes(data_bytes[16..32].try_into().unwrap());
+    assert_eq!(supply_cap, 0, "Supply cap should be 0 (unlimited)");
+    println!("Verified: ct-info cell supply_cap = 0 (UNLIMITED)");
+
+    // Step 2: Mint tokens to recipient
+    println!("\nStep 2: Minting 10000 tokens to recipient...");
+    let mint_amount = 10000u64;
+
+    // Fund the issuer with a separate cell for minting
+    let mint_funding_amount = 350_00000000u64;
+    let mint_funding_cell = fund_account_with_stealth(env, &issuer, mint_funding_amount)
+        .expect("Mint funding should succeed");
+
+    println!(
+        "Mint funding cell created: capacity={} CKB",
+        mint_funding_cell.capacity / 100_000_000
+    );
+
+    // Build ct-info cell input (from genesis output 0)
+    let mut ct_info_out_point_bytes = Vec::with_capacity(36);
+    ct_info_out_point_bytes.extend_from_slice(genesis_hash.as_bytes());
+    ct_info_out_point_bytes.extend_from_slice(&0u32.to_le_bytes());
+
+    let ct_info_cell_input = CtInfoCellInput {
+        out_point: ct_info_out_point_bytes,
+        lock_script_args: ct_info_lock_args.clone(),
+        data: obscell_wallet::domain::ct_info::CtInfoData::new(
+            0,        // total_supply = 0 (first mint)
+            0,        // supply_cap = 0 (UNLIMITED)
+            MINTABLE, // flags
+        ),
+        capacity: 230_00000000,
+    };
+
+    let recipient_stealth_address = {
+        let view_pub = recipient.view_public_key().serialize();
+        let spend_pub = recipient.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    println!("Building mint transaction...");
+    println!("  - ct_info total_supply: 0");
+    println!("  - ct_info supply_cap: 0 (UNLIMITED)");
+    println!("  - mint_amount: {}", mint_amount);
+
+    let mint_params = MintParams {
+        ct_info_cell: ct_info_cell_input,
+        token_id,
+        mint_amount,
+        recipient_stealth_address,
+        funding_cell: mint_funding_cell.clone(),
+    };
+
+    let built_mint =
+        build_mint_transaction(&config, mint_params).expect("Building mint tx should succeed");
+
+    println!(
+        "Mint tx built: hash=0x{}, range_proof_size={} bytes",
+        hex::encode(built_mint.tx_hash.as_bytes()),
+        built_mint.range_proof_bytes.len()
+    );
+    println!(
+        "  - mint_commitment: 0x{}",
+        hex::encode(&built_mint.mint_commitment)
+    );
+
+    // Sign the mint transaction
+    println!("\nStep 3: Signing mint transaction...");
+    let signed_mint = sign_mint_transaction(
+        built_mint,
+        &issuer,
+        &ct_info_lock_args,
+        &mint_funding_cell.lock_script_args,
+    )
+    .expect("Signing mint tx should succeed");
+
+    // Submit the mint transaction
+    println!("Step 4: Submitting mint transaction...");
+    let mint_result = client.send_transaction(signed_mint, None);
+
+    match mint_result {
+        Ok(tx_hash) => {
+            println!(
+                "SUCCESS! Mint tx sent: 0x{}",
+                hex::encode(tx_hash.as_bytes())
+            );
+
+            env.generate_blocks(10).expect("Should generate blocks");
+            env.wait_for_indexer_sync().expect("Should sync");
+
+            // Verify the minted CT token cell
+            let ct_token_out_point = ckb_jsonrpc_types::OutPoint {
+                tx_hash: tx_hash.clone(),
+                index: ckb_jsonrpc_types::Uint32::from(1u32), // CT token is output 1
+            };
+            let ct_token_cell = client
+                .get_live_cell(ct_token_out_point, true)
+                .expect("Should get cell")
+                .cell
+                .expect("CT token cell should exist");
+
+            let ct_token_data = ct_token_cell.data.unwrap();
+            assert_eq!(
+                ct_token_data.content.as_bytes().len(),
+                64,
+                "CT token data should be 64 bytes"
+            );
+
+            println!("CT token cell verified: 64 bytes of data (commitment + encrypted amount)");
+            println!("\n=== UNLIMITED supply mint test PASSED! ===");
+        }
+        Err(e) => {
+            panic!(
+                "FAILED! Mint transaction rejected with error:\n{:#?}\n\
+                This is the bug we're trying to reproduce - InvalidRangeProof (error 9)",
+                e
+            );
+        }
+    }
 }

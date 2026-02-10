@@ -1435,28 +1435,20 @@ impl Component for TokensComponent {
     }
 }
 
-/// Parse token amount string to u64 (8 decimal places).
+/// Parse token amount string to u64.
+/// CT tokens are whole numbers without decimals (unlike CKB which has 8 decimal places).
 fn parse_token_amount(s: &str) -> Option<u64> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
 
-    let mut parts = s.split('.');
-    let int = parts.next()?;
-    let frac = parts.next().unwrap_or("");
-
-    if parts.next().is_some() || frac.len() > 8 {
-        return None;
-    }
-
-    let frac_padded = format!("{:0<8}", frac);
-    format!("{}{}", int, frac_padded).parse().ok()
+    // CT tokens are whole numbers, no decimals allowed
+    s.parse().ok()
 }
 
-/// Format token amount for display (8 decimal places).
+/// Format token amount for display.
+/// CT tokens are whole numbers without decimals.
 fn format_token_amount(amount: u64) -> String {
-    let int_part = amount / 100_000_000;
-    let frac_part = amount % 100_000_000;
-    format!("{}.{:08}", int_part, frac_part)
+    amount.to_string()
 }

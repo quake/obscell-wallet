@@ -68,14 +68,8 @@ impl Tab {
                 Span::styled("t", underline),
                 Span::raw("tings"),
             ]),
-            Tab::Accounts => Line::from(vec![
-                Span::styled("A", underline),
-                Span::raw("ccounts"),
-            ]),
-            Tab::Send => Line::from(vec![
-                Span::styled("S", underline),
-                Span::raw("end"),
-            ]),
+            Tab::Accounts => Line::from(vec![Span::styled("A", underline), Span::raw("ccounts")]),
+            Tab::Send => Line::from(vec![Span::styled("S", underline), Span::raw("end")]),
             Tab::Receive => Line::from(vec![
                 Span::raw("Recei"),
                 Span::styled("v", underline),
@@ -86,14 +80,8 @@ impl Tab {
                 Span::styled("o", underline),
                 Span::raw("kens"),
             ]),
-            Tab::History => Line::from(vec![
-                Span::styled("H", underline),
-                Span::raw("istory"),
-            ]),
-            Tab::Dev => Line::from(vec![
-                Span::styled("D", underline),
-                Span::raw("ev"),
-            ]),
+            Tab::History => Line::from(vec![Span::styled("H", underline), Span::raw("istory")]),
+            Tab::Dev => Line::from(vec![Span::styled("D", underline), Span::raw("ev")]),
         }
     }
 
@@ -536,10 +524,10 @@ impl App {
                                 for result in &scan_all_result.stealth_results {
                                     if !result.new_cells.is_empty() {
                                         has_new = true;
-                                        if let Err(e) = self
-                                            .account_manager
-                                            .update_balance(result.account_id, result.total_capacity)
-                                        {
+                                        if let Err(e) = self.account_manager.update_balance(
+                                            result.account_id,
+                                            result.total_capacity,
+                                        ) {
                                             info!(
                                                 "Failed to update balance for account {}: {}",
                                                 result.account_id, e
@@ -549,8 +537,14 @@ impl App {
                                 }
 
                                 // Check for new CT or CT-info cells too
-                                if scan_all_result.ct_results.iter().any(|r| !r.new_cells.is_empty())
-                                    || scan_all_result.ct_info_results.iter().any(|r| !r.new_cells.is_empty())
+                                if scan_all_result
+                                    .ct_results
+                                    .iter()
+                                    .any(|r| !r.new_cells.is_empty())
+                                    || scan_all_result
+                                        .ct_info_results
+                                        .iter()
+                                        .any(|r| !r.new_cells.is_empty())
                                 {
                                     has_new = true;
                                 }
@@ -558,6 +552,23 @@ impl App {
                                 if has_new {
                                     self.accounts_component
                                         .set_accounts(self.account_manager.list_accounts()?);
+
+                                    // Refresh tokens display for current account
+                                    if let Some(account) = &self.tokens_component.account
+                                        && let Ok(ct_cells) = self.store.get_ct_cells(account.id)
+                                    {
+                                        let ct_info_cells = self
+                                            .store
+                                            .get_ct_info_cells(account.id)
+                                            .unwrap_or_default();
+                                        let balances = aggregate_ct_balances_with_info(
+                                            &ct_cells,
+                                            &ct_info_cells,
+                                            &self.config,
+                                        );
+                                        self.tokens_component.set_balances(balances);
+                                        self.tokens_component.set_ct_cells(ct_cells);
+                                    }
 
                                     if let Ok(tip) = self.scanner.get_tip_block_number() {
                                         self.tip_block_number = Some(tip);
@@ -649,8 +660,11 @@ impl App {
                     if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
                         let ct_info_cells =
                             self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                        let balances =
-                            aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
+                        let balances = aggregate_ct_balances_with_info(
+                            &ct_cells,
+                            &ct_info_cells,
+                            &self.config,
+                        );
                         self.tokens_component.set_ct_cells(ct_cells);
                         self.tokens_component.set_balances(balances);
                     }
@@ -712,6 +726,21 @@ impl App {
                             // Refresh accounts display
                             self.accounts_component
                                 .set_accounts(self.account_manager.list_accounts()?);
+
+                            // Refresh tokens display for current account
+                            if let Some(account) = &self.tokens_component.account
+                                && let Ok(ct_cells) = self.store.get_ct_cells(account.id)
+                            {
+                                let ct_info_cells =
+                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                                let balances = aggregate_ct_balances_with_info(
+                                    &ct_cells,
+                                    &ct_info_cells,
+                                    &self.config,
+                                );
+                                self.tokens_component.set_balances(balances);
+                                self.tokens_component.set_ct_cells(ct_cells);
+                            }
 
                             // Refresh history for current account
                             if let Some(account) = &self.history_component.account
@@ -983,8 +1012,10 @@ impl App {
                     }
 
                     // Build the CT transaction
-                    let builder =
-                        CtTxBuilder::new(self.config.clone(), token_balance.type_script_args.clone());
+                    let builder = CtTxBuilder::new(
+                        self.config.clone(),
+                        token_balance.type_script_args.clone(),
+                    );
                     let builder = match builder
                         .add_output(stealth_addr, amount_value)
                         .select_inputs(&available_ct_cells, amount_value)
@@ -1065,8 +1096,11 @@ impl App {
                             if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
                                 let ct_info_cells =
                                     self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                                let balances =
-                                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
+                                let balances = aggregate_ct_balances_with_info(
+                                    &ct_cells,
+                                    &ct_info_cells,
+                                    &self.config,
+                                );
                                 self.tokens_component.set_balances(balances);
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
@@ -1160,7 +1194,9 @@ impl App {
                         }
                     };
 
-                    let funding_cell = stealth_cells.iter().find(|c| c.capacity >= min_funding_capacity);
+                    let funding_cell = stealth_cells
+                        .iter()
+                        .find(|c| c.capacity >= min_funding_capacity);
 
                     let funding_cell = match funding_cell {
                         Some(cell) => cell,
@@ -1227,11 +1263,8 @@ impl App {
                             self.status_message = format!("Minted {} CT tokens", amount_value);
 
                             // Save transaction record to history
-                            let tx_record = TxRecord::ct_mint(
-                                tx_hash.0,
-                                token_balance.token_id,
-                                amount_value,
-                            );
+                            let tx_record =
+                                TxRecord::ct_mint(tx_hash.0, token_balance.token_id, amount_value);
                             if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
                                 info!("Failed to save CT mint record: {}", e);
                             }
@@ -1245,6 +1278,16 @@ impl App {
                             self.tokens_component.clear_mint();
                         }
                         Err(e) => {
+                            // Enhanced error logging for troubleshooting
+                            let error_str = format!("{}", e);
+                            tracing::error!(
+                                "CT mint submission failed: {}\n  \
+                                 Hint: If this is 'InvalidRangeProof' (error 9), possible causes:\n  \
+                                 - Contract version mismatch (redeploy contracts or check config)\n  \
+                                 - Bulletproofs library version mismatch\n  \
+                                 Run with RUST_LOG=debug for detailed diagnostics.",
+                                error_str
+                            );
                             self.tokens_component.error_message =
                                 Some(format!("Mint submission failed: {}", e));
                             self.status_message = "CT mint failed: RPC error".to_string();
@@ -1392,6 +1435,19 @@ impl App {
                             self.status_message
                                 .push_str(" - Press 'r' to rescan after confirmation");
 
+                            // Refresh CT balances to show updated state
+                            if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
+                                let ct_info_cells =
+                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
+                                let balances = aggregate_ct_balances_with_info(
+                                    &ct_cells,
+                                    &ct_info_cells,
+                                    &self.config,
+                                );
+                                self.tokens_component.set_balances(balances);
+                                self.tokens_component.set_ct_cells(ct_cells);
+                            }
+
                             // Clear genesis form and return to list
                             self.tokens_component.clear_genesis();
                             self.tokens_component.mode =
@@ -1525,8 +1581,7 @@ impl App {
                     .and_then(|d| d.parse_faucet_amount());
                 let account = self.dev_component.as_ref().and_then(|d| d.account.clone());
 
-                if let (Some(faucet), Some(amount), Some(account)) =
-                    (&self.faucet, amount, account)
+                if let (Some(faucet), Some(amount), Some(account)) = (&self.faucet, amount, account)
                 {
                     // Generate a one-time stealth lock args from the account's public keys
                     // The stealth_address() returns view_pub || spend_pub (66 bytes meta address)
@@ -1556,17 +1611,17 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let stealth_lock_code_hash =
-                        match ckb_types::H256::from_slice(&code_hash_bytes) {
-                            Ok(h) => h,
-                            Err(e) => {
-                                self.status_message = format!("Invalid code hash: {}", e);
-                                if let Some(ref mut dev) = self.dev_component {
-                                    dev.error_message = Some(format!("{:?}", e));
-                                }
-                                return Ok(());
+                    let stealth_lock_code_hash = match ckb_types::H256::from_slice(&code_hash_bytes)
+                    {
+                        Ok(h) => h,
+                        Err(e) => {
+                            self.status_message = format!("Invalid code hash: {}", e);
+                            if let Some(ref mut dev) = self.dev_component {
+                                dev.error_message = Some(format!("{:?}", e));
                             }
-                        };
+                            return Ok(());
+                        }
+                    };
 
                     match faucet.transfer_to_stealth(
                         &stealth_lock_args,
@@ -1636,8 +1691,10 @@ impl App {
                 // Reload accounts from the new store
                 let accounts = self.account_manager.list_accounts()?;
                 self.accounts_component.set_accounts(accounts.clone());
-                self.settings_component.set_network(&self.config.network.name);
-                self.accounts_component.set_is_mainnet(self.config.network.name == "mainnet");
+                self.settings_component
+                    .set_network(&self.config.network.name);
+                self.accounts_component
+                    .set_is_mainnet(self.config.network.name == "mainnet");
 
                 // Reset UI components with the first account (if any)
                 if let Some(first_account) = accounts.first() {
@@ -1681,13 +1738,15 @@ impl App {
                     // Entering dev mode - create dev components
                     let dev_component = DevComponent::new(self.action_tx.clone());
                     let devnet = DevNet::with_defaults();
-                    let miner_key_bytes =
-                        hex::decode("d00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc")
-                            .expect("Invalid miner key hex");
-                    let miner_key =
-                        secp256k1::SecretKey::from_slice(&miner_key_bytes).expect("Invalid miner key");
+                    let miner_key_bytes = hex::decode(
+                        "d00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc",
+                    )
+                    .expect("Invalid miner key hex");
+                    let miner_key = secp256k1::SecretKey::from_slice(&miner_key_bytes)
+                        .expect("Invalid miner key");
                     let miner_lock_args = Faucet::derive_lock_args(&miner_key);
-                    let faucet = Faucet::new(&self.config.network.rpc_url, miner_key, miner_lock_args);
+                    let faucet =
+                        Faucet::new(&self.config.network.rpc_url, miner_key, miner_lock_args);
 
                     self.dev_component = Some(dev_component);
                     self.devnet = Some(devnet);
@@ -1777,13 +1836,35 @@ impl App {
         let indexer_synced = self.indexer_synced;
         let dev_account = self.dev_component.as_ref().and_then(|d| d.account.clone());
         let dev_checkpoint = self.dev_component.as_ref().and_then(|d| d.checkpoint);
-        let dev_auto_mining = self.dev_component.as_ref().map(|d| d.auto_mining).unwrap_or(false);
-        let dev_mining_interval = self.dev_component.as_ref().map(|d| d.mining_interval).unwrap_or(3);
+        let dev_auto_mining = self
+            .dev_component
+            .as_ref()
+            .map(|d| d.auto_mining)
+            .unwrap_or(false);
+        let dev_mining_interval = self
+            .dev_component
+            .as_ref()
+            .map(|d| d.mining_interval)
+            .unwrap_or(3);
         let dev_miner_balance = self.dev_component.as_ref().and_then(|d| d.miner_balance);
-        let dev_faucet_amount = self.dev_component.as_ref().map(|d| d.faucet_amount.clone()).unwrap_or_default();
-        let dev_is_editing = self.dev_component.as_ref().map(|d| d.is_editing).unwrap_or(false);
-        let dev_error_message = self.dev_component.as_ref().and_then(|d| d.error_message.clone());
-        let dev_success_message = self.dev_component.as_ref().and_then(|d| d.success_message.clone());
+        let dev_faucet_amount = self
+            .dev_component
+            .as_ref()
+            .map(|d| d.faucet_amount.clone())
+            .unwrap_or_default();
+        let dev_is_editing = self
+            .dev_component
+            .as_ref()
+            .map(|d| d.is_editing)
+            .unwrap_or(false);
+        let dev_error_message = self
+            .dev_component
+            .as_ref()
+            .and_then(|d| d.error_message.clone());
+        let dev_success_message = self
+            .dev_component
+            .as_ref()
+            .and_then(|d| d.success_message.clone());
 
         // Pre-compute layout to save tab area for mouse click detection
         let size = self.tui.terminal.size()?;
@@ -1824,30 +1905,36 @@ impl App {
                 header_spans.push(Span::raw("  "));
                 header_spans.push(Span::styled(
                     "[DEV]",
-                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 // Show indexer sync status
-                let sync_status = if indexer_synced { "Synced" } else { "Syncing..." };
-                let sync_color = if indexer_synced { Color::Green } else { Color::Yellow };
+                let sync_status = if indexer_synced {
+                    "Synced"
+                } else {
+                    "Syncing..."
+                };
+                let sync_color = if indexer_synced {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                };
                 header_spans.push(Span::raw("  "));
                 header_spans.push(Span::styled(
                     format!("Indexer: {}", sync_status),
                     Style::default().fg(sync_color),
                 ));
             }
-            let title = Paragraph::new(vec![Line::from(header_spans)])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray)),
-                );
+            let title = Paragraph::new(vec![Line::from(header_spans)]).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            );
             f.render_widget(title, chunks[0]);
 
             // Draw tabs
-            let titles: Vec<Line> = Tab::all(dev_mode)
-                .iter()
-                .map(|t| t.title())
-                .collect();
+            let titles: Vec<Line> = Tab::all(dev_mode).iter().map(|t| t.title()).collect();
 
             let tabs = Tabs::new(titles)
                 .block(Block::default().borders(Borders::ALL))
@@ -1871,7 +1958,13 @@ impl App {
                     );
                 }
                 Tab::Accounts => {
-                    AccountsComponent::draw_static(f, chunks[2], &accounts, selected_index, is_mainnet);
+                    AccountsComponent::draw_static(
+                        f,
+                        chunks[2],
+                        &accounts,
+                        selected_index,
+                        is_mainnet,
+                    );
                 }
                 Tab::Send => {
                     SendComponent::draw_static(
@@ -2007,10 +2100,7 @@ impl App {
     }
 
     fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let titles: Vec<Line> = Tab::all(self.dev_mode)
-            .iter()
-            .map(|t| t.title())
-            .collect();
+        let titles: Vec<Line> = Tab::all(self.dev_mode).iter().map(|t| t.title()).collect();
 
         let tabs = Tabs::new(titles)
             .block(Block::default().borders(Borders::ALL))
