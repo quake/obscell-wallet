@@ -1,7 +1,7 @@
-use ckb_jsonrpc_types::JsonBytes;
+use ckb_jsonrpc_types::{BlockNumber, JsonBytes};
 use ckb_sdk::{
+    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchKeyFilter, SearchMode},
     CkbRpcClient,
-    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode},
 };
 use color_eyre::eyre::Result;
 
@@ -31,18 +31,29 @@ impl RpcClient {
         code_hash: &[u8; 32],
         limit: u32,
         after_cursor: Option<JsonBytes>,
+        min_block_number: Option<u64>,
     ) -> Result<ckb_sdk::rpc::ckb_indexer::Pagination<ckb_sdk::rpc::ckb_indexer::Cell>> {
         let script = ckb_jsonrpc_types::Script {
             code_hash: ckb_types::H256::from_slice(code_hash)?,
             hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-            args: JsonBytes::default(), // Empty args for prefix search
+            args: JsonBytes::default(),
         };
+
+        let filter = min_block_number.map(|min| SearchKeyFilter {
+            script: None,
+            script_len_range: None,
+            output_data: None,
+            output_data_filter_mode: None,
+            output_data_len_range: None,
+            output_capacity_range: None,
+            block_range: Some([BlockNumber::from(min), BlockNumber::from(u64::MAX)]),
+        });
 
         let search_key = SearchKey {
             script,
             script_type: ScriptType::Lock,
             script_search_mode: Some(SearchMode::Prefix),
-            filter: None,
+            filter,
             with_data: Some(true),
             group_by_transaction: None,
         };

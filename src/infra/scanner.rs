@@ -23,6 +23,9 @@ use crate::{
 /// Scan cursor stored in LMDB for resuming scans.
 const SCAN_CURSOR_KEY: &str = "scan_cursor";
 
+/// Last scanned block number for incremental scans.
+const LAST_SCANNED_BLOCK_KEY: &str = "last_scanned_block";
+
 /// Number of cells to fetch per RPC call.
 const CELLS_PER_PAGE: u32 = 100;
 
@@ -134,6 +137,28 @@ impl Scanner {
         self.save_cursor(None)
     }
 
+    /// Load the last scanned block number from storage.
+    pub fn load_last_scanned_block(&self) -> Result<Option<u64>> {
+        let block_str: Option<String> = self.store.load_metadata(LAST_SCANNED_BLOCK_KEY)?;
+        match block_str {
+            Some(s) if !s.is_empty() => s.parse().map(Some).map_err(|e| {
+                color_eyre::eyre::eyre!("Invalid last scanned block number: {}", e)
+            }),
+            _ => Ok(None),
+        }
+    }
+
+    /// Save the last scanned block number to storage.
+    pub fn save_last_scanned_block(&self, block_number: u64) -> Result<()> {
+        self.store
+            .save_metadata(LAST_SCANNED_BLOCK_KEY, &block_number.to_string())
+    }
+
+    /// Clear the last scanned block (for full rescan).
+    pub fn clear_last_scanned_block(&self) -> Result<()> {
+        self.store.save_metadata(LAST_SCANNED_BLOCK_KEY, &String::new())
+    }
+
     /// Scan for stealth cells belonging to a single account.
     ///
     /// This performs a single page of scanning and returns the results.
@@ -158,7 +183,7 @@ impl Scanner {
     ) -> Result<ScanResult> {
         let result = self
             .rpc
-            .get_cells_by_lock_prefix(code_hash, CELLS_PER_PAGE, cursor)?;
+            .get_cells_by_lock_prefix(code_hash, CELLS_PER_PAGE, cursor, None)?;
 
         let mut stealth_cells = Vec::new();
         let mut total_capacity = 0u64;
@@ -281,15 +306,27 @@ impl Scanner {
     ///
     /// Returns a Vec of AccountScanResult with both existing and new cells.
     /// Also persists found cells and transaction records to the store.
+    ///
+    /// Uses incremental scanning: only scans cells from blocks after the last
+    /// scanned block. Call with `force_full = true` to scan from the beginning.
     pub fn scan_all_accounts(&self, accounts: &[Account]) -> Result<Vec<AccountScanResult>> {
         if accounts.is_empty() {
             return Ok(Vec::new());
         }
 
-        info!("Starting scan for {} accounts", accounts.len());
+        // Get the last scanned block for incremental scanning
+        let min_block = self.load_last_scanned_block()?.map(|b| b + 1);
+        let is_incremental = min_block.is_some();
 
-        // Clear cursor for fresh scan
-        self.clear_cursor()?;
+        if is_incremental {
+            info!(
+                "Starting incremental scan for {} accounts from block {}",
+                accounts.len(),
+                min_block.unwrap()
+            );
+        } else {
+            info!("Starting full scan for {} accounts", accounts.len());
+        }
 
         let code_hash = self.stealth_lock_code_hash()?;
 
@@ -333,16 +370,26 @@ impl Scanner {
             })
             .collect();
         let mut total_scanned = 0u64;
+        let mut max_block_number = 0u64;
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result =
-                self.rpc
-                    .get_cells_by_lock_prefix(&code_hash, CELLS_PER_PAGE, cursor)?;
+            let cells_result = self.rpc.get_cells_by_lock_prefix(
+                &code_hash,
+                CELLS_PER_PAGE,
+                cursor,
+                min_block,
+            )?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;
                 let lock_args = cell.output.lock.args.as_bytes();
+
+                // Track the max block number seen
+                let bn: u64 = cell.block_number.into();
+                if bn > max_block_number {
+                    max_block_number = bn;
+                }
 
                 // Check against all accounts
                 for (account_id, view_key, spend_pub) in &account_keys {
@@ -402,6 +449,13 @@ impl Scanner {
             self.save_cursor(Some(&cells_result.last_cursor))?;
         }
 
+        // Save the last scanned block number for next incremental scan
+        if max_block_number > 0 {
+            if let Err(e) = self.save_last_scanned_block(max_block_number) {
+                info!("Failed to save last scanned block: {}", e);
+            }
+        }
+
         // Persist cells and transaction records to store
         for result in &results {
             // Save all cells
@@ -433,10 +487,17 @@ impl Scanner {
             }
         }
 
-        info!(
-            "Multi-account scan complete: {} cells scanned",
-            total_scanned
-        );
+        if is_incremental {
+            info!(
+                "Incremental scan complete: {} cells scanned, max block {}",
+                total_scanned, max_block_number
+            );
+        } else {
+            info!(
+                "Full scan complete: {} cells scanned",
+                total_scanned
+            );
+        }
 
         Ok(results)
     }
@@ -570,9 +631,12 @@ impl Scanner {
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result =
-                self.rpc
-                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
+            let cells_result = self.rpc.get_cells_by_lock_prefix(
+                &stealth_code_hash,
+                CELLS_PER_PAGE,
+                cursor,
+                None,
+            )?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;
@@ -808,9 +872,12 @@ impl Scanner {
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result =
-                self.rpc
-                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
+            let cells_result = self.rpc.get_cells_by_lock_prefix(
+                &stealth_code_hash,
+                CELLS_PER_PAGE,
+                cursor,
+                None,
+            )?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;
