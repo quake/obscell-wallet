@@ -97,13 +97,13 @@ setup_devnet() {
         --ba-arg "$BA_ARG" \
         --force
 
-    # Enable IntegrationTest and Indexer RPC modules
+    # Enable IntegrationTest and RichIndexer RPC modules
     # - IntegrationTest: for generate_block/truncate
-    # - Indexer: for get_cells/get_transactions queries
+    # - RichIndexer: for extended indexer capabilities (replaces Indexer)
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' 's/modules = \[/modules = ["IntegrationTest", "Indexer", /' "$DEVNET_DIR/ckb.toml"
+        sed -i '' 's/modules = \[/modules = ["IntegrationTest", "RichIndexer", /' "$DEVNET_DIR/ckb.toml"
     else
-        sed -i 's/modules = \[/modules = ["IntegrationTest", "Indexer", /' "$DEVNET_DIR/ckb.toml"
+        sed -i 's/modules = \[/modules = ["IntegrationTest", "RichIndexer", /' "$DEVNET_DIR/ckb.toml"
     fi
 
     # Save miner key for faucet
