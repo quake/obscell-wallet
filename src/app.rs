@@ -1350,6 +1350,14 @@ impl App {
                                 self.history_component.set_transactions(history);
                             }
 
+                            // Remove spent funding cell from store
+                            if let Err(e) = self.store.remove_spent_cells(
+                                account.id,
+                                std::slice::from_ref(&funding_input.out_point),
+                            ) {
+                                info!("Failed to remove spent funding cell: {}", e);
+                            }
+
                             // Clear mint form
                             self.tokens_component.clear_mint();
                         }
