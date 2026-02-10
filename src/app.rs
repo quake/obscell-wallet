@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -61,35 +61,37 @@ impl Tab {
     }
 
     pub fn title(&self) -> Line<'static> {
+        let underline = Style::default().add_modifier(Modifier::UNDERLINED);
         match self {
             Tab::Settings => Line::from(vec![
-                Span::styled("S", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::raw("ettings"),
+                Span::raw("Se"),
+                Span::styled("t", underline),
+                Span::raw("tings"),
             ]),
             Tab::Accounts => Line::from(vec![
-                Span::styled("A", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("A", underline),
                 Span::raw("ccounts"),
             ]),
             Tab::Send => Line::from(vec![
-                Span::styled("W", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::raw("ithdraw"),
+                Span::styled("S", underline),
+                Span::raw("end"),
             ]),
             Tab::Receive => Line::from(vec![
                 Span::raw("Recei"),
-                Span::styled("v", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("v", underline),
                 Span::raw("e"),
             ]),
             Tab::Tokens => Line::from(vec![
                 Span::raw("T"),
-                Span::styled("o", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("o", underline),
                 Span::raw("kens"),
             ]),
             Tab::History => Line::from(vec![
-                Span::styled("H", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("H", underline),
                 Span::raw("istory"),
             ]),
             Tab::Dev => Line::from(vec![
-                Span::styled("D", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("D", underline),
                 Span::raw("ev"),
             ]),
         }
@@ -144,6 +146,8 @@ pub struct App {
     pub tip_block_number: Option<u64>,
     pub is_scanning: bool,
     pub last_auto_scan: Option<u64>,
+    /// Saved tab bar area for mouse click detection.
+    pub tab_area: Rect,
     // Dev mode fields
     pub dev_mode: bool,
     pub dev_component: Option<DevComponent>,
@@ -173,7 +177,7 @@ impl App {
         let tui = Tui::new()?
             .tick_rate(args.tick_rate)
             .frame_rate(args.frame_rate)
-            .mouse(false)
+            .mouse(true)
             .paste(true);
 
         // Dev mode is enabled when network is "devnet"
@@ -217,6 +221,7 @@ impl App {
             tip_block_number: None,
             is_scanning: false,
             last_auto_scan: None,
+            tab_area: Rect::default(),
             // Dev mode
             dev_mode,
             dev_component,
@@ -325,6 +330,11 @@ impl App {
             Event::Quit => {
                 self.should_quit = true;
             }
+            Event::Mouse(mouse_event) => {
+                if mouse_event.kind == MouseEventKind::Down(MouseButton::Left) {
+                    self.handle_mouse_click(mouse_event.column, mouse_event.row)?;
+                }
+            }
             Event::Paste(text) => {
                 self.handle_paste(&text)?;
             }
@@ -385,13 +395,13 @@ impl App {
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            KeyCode::Char('s') if key.modifiers.is_empty() => {
+            KeyCode::Char('t') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Settings;
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Accounts;
             }
-            KeyCode::Char('w') if key.modifiers.is_empty() => {
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Send;
             }
             KeyCode::Char('v') if key.modifiers.is_empty() => {
@@ -463,6 +473,38 @@ impl App {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_mouse_click(&mut self, col: u16, row: u16) -> Result<()> {
+        let area = self.tab_area;
+        // Check if click is within the tab bar (excluding borders)
+        if row < area.y + 1 || row > area.y + area.height.saturating_sub(2) {
+            return Ok(());
+        }
+        if col < area.x + 1 || col >= area.x + area.width.saturating_sub(1) {
+            return Ok(());
+        }
+
+        // Calculate which tab was clicked.
+        // Ratatui Tabs renders as: ` Title1 │ Title2 │ Title3 `
+        // Each tab takes: 1 (pad) + title_width + 1 (pad) + 1 (divider)
+        // except the last tab has no trailing divider.
+        let tabs = Tab::all(self.dev_mode);
+        let rel_x = (col - area.x - 1) as usize; // relative x within inner area
+        let mut offset = 0usize;
+        for (i, tab) in tabs.iter().enumerate() {
+            let title_width = tab.title().width();
+            let tab_width = 1 + title_width + 1; // space + title + space
+            if rel_x < offset + tab_width {
+                self.active_tab = *tab;
+                return Ok(());
+            }
+            offset += tab_width;
+            if i < tabs.len() - 1 {
+                offset += 1; // divider "│" is 1 column wide (in ratatui default)
+            }
         }
         Ok(())
     }
@@ -1743,6 +1785,18 @@ impl App {
         let dev_error_message = self.dev_component.as_ref().and_then(|d| d.error_message.clone());
         let dev_success_message = self.dev_component.as_ref().and_then(|d| d.success_message.clone());
 
+        // Pre-compute layout to save tab area for mouse click detection
+        let size = self.tui.terminal.size()?;
+        let terminal_area = Rect::new(0, 0, size.width, size.height);
+        let layout_chunks = Layout::vertical([
+            Constraint::Length(3), // Header
+            Constraint::Length(3), // Tabs
+            Constraint::Min(0),    // Content
+            Constraint::Length(3), // Status
+        ])
+        .split(terminal_area);
+        self.tab_area = layout_chunks[1];
+
         self.tui.draw(|f| {
             let chunks = Layout::vertical([
                 Constraint::Length(3), // Header
@@ -1984,7 +2038,7 @@ impl App {
                     .title("Send")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("Withdraw view - Coming soon...")
+                let paragraph = Paragraph::new("Send view - Coming soon...")
                     .block(block)
                     .style(Style::default().fg(Color::Gray));
                 f.render_widget(paragraph, area);
