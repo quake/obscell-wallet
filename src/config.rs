@@ -4,7 +4,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-/// Get the data directory for the application.
+/// Get the base data directory for the application.
 pub fn get_data_dir() -> PathBuf {
     if let Ok(s) = std::env::var("OBSCELL_WALLET_DATA") {
         PathBuf::from(s)
@@ -13,6 +13,11 @@ pub fn get_data_dir() -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join("data")
     }
+}
+
+/// Get the network-specific data directory (e.g. `data/testnet/`).
+pub fn get_network_data_dir(network: &str) -> PathBuf {
+    get_data_dir().join(network)
 }
 
 /// Get the config directory for the application.

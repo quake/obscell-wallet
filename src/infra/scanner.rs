@@ -23,9 +23,6 @@ use crate::{
 /// Scan cursor stored in LMDB for resuming scans.
 const SCAN_CURSOR_KEY: &str = "scan_cursor";
 
-/// Last scanned block number for incremental scans.
-const LAST_SCANNED_BLOCK_KEY: &str = "last_scanned_block";
-
 /// Number of cells to fetch per RPC call.
 const CELLS_PER_PAGE: u32 = 100;
 
@@ -84,11 +81,12 @@ pub struct AccountCtInfoScanResult {
     pub new_cells: Vec<CtInfoCell>,
 }
 
-/// Combined result from scanning all accounts for both stealth and CT cells.
+/// Combined result from scanning all accounts for stealth, CT, and CT-info cells.
 #[derive(Debug)]
 pub struct ScanAllResult {
     pub stealth_results: Vec<AccountScanResult>,
     pub ct_results: Vec<AccountCtScanResult>,
+    pub ct_info_results: Vec<AccountCtInfoScanResult>,
 }
 
 impl Scanner {
@@ -137,28 +135,6 @@ impl Scanner {
         self.save_cursor(None)
     }
 
-    /// Load the last scanned block number from storage.
-    pub fn load_last_scanned_block(&self) -> Result<Option<u64>> {
-        let block_str: Option<String> = self.store.load_metadata(LAST_SCANNED_BLOCK_KEY)?;
-        match block_str {
-            Some(s) if !s.is_empty() => s.parse().map(Some).map_err(|e| {
-                color_eyre::eyre::eyre!("Invalid last scanned block number: {}", e)
-            }),
-            _ => Ok(None),
-        }
-    }
-
-    /// Save the last scanned block number to storage.
-    pub fn save_last_scanned_block(&self, block_number: u64) -> Result<()> {
-        self.store
-            .save_metadata(LAST_SCANNED_BLOCK_KEY, &block_number.to_string())
-    }
-
-    /// Clear the last scanned block (for full rescan).
-    pub fn clear_last_scanned_block(&self) -> Result<()> {
-        self.store.save_metadata(LAST_SCANNED_BLOCK_KEY, &String::new())
-    }
-
     /// Scan for stealth cells belonging to a single account.
     ///
     /// This performs a single page of scanning and returns the results.
@@ -183,7 +159,7 @@ impl Scanner {
     ) -> Result<ScanResult> {
         let result = self
             .rpc
-            .get_cells_by_lock_prefix(code_hash, CELLS_PER_PAGE, cursor, None)?;
+            .get_cells_by_lock_prefix(code_hash, CELLS_PER_PAGE, cursor)?;
 
         let mut stealth_cells = Vec::new();
         let mut total_capacity = 0u64;
@@ -306,27 +282,15 @@ impl Scanner {
     ///
     /// Returns a Vec of AccountScanResult with both existing and new cells.
     /// Also persists found cells and transaction records to the store.
-    ///
-    /// Uses incremental scanning: only scans cells from blocks after the last
-    /// scanned block. Call with `force_full = true` to scan from the beginning.
     pub fn scan_all_accounts(&self, accounts: &[Account]) -> Result<Vec<AccountScanResult>> {
         if accounts.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Get the last scanned block for incremental scanning
-        let min_block = self.load_last_scanned_block()?.map(|b| b + 1);
-        let is_incremental = min_block.is_some();
+        info!("Starting scan for {} accounts", accounts.len());
 
-        if is_incremental {
-            info!(
-                "Starting incremental scan for {} accounts from block {}",
-                accounts.len(),
-                min_block.unwrap()
-            );
-        } else {
-            info!("Starting full scan for {} accounts", accounts.len());
-        }
+        // Clear cursor for fresh scan
+        self.clear_cursor()?;
 
         let code_hash = self.stealth_lock_code_hash()?;
 
@@ -370,26 +334,16 @@ impl Scanner {
             })
             .collect();
         let mut total_scanned = 0u64;
-        let mut max_block_number = 0u64;
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result = self.rpc.get_cells_by_lock_prefix(
-                &code_hash,
-                CELLS_PER_PAGE,
-                cursor,
-                min_block,
-            )?;
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&code_hash, CELLS_PER_PAGE, cursor)?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;
                 let lock_args = cell.output.lock.args.as_bytes();
-
-                // Track the max block number seen
-                let bn: u64 = cell.block_number.into();
-                if bn > max_block_number {
-                    max_block_number = bn;
-                }
 
                 // Check against all accounts
                 for (account_id, view_key, spend_pub) in &account_keys {
@@ -449,13 +403,6 @@ impl Scanner {
             self.save_cursor(Some(&cells_result.last_cursor))?;
         }
 
-        // Save the last scanned block number for next incremental scan
-        if max_block_number > 0 {
-            if let Err(e) = self.save_last_scanned_block(max_block_number) {
-                info!("Failed to save last scanned block: {}", e);
-            }
-        }
-
         // Persist cells and transaction records to store
         for result in &results {
             // Save all cells
@@ -487,17 +434,10 @@ impl Scanner {
             }
         }
 
-        if is_incremental {
-            info!(
-                "Incremental scan complete: {} cells scanned, max block {}",
-                total_scanned, max_block_number
-            );
-        } else {
-            info!(
-                "Full scan complete: {} cells scanned",
-                total_scanned
-            );
-        }
+        info!(
+            "Multi-account scan complete: {} cells scanned",
+            total_scanned
+        );
 
         Ok(results)
     }
@@ -631,12 +571,9 @@ impl Scanner {
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result = self.rpc.get_cells_by_lock_prefix(
-                &stealth_code_hash,
-                CELLS_PER_PAGE,
-                cursor,
-                None,
-            )?;
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;
@@ -766,14 +703,411 @@ impl Scanner {
         Ok(results)
     }
 
-    /// Scan all accounts for both stealth cells and CT cells.
-    pub fn scan_all(&self, accounts: &[Account]) -> Result<ScanAllResult> {
-        let stealth_results = self.scan_all_accounts(accounts)?;
-        let ct_results = self.scan_ct_cells(accounts)?;
+    /// Incremental scan: resumes from the last saved cursor.
+    ///
+    /// Only fetches cells added since the previous scan.
+    /// New cells are appended to the store via `add_*` methods.
+    pub fn incremental_scan(&self, accounts: &[Account]) -> Result<ScanAllResult> {
+        let cursor = self.load_cursor()?;
+        info!("Starting incremental scan for {} accounts (cursor: {})",
+            accounts.len(),
+            if cursor.is_some() { "resuming" } else { "from beginning" }
+        );
+        self.scan_with_cursor(accounts, cursor)
+    }
+
+    /// Full scan: clears all stored cells and scans from the beginning.
+    ///
+    /// Does not read the saved cursor - passes `None` to start from scratch.
+    /// The first successful page will overwrite any old cursor in the store.
+    pub fn full_scan_all(&self, accounts: &[Account]) -> Result<ScanAllResult> {
+        info!("Starting full scan for {} accounts", accounts.len());
+
+        // Clear all stored cells for each account
+        for account in accounts {
+            if let Err(e) = self.store.clear_all_cells_for_account(account.id) {
+                info!("Failed to clear cells for account {}: {}", account.id, e);
+            }
+        }
+
+        // Start from the beginning (no cursor)
+        self.scan_with_cursor(accounts, None)
+    }
+
+    /// Core scan loop: fetches cells starting from `initial_cursor` and processes
+    /// stealth, CT, and CT-info cells in a single pass.
+    ///
+    /// The cursor is saved after each page so the next call can resume.
+    /// New cells are appended to existing stored cells via `add_*` methods.
+    fn scan_with_cursor(
+        &self,
+        accounts: &[Account],
+        initial_cursor: Option<JsonBytes>,
+    ) -> Result<ScanAllResult> {
+        if accounts.is_empty() {
+            return Ok(ScanAllResult {
+                stealth_results: Vec::new(),
+                ct_results: Vec::new(),
+                ct_info_results: Vec::new(),
+            });
+        }
+
+        let stealth_code_hash = self.stealth_lock_code_hash()?;
+        let ct_code_hash = self.ct_token_code_hash()?;
+        let ct_info_hash = self.ct_info_code_hash()?;
+
+        // Load existing out_points for each account to detect new cells
+        let mut existing_stealth_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+        let mut existing_ct_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+        let mut existing_ct_info_out_points: std::collections::HashMap<
+            u64,
+            std::collections::HashSet<Vec<u8>>,
+        > = std::collections::HashMap::new();
+
+        for account in accounts {
+            let stealth_cells = self.store.get_stealth_cells(account.id)?;
+            existing_stealth_out_points.insert(
+                account.id,
+                stealth_cells.iter().map(|c| c.out_point.clone()).collect(),
+            );
+
+            let ct_cells = self.store.get_ct_cells(account.id)?;
+            existing_ct_out_points.insert(
+                account.id,
+                ct_cells.iter().map(|c| c.out_point.clone()).collect(),
+            );
+
+            let ct_info_cells = self.store.get_ct_info_cells(account.id)?;
+            existing_ct_info_out_points.insert(
+                account.id,
+                ct_info_cells.iter().map(|c| c.out_point.clone()).collect(),
+            );
+        }
+
+        // Prepare keys for all accounts
+        let account_keys: Vec<_> = accounts
+            .iter()
+            .map(|a| (a.id, a.view_secret_key(), a.spend_public_key()))
+            .collect();
+
+        // Initialize results
+        let mut stealth_results: Vec<AccountScanResult> = accounts
+            .iter()
+            .map(|a| AccountScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+                total_capacity: 0,
+            })
+            .collect();
+
+        let mut ct_results: Vec<AccountCtScanResult> = accounts
+            .iter()
+            .map(|a| AccountCtScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+                balances: Vec::new(),
+            })
+            .collect();
+
+        let mut ct_info_results: Vec<AccountCtInfoScanResult> = accounts
+            .iter()
+            .map(|a| AccountCtInfoScanResult {
+                account_id: a.id,
+                cells: Vec::new(),
+                new_cells: Vec::new(),
+            })
+            .collect();
+
+        let mut total_scanned = 0u64;
+        let mut cursor = initial_cursor;
+
+        loop {
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
+
+            for cell in &cells_result.objects {
+                total_scanned += 1;
+                let lock_args = cell.output.lock.args.as_bytes();
+
+                // Determine cell type
+                let is_ct = ct_code_hash
+                    .as_ref()
+                    .map(|hash| {
+                        cell.output
+                            .type_
+                            .as_ref()
+                            .map(|t| t.code_hash.as_bytes() == *hash)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                let is_ct_info = ct_info_hash
+                    .as_ref()
+                    .map(|hash| {
+                        cell.output
+                            .type_
+                            .as_ref()
+                            .map(|t| t.code_hash.as_bytes() == *hash)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                // Check against all accounts
+                for (account_id, view_key, spend_pub) in &account_keys {
+                    if !matches_key(lock_args, view_key, spend_pub) {
+                        continue;
+                    }
+
+                    let mut out_point_bytes = Vec::with_capacity(36);
+                    out_point_bytes.extend_from_slice(cell.out_point.tx_hash.as_bytes());
+                    out_point_bytes.extend_from_slice(&cell.out_point.index.value().to_le_bytes());
+
+                    if is_ct {
+                        // Process as CT cell
+                        let cell_data = cell
+                            .output_data
+                            .as_ref()
+                            .map(|d| d.as_bytes())
+                            .unwrap_or(&[]);
+                        let (commitment, encrypted_amount) =
+                            match Self::parse_ct_cell_data(cell_data) {
+                                Some(data) => data,
+                                None => {
+                                    debug!("Invalid CT cell data format");
+                                    break;
+                                }
+                            };
+
+                        let shared_secret =
+                            match Self::derive_ct_shared_secret(lock_args, view_key) {
+                                Some(s) => s,
+                                None => {
+                                    debug!("Failed to derive shared secret");
+                                    break;
+                                }
+                            };
+
+                        let amount = match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
+                            Some(a) => a,
+                            None => {
+                                debug!("Failed to decrypt CT amount");
+                                break;
+                            }
+                        };
+
+                        let blinding_factor = [0u8; 32];
+                        let type_script_args: Vec<u8> = cell
+                            .output
+                            .type_
+                            .as_ref()
+                            .map(|t| t.args.as_bytes().to_vec())
+                            .unwrap_or_default();
+
+                        let ct_cell = CtCell::new(
+                            out_point_bytes.clone(),
+                            type_script_args,
+                            commitment,
+                            encrypted_amount,
+                            blinding_factor,
+                            amount,
+                            lock_args.to_vec(),
+                        );
+
+                        if let Some(result) =
+                            ct_results.iter_mut().find(|r| r.account_id == *account_id)
+                        {
+                            let is_new = existing_ct_out_points
+                                .get(account_id)
+                                .map(|set| !set.contains(&out_point_bytes))
+                                .unwrap_or(true);
+
+                            result.cells.push(ct_cell.clone());
+                            if is_new {
+                                result.new_cells.push(ct_cell);
+                            }
+                        }
+                    } else if is_ct_info {
+                        // Process as CT-info cell
+                        let cell_data = cell
+                            .output_data
+                            .as_ref()
+                            .map(|d| d.as_bytes().to_vec())
+                            .unwrap_or_default();
+
+                        let ct_info_data = match CtInfoData::from_bytes(&cell_data) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                debug!("Invalid ct-info cell data: {}", e);
+                                break;
+                            }
+                        };
+
+                        let type_args = cell
+                            .output
+                            .type_
+                            .as_ref()
+                            .map(|t| t.args.as_bytes().to_vec())
+                            .unwrap_or_default();
+
+                        if type_args.len() < 32 {
+                            debug!("Invalid ct-info type args length: {}", type_args.len());
+                            break;
+                        }
+
+                        let mut token_id = [0u8; 32];
+                        token_id.copy_from_slice(&type_args[0..32]);
+
+                        let capacity: u64 = cell.output.capacity.into();
+
+                        let ct_info_cell = CtInfoCell::new(
+                            out_point_bytes.clone(),
+                            token_id,
+                            ct_info_data.total_supply,
+                            ct_info_data.supply_cap,
+                            ct_info_data.flags,
+                            capacity,
+                            lock_args.to_vec(),
+                        );
+
+                        if let Some(result) =
+                            ct_info_results.iter_mut().find(|r| r.account_id == *account_id)
+                        {
+                            let is_new = existing_ct_info_out_points
+                                .get(account_id)
+                                .map(|set| !set.contains(&out_point_bytes))
+                                .unwrap_or(true);
+
+                            result.cells.push(ct_info_cell.clone());
+                            if is_new {
+                                result.new_cells.push(ct_info_cell);
+                            }
+                        }
+                    } else {
+                        // Process as stealth cell (plain CKB)
+                        let capacity: u64 = cell.output.capacity.into();
+
+                        let stealth_cell = StealthCell::new(
+                            out_point_bytes.clone(),
+                            capacity,
+                            lock_args.to_vec(),
+                        );
+
+                        if let Some(result) =
+                            stealth_results.iter_mut().find(|r| r.account_id == *account_id)
+                        {
+                            result.total_capacity += capacity;
+                            result.cells.push(stealth_cell.clone());
+
+                            let is_new = existing_stealth_out_points
+                                .get(account_id)
+                                .map(|set| !set.contains(&out_point_bytes))
+                                .unwrap_or(true);
+
+                            if is_new {
+                                result.new_cells.push(stealth_cell);
+                            }
+                        }
+                    }
+
+                    // A cell can only belong to one account
+                    break;
+                }
+            }
+
+            // Check if done
+            if cells_result.last_cursor.is_empty() {
+                break;
+            }
+
+            // Save cursor after each page for resume capability
+            self.save_cursor(Some(&cells_result.last_cursor))?;
+            cursor = Some(cells_result.last_cursor);
+        }
+
+        // Persist new cells to store (incrementally) and recalculate total_capacity
+        for result in &mut stealth_results {
+            if !result.new_cells.is_empty() {
+                if let Err(e) = self
+                    .store
+                    .add_stealth_cells(result.account_id, &result.new_cells)
+                {
+                    info!(
+                        "Failed to add stealth cells for account {}: {}",
+                        result.account_id, e
+                    );
+                }
+
+                // Save transaction records for new stealth receives
+                for new_cell in &result.new_cells {
+                    if new_cell.out_point.len() >= 32 {
+                        let mut tx_hash = [0u8; 32];
+                        tx_hash.copy_from_slice(&new_cell.out_point[..32]);
+
+                        let tx_record = TxRecord::stealth_receive(tx_hash, new_cell.capacity);
+                        if let Err(e) = self.store.save_tx_record(result.account_id, &tx_record) {
+                            info!(
+                                "Failed to save tx record for account {}: {}",
+                                result.account_id, e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Recalculate total_capacity from ALL stored cells (existing + new)
+            let all_stealth_cells = self.store.get_stealth_cells(result.account_id)?;
+            result.total_capacity = all_stealth_cells.iter().map(|c| c.capacity).sum();
+        }
+
+        for result in &mut ct_results {
+            if !result.new_cells.is_empty()
+                && let Err(e) = self
+                    .store
+                    .add_ct_cells(result.account_id, &result.new_cells)
+            {
+                info!(
+                    "Failed to add CT cells for account {}: {}",
+                    result.account_id, e
+                );
+            }
+
+            // Aggregate balances from ALL cells (existing + new)
+            let all_ct_cells = self.store.get_ct_cells(result.account_id)?;
+            result.balances = aggregate_ct_balances(&all_ct_cells);
+        }
+
+        for result in &ct_info_results {
+            if !result.new_cells.is_empty()
+                && let Err(e) = self
+                    .store
+                    .add_ct_info_cells(result.account_id, &result.new_cells)
+            {
+                info!(
+                    "Failed to add ct-info cells for account {}: {}",
+                    result.account_id, e
+                );
+            }
+        }
+
+        info!(
+            "Scan complete: {} cells scanned, {} accounts processed",
+            total_scanned,
+            accounts.len()
+        );
 
         Ok(ScanAllResult {
             stealth_results,
             ct_results,
+            ct_info_results,
         })
     }
 
@@ -872,12 +1206,9 @@ impl Scanner {
 
         loop {
             let cursor = self.load_cursor()?;
-            let cells_result = self.rpc.get_cells_by_lock_prefix(
-                &stealth_code_hash,
-                CELLS_PER_PAGE,
-                cursor,
-                None,
-            )?;
+            let cells_result =
+                self.rpc
+                    .get_cells_by_lock_prefix(&stealth_code_hash, CELLS_PER_PAGE, cursor)?;
 
             for cell in &cells_result.objects {
                 total_scanned += 1;

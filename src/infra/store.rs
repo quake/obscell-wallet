@@ -5,7 +5,7 @@ use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::get_data_dir,
+    config::get_network_data_dir,
     domain::{
         account::Account,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
@@ -19,8 +19,8 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new() -> Result<Self> {
-        Self::with_path(get_data_dir().join("wallet.mdb"))
+    pub fn new(network: &str) -> Result<Self> {
+        Self::with_path(get_network_data_dir(network).join("wallet.mdb"))
     }
 
     pub fn with_path(path: PathBuf) -> Result<Self> {

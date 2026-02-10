@@ -159,7 +159,7 @@ impl App {
     pub fn new(args: &Args) -> Result<Self> {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         let config = Config::new(&args.network, args.rpc_url.as_deref());
-        let store = Store::new()?;
+        let store = Store::new(&config.network.name)?;
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
         let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
@@ -485,13 +485,13 @@ impl App {
                         .unwrap_or(true);
 
                 if should_auto_scan {
-                    self.last_auto_scan = Some(now);
+                    self.is_scanning = true;
                     let accounts = self.account_manager.list_accounts()?;
                     if !accounts.is_empty() {
-                        match self.scanner.scan_all_accounts(&accounts) {
-                            Ok(results) => {
+                        match self.scanner.incremental_scan(&accounts) {
+                            Ok(scan_all_result) => {
                                 let mut has_new = false;
-                                for result in &results {
+                                for result in &scan_all_result.stealth_results {
                                     if !result.new_cells.is_empty() {
                                         has_new = true;
                                         if let Err(e) = self
@@ -504,6 +504,13 @@ impl App {
                                             );
                                         }
                                     }
+                                }
+
+                                // Check for new CT or CT-info cells too
+                                if scan_all_result.ct_results.iter().any(|r| !r.new_cells.is_empty())
+                                    || scan_all_result.ct_info_results.iter().any(|r| !r.new_cells.is_empty())
+                                {
+                                    has_new = true;
                                 }
 
                                 if has_new {
@@ -520,6 +527,15 @@ impl App {
                             }
                         }
                     }
+                    // Update timestamp after scan completes, so interval is measured
+                    // from end of last scan, not start
+                    self.last_auto_scan = Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    );
+                    self.is_scanning = false;
                 }
 
                 // Handle auto-mining in dev mode
@@ -609,14 +625,14 @@ impl App {
                     self.status_message = "No accounts to scan".to_string();
                     self.is_scanning = false;
                 } else {
-                    // Scan all accounts
-                    match self.scanner.scan_all_accounts(&accounts) {
-                        Ok(results) => {
+                    // Incremental scan: stealth + CT + CT-info in one pass
+                    match self.scanner.incremental_scan(&accounts) {
+                        Ok(scan_all_result) => {
                             let mut total_cells = 0usize;
                             let mut total_capacity = 0u64;
                             let mut new_receives = 0usize;
 
-                            for result in &results {
+                            for result in &scan_all_result.stealth_results {
                                 total_cells += result.cells.len();
                                 total_capacity += result.total_capacity;
                                 new_receives += result.new_cells.len();
@@ -631,6 +647,24 @@ impl App {
                                         result.account_id, e
                                     );
                                 }
+                            }
+
+                            // Log CT-info results
+                            let new_ct_info: usize = scan_all_result
+                                .ct_info_results
+                                .iter()
+                                .map(|r| r.new_cells.len())
+                                .sum();
+                            if new_ct_info > 0 {
+                                let total_ct_info: usize = scan_all_result
+                                    .ct_info_results
+                                    .iter()
+                                    .map(|r| r.cells.len())
+                                    .sum();
+                                info!(
+                                    "CT-info scan: {} cells found (+{} new)",
+                                    total_ct_info, new_ct_info
+                                );
                             }
 
                             // Refresh accounts display
@@ -662,47 +696,12 @@ impl App {
                         }
                     }
 
-                    // Also scan for ct-info cells (for minting authorization)
-                    match self.scanner.scan_ct_info_cells(&accounts) {
-                        Ok(ct_info_results) => {
-                            let mut total_ct_info = 0usize;
-                            let mut new_ct_info = 0usize;
-
-                            for result in &ct_info_results {
-                                total_ct_info += result.cells.len();
-                                new_ct_info += result.new_cells.len();
-
-                                // Save ct-info cells to storage
-                                if !result.cells.is_empty()
-                                    && let Err(e) = self
-                                        .store
-                                        .save_ct_info_cells(result.account_id, &result.cells)
-                                {
-                                    info!(
-                                        "Failed to save ct-info cells for account {}: {}",
-                                        result.account_id, e
-                                    );
-                                }
-                            }
-
-                            if new_ct_info > 0 {
-                                info!(
-                                    "CT-info scan: {} cells found (+{} new)",
-                                    total_ct_info, new_ct_info
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            info!("CT-info scan failed: {}", e);
-                        }
-                    }
-
                     self.is_scanning = false;
                 }
             }
             Action::FullRescan => {
                 // Full rescan: clear all cells and scan from beginning
-                self.status_message = "Full rescan: clearing data...".to_string();
+                self.status_message = "Full rescan: scanning from block 0...".to_string();
                 self.is_scanning = true;
 
                 let accounts = self.account_manager.list_accounts()?;
@@ -710,27 +709,13 @@ impl App {
                     self.status_message = "No accounts to scan".to_string();
                     self.is_scanning = false;
                 } else {
-                    // Clear all stored cells for each account
-                    for account in &accounts {
-                        if let Err(e) = self.store.clear_all_cells_for_account(account.id) {
-                            info!("Failed to clear cells for account {}: {}", account.id, e);
-                        }
-                    }
-
-                    // Clear the scan cursor to start from block 0
-                    if let Err(e) = self.scanner.clear_cursor() {
-                        info!("Failed to clear scan cursor: {}", e);
-                    }
-
-                    self.status_message = "Full rescan: scanning from block 0...".to_string();
-
-                    // Scan all accounts
-                    match self.scanner.scan_all_accounts(&accounts) {
-                        Ok(results) => {
+                    // Full scan: clears stored cells internally, starts from None cursor
+                    match self.scanner.full_scan_all(&accounts) {
+                        Ok(scan_all_result) => {
                             let mut total_cells = 0usize;
                             let mut total_capacity = 0u64;
 
-                            for result in &results {
+                            for result in &scan_all_result.stealth_results {
                                 total_cells += result.cells.len();
                                 total_capacity += result.total_capacity;
 
@@ -766,11 +751,6 @@ impl App {
                         Err(e) => {
                             self.status_message = format!("Full rescan failed: {}", e);
                         }
-                    }
-
-                    // Also scan for ct-info cells
-                    if let Err(e) = self.scanner.scan_ct_info_cells(&accounts) {
-                        info!("CT-info scan failed during full rescan: {}", e);
                     }
 
                     self.is_scanning = false;
@@ -1599,13 +1579,60 @@ impl App {
                 let new_config = Config::from_network(network);
                 let new_dev_mode = new_config.network.name == "devnet";
 
-                // Update config and scanner
-                self.config = new_config.clone();
-                self.scanner = Scanner::new(self.config.clone(), self.store.clone());
+                // Rebuild store and account manager for the new network's data directory
+                let new_store = Store::new(&new_config.network.name)?;
+                let new_account_manager = AccountManager::new(new_store.clone());
 
-                // Update settings component
+                // Update core state
+                self.config = new_config.clone();
+                self.store = new_store;
+                self.account_manager = new_account_manager;
+                self.scanner = Scanner::new(self.config.clone(), self.store.clone());
+                self.is_scanning = false;
+                self.last_auto_scan = None;
+
+                // Reload accounts from the new store
+                let accounts = self.account_manager.list_accounts()?;
+                self.accounts_component.set_accounts(accounts.clone());
                 self.settings_component.set_network(&self.config.network.name);
                 self.accounts_component.set_is_mainnet(self.config.network.name == "mainnet");
+
+                // Reset UI components with the first account (if any)
+                if let Some(first_account) = accounts.first() {
+                    self.receive_component
+                        .set_account(Some(first_account.clone()));
+                    self.send_component.set_account(Some(first_account.clone()));
+                    self.history_component
+                        .set_account(Some(first_account.clone()));
+                    self.tokens_component
+                        .set_account(Some(first_account.clone()));
+
+                    if let Ok(history) = self.store.get_tx_history(first_account.id) {
+                        self.history_component.set_transactions(history);
+                    }
+
+                    if let Ok(ct_cells) = self.store.get_ct_cells(first_account.id) {
+                        let ct_info_cells = self
+                            .store
+                            .get_ct_info_cells(first_account.id)
+                            .unwrap_or_default();
+                        let balances = aggregate_ct_balances_with_info(
+                            &ct_cells,
+                            &ct_info_cells,
+                            &self.config,
+                        );
+                        self.tokens_component.set_ct_cells(ct_cells);
+                        self.tokens_component.set_balances(balances);
+                    }
+                } else {
+                    self.receive_component.set_account(None);
+                    self.send_component.set_account(None);
+                    self.history_component.set_account(None);
+                    self.tokens_component.set_account(None);
+                    self.history_component.set_transactions(Vec::new());
+                    self.tokens_component.set_ct_cells(Vec::new());
+                    self.tokens_component.set_balances(Vec::new());
+                }
 
                 // Handle dev mode transition
                 if new_dev_mode && !self.dev_mode {
@@ -1624,7 +1651,7 @@ impl App {
                     self.devnet = Some(devnet);
                     self.faucet = Some(faucet);
 
-                    // Set account for dev component if we have one
+                    // Set account for dev component
                     if let Some(account) = self.accounts_component.accounts.first()
                         && let Some(ref mut dev) = self.dev_component
                     {
