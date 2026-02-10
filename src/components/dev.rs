@@ -113,6 +113,14 @@ impl DevComponent {
         self.faucet_amount.pop();
     }
 
+    pub fn paste(&mut self, text: &str) {
+        for c in text.chars() {
+            if c.is_ascii_digit() || (c == '.' && !self.faucet_amount.contains('.')) {
+                self.faucet_amount.push(c);
+            }
+        }
+    }
+
     /// Static draw method for use in the main app draw loop.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_static(

@@ -150,7 +150,7 @@ impl App {
             .tick_rate(args.tick_rate)
             .frame_rate(args.frame_rate)
             .mouse(false)
-            .paste(false);
+            .paste(true);
 
         // Dev mode is enabled when network is "devnet"
         let dev_mode = config.network.name == "devnet";
@@ -300,6 +300,9 @@ impl App {
             Event::Quit => {
                 self.should_quit = true;
             }
+            Event::Paste(text) => {
+                self.handle_paste(&text)?;
+            }
             _ => {}
         }
         Ok(())
@@ -319,6 +322,10 @@ impl App {
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.action_tx.send(Action::Quit)?;
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(());
         }
 
@@ -347,31 +354,31 @@ impl App {
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.action_tx.send(Action::Suspend)?;
             }
-            KeyCode::Char('?') => {
+            KeyCode::Char('?') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Help)?;
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            KeyCode::Char('1') => {
+            KeyCode::Char('1') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Settings;
             }
-            KeyCode::Char('2') => {
+            KeyCode::Char('2') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Accounts;
             }
-            KeyCode::Char('3') => {
+            KeyCode::Char('3') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Send;
             }
-            KeyCode::Char('4') => {
+            KeyCode::Char('4') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Receive;
             }
-            KeyCode::Char('5') => {
+            KeyCode::Char('5') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Tokens;
             }
-            KeyCode::Char('6') => {
+            KeyCode::Char('6') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::History;
             }
-            KeyCode::Char('7') if self.dev_mode => {
+            KeyCode::Char('7') if key.modifiers.is_empty() && self.dev_mode => {
                 self.active_tab = Tab::Dev;
             }
             KeyCode::Tab => {
@@ -413,6 +420,24 @@ impl App {
                     }
                 }
             },
+        }
+        Ok(())
+    }
+
+    fn handle_paste(&mut self, text: &str) -> Result<()> {
+        match self.active_tab {
+            Tab::Send => {
+                self.send_component.paste(text);
+            }
+            Tab::Tokens => {
+                self.tokens_component.paste(text);
+            }
+            Tab::Dev => {
+                if let Some(ref mut dev_component) = self.dev_component {
+                    dev_component.paste(text);
+                }
+            }
+            _ => {}
         }
         Ok(())
     }

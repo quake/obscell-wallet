@@ -317,6 +317,50 @@ impl TokensComponent {
         }
     }
 
+    pub fn paste(&mut self, text: &str) {
+        match self.mode {
+            TokensMode::Transfer => match self.transfer_field {
+                TransferField::Recipient => {
+                    self.transfer_recipient.push_str(text);
+                }
+                TransferField::Amount => {
+                    for c in text.chars() {
+                        if c.is_ascii_digit() || (c == '.' && !self.transfer_amount.contains('.')) {
+                            self.transfer_amount.push(c);
+                        }
+                    }
+                }
+                TransferField::Confirm => {}
+            },
+            TokensMode::Mint => match self.mint_field {
+                TransferField::Recipient => {
+                    self.mint_recipient.push_str(text);
+                }
+                TransferField::Amount => {
+                    for c in text.chars() {
+                        if c.is_ascii_digit() || (c == '.' && !self.mint_amount.contains('.')) {
+                            self.mint_amount.push(c);
+                        }
+                    }
+                }
+                TransferField::Confirm => {}
+            },
+            TokensMode::Genesis => match self.genesis_field {
+                GenesisField::SupplyCap => {
+                    for c in text.chars() {
+                        if c.is_ascii_digit()
+                            || (c == '.' && !self.genesis_supply_cap.contains('.'))
+                        {
+                            self.genesis_supply_cap.push(c);
+                        }
+                    }
+                }
+                GenesisField::Unlimited | GenesisField::Confirm => {}
+            },
+            TokensMode::List => {}
+        }
+    }
+
     /// Validate transfer inputs.
     pub fn validate_transfer(&self) -> Option<String> {
         if self.account.is_none() {

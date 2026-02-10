@@ -170,6 +170,25 @@ impl SendComponent {
         }
     }
 
+    pub fn paste(&mut self, text: &str) {
+        if !self.is_editing {
+            return;
+        }
+        match self.focused_field {
+            SendField::Recipient => {
+                self.recipient.push_str(text);
+            }
+            SendField::Amount => {
+                for c in text.chars() {
+                    if c.is_ascii_digit() || (c == '.' && !self.amount.contains('.')) {
+                        self.amount.push(c);
+                    }
+                }
+            }
+            SendField::Confirm => {}
+        }
+    }
+
     /// Static draw method for use in the main app draw loop.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_static(
