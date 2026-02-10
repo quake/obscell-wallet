@@ -305,19 +305,9 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        // Check if current component needs direct input (on input fields)
-        // If so, pass key events directly to the component (except Ctrl+C and Esc)
-        let needs_input = match self.active_tab {
-            Tab::Send => {
-                // Pass input directly when focused on Recipient or Amount fields
-                self.send_component.focused_field == crate::components::send::SendField::Recipient
-                    || self.send_component.focused_field
-                        == crate::components::send::SendField::Amount
-            }
-            Tab::Tokens => {
-                // Pass input directly when on Recipient/Amount fields in Transfer/Mint/Genesis modes
-                self.tokens_component.needs_direct_input()
-            }
+        let is_editing = match self.active_tab {
+            Tab::Send => self.send_component.is_editing,
+            Tab::Tokens => self.tokens_component.is_editing(),
             Tab::Dev => self
                 .dev_component
                 .as_ref()
@@ -326,15 +316,12 @@ impl App {
             _ => false,
         };
 
-        // Always allow Ctrl+C to quit
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.action_tx.send(Action::Quit)?;
             return Ok(());
         }
 
-        // If component needs input, pass key events to component
-        // But allow Esc to potentially exit input mode, and Tab/BackTab for navigation
-        if needs_input {
+        if is_editing {
             match self.active_tab {
                 Tab::Send => {
                     self.send_component.handle_key_event(key)?;
@@ -352,7 +339,6 @@ impl App {
             return Ok(());
         }
 
-        // Global key bindings (only when not in input mode)
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Quit)?;
@@ -366,7 +352,6 @@ impl App {
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            // Tab switching (1-7, with 7 being Dev only in dev mode)
             KeyCode::Char('1') => {
                 self.active_tab = Tab::Settings;
             }
@@ -402,7 +387,6 @@ impl App {
                 };
                 self.active_tab = Tab::from_index(prev_index, self.dev_mode);
             }
-            // Component-specific key handling
             _ => match self.active_tab {
                 Tab::Settings => {
                     self.settings_component.handle_key_event(key)?;

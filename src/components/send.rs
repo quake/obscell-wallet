@@ -386,15 +386,12 @@ impl SendComponent {
 
 impl Component for SendComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        // Clear previous messages on any input
         self.error_message = None;
 
-        // When focused on input fields (Recipient or Amount), handle input directly
         let on_input_field =
             self.focused_field == SendField::Recipient || self.focused_field == SendField::Amount;
 
         match key.code {
-            // Navigation keys work everywhere
             KeyCode::Tab | KeyCode::Down => {
                 self.is_editing = false;
                 self.next_field();
@@ -406,7 +403,6 @@ impl Component for SendComponent {
             KeyCode::Esc => {
                 self.is_editing = false;
             }
-            // Enter on Confirm sends transaction, otherwise moves to next field
             KeyCode::Enter => {
                 if self.focused_field == SendField::Confirm {
                     if let Some(err) = self.validate() {
@@ -414,30 +410,30 @@ impl Component for SendComponent {
                     } else {
                         self.action_tx.send(Action::SendTransaction)?;
                     }
+                } else if on_input_field {
+                    // Enter on input field toggles editing mode
+                    self.is_editing = !self.is_editing;
                 } else {
                     self.is_editing = false;
                     self.next_field();
                 }
             }
-            // Character input - direct input when on input fields
             KeyCode::Char(c) => {
-                if on_input_field {
-                    self.is_editing = true;
+                if self.is_editing && on_input_field {
                     self.handle_char(c);
-                } else if c == 'j' {
-                    self.next_field();
-                } else if c == 'k' {
-                    self.prev_field();
-                } else if c == 'c' {
-                    self.clear();
-                } else if c == 'e' {
-                    // 'e' on Confirm does nothing, otherwise no-op
+                } else if !self.is_editing {
+                    // Navigation shortcuts when not editing
+                    match c {
+                        'j' => self.next_field(),
+                        'k' => self.prev_field(),
+                        'c' => self.clear(),
+                        'e' if on_input_field => self.is_editing = true,
+                        _ => {}
+                    }
                 }
             }
-            // Backspace works on input fields
             KeyCode::Backspace => {
-                if on_input_field {
-                    self.is_editing = true;
+                if self.is_editing && on_input_field {
                     self.handle_backspace();
                 }
             }

@@ -1207,6 +1207,11 @@ impl TokensComponent {
             }
         }
     }
+
+    /// Check if actively editing (typing input).
+    pub fn is_editing(&self) -> bool {
+        self.is_editing
+    }
 }
 
 impl Component for TokensComponent {
