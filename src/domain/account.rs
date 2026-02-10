@@ -94,14 +94,14 @@ impl Account {
     }
 
     /// Generate a one-time CKB address for receiving.
-    pub fn one_time_ckb_address(&self) -> String {
+    pub fn one_time_ckb_address(&self, is_mainnet: bool) -> String {
         let (eph_pub, stealth_pub) =
             generate_ephemeral_key(&self.view_public_key(), &self.spend_public_key());
         let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
         let script_args = [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
 
-        // TODO: Build proper CKB address with stealth lock code hash
-        format!("ckt1...{}", hex::encode(&script_args[..8]))
+        let prefix = if is_mainnet { "ckb" } else { "ckt" };
+        format!("{}...{}", prefix, hex::encode(&script_args[..8]))
     }
 
     /// Export private keys as hex string (view_key || spend_key).

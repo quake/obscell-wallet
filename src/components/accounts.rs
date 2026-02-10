@@ -17,6 +17,7 @@ pub struct AccountsComponent {
     pub accounts: Vec<Account>,
     list_state: ListState,
     pub selected_index: usize,
+    is_mainnet: bool,
 }
 
 impl AccountsComponent {
@@ -28,7 +29,12 @@ impl AccountsComponent {
             accounts: Vec::new(),
             list_state,
             selected_index: 0,
+            is_mainnet: false,
         }
+    }
+
+    pub fn set_is_mainnet(&mut self, is_mainnet: bool) {
+        self.is_mainnet = is_mainnet;
     }
 
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -77,7 +83,13 @@ impl AccountsComponent {
 
     /// Static draw method that doesn't require mutable self reference.
     /// Used to avoid borrow checker issues with the main app draw loop.
-    pub fn draw_static(f: &mut Frame, area: Rect, accounts: &[Account], selected_index: usize) {
+    pub fn draw_static(
+        f: &mut Frame,
+        area: Rect,
+        accounts: &[Account],
+        selected_index: usize,
+        is_mainnet: bool,
+    ) {
         let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
 
@@ -126,7 +138,7 @@ impl AccountsComponent {
         // Account details
         let details = if let Some(acc) = accounts.get(selected_index) {
             let stealth_addr = acc.stealth_address();
-            let ckb_addr = acc.one_time_ckb_address();
+            let ckb_addr = acc.one_time_ckb_address(is_mainnet);
 
             vec![
                 Line::from(vec![
@@ -266,7 +278,7 @@ impl Component for AccountsComponent {
         // Account details
         let details = if let Some(acc) = self.accounts.get(self.selected_index) {
             let stealth_addr = acc.stealth_address();
-            let ckb_addr = acc.one_time_ckb_address();
+            let ckb_addr = acc.one_time_ckb_address(self.is_mainnet);
 
             vec![
                 Line::from(vec![

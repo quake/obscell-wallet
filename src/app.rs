@@ -139,7 +139,8 @@ impl App {
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
         let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
-        let accounts_component = AccountsComponent::new(action_tx.clone());
+        let mut accounts_component = AccountsComponent::new(action_tx.clone());
+        accounts_component.set_is_mainnet(config.network.name == "mainnet");
         let receive_component = ReceiveComponent::new(action_tx.clone());
         let send_component = SendComponent::new(action_tx.clone());
         let history_component = HistoryComponent::new();
@@ -1511,6 +1512,7 @@ impl App {
 
                 // Update settings component
                 self.settings_component.set_network(&self.config.network.name);
+                self.accounts_component.set_is_mainnet(self.config.network.name == "mainnet");
 
                 // Handle dev mode transition
                 if new_dev_mode && !self.dev_mode {
@@ -1572,6 +1574,7 @@ impl App {
     fn draw_ui(&mut self) -> Result<()> {
         // Collect all data needed for drawing before borrowing terminal
         let config_network_name = self.config.network.name.clone();
+        let is_mainnet = config_network_name == "mainnet";
         let active_tab = self.active_tab;
         let status_message = self.status_message.clone();
         let accounts = self.accounts_component.accounts.clone();
@@ -1700,7 +1703,7 @@ impl App {
                     );
                 }
                 Tab::Accounts => {
-                    AccountsComponent::draw_static(f, chunks[2], &accounts, selected_index);
+                    AccountsComponent::draw_static(f, chunks[2], &accounts, selected_index, is_mainnet);
                 }
                 Tab::Send => {
                     SendComponent::draw_static(
