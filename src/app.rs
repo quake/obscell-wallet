@@ -143,6 +143,7 @@ pub struct App {
     pub status_message: String,
     pub tip_block_number: Option<u64>,
     pub is_scanning: bool,
+    pub last_auto_scan: Option<u64>,
     // Dev mode fields
     pub dev_mode: bool,
     pub dev_component: Option<DevComponent>,
@@ -215,6 +216,7 @@ impl App {
             status_message: "Ready".to_string(),
             tip_block_number: None,
             is_scanning: false,
+            last_auto_scan: None,
             // Dev mode
             dev_mode,
             dev_component,
@@ -469,20 +471,64 @@ impl App {
         debug!("Handling action: {:?}", action);
         match action {
             Action::Tick => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                // Auto-scan for new cells every 5 seconds (if not already scanning)
+                let auto_scan_interval = 5u64;
+                let should_auto_scan = !self.is_scanning
+                    && self
+                        .last_auto_scan
+                        .map(|last| now >= last + auto_scan_interval)
+                        .unwrap_or(true);
+
+                if should_auto_scan {
+                    self.last_auto_scan = Some(now);
+                    let accounts = self.account_manager.list_accounts()?;
+                    if !accounts.is_empty() {
+                        match self.scanner.scan_all_accounts(&accounts) {
+                            Ok(results) => {
+                                let mut has_new = false;
+                                for result in &results {
+                                    if !result.new_cells.is_empty() {
+                                        has_new = true;
+                                        if let Err(e) = self
+                                            .account_manager
+                                            .update_balance(result.account_id, result.total_capacity)
+                                        {
+                                            info!(
+                                                "Failed to update balance for account {}: {}",
+                                                result.account_id, e
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if has_new {
+                                    self.accounts_component
+                                        .set_accounts(self.account_manager.list_accounts()?);
+
+                                    if let Ok(tip) = self.scanner.get_tip_block_number() {
+                                        self.tip_block_number = Some(tip);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                info!("Auto-scan failed: {}", e);
+                            }
+                        }
+                    }
+                }
+
                 // Handle auto-mining in dev mode
                 if self.dev_mode && self.auto_mining_enabled {
-                    // Use a simple counter to track ticks for mining interval
-                    // Tick rate is typically 4 Hz, so interval * 4 ticks = interval seconds
-                    // We'll use a simpler approach: check every tick and use a timestamp
                     static LAST_MINE_TIME: std::sync::atomic::AtomicU64 =
                         std::sync::atomic::AtomicU64::new(0);
-                    
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
+
                     let last = LAST_MINE_TIME.load(std::sync::atomic::Ordering::Relaxed);
-                    
+
                     if now >= last + self.auto_mining_interval {
                         LAST_MINE_TIME.store(now, std::sync::atomic::Ordering::Relaxed);
                         if let Some(ref devnet) = self.devnet
@@ -493,7 +539,6 @@ impl App {
                                 &hex::encode(&hash.0[..4]),
                                 &hex::encode(&hash.0[28..])
                             );
-                            // Refresh tip block number
                             if let Ok(tip) = self.scanner.get_tip_block_number() {
                                 self.tip_block_number = Some(tip);
                             }
