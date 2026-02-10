@@ -178,7 +178,7 @@ impl DevComponent {
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "[s] Save checkpoint  [r] Reset to checkpoint",
+                "[p] Save checkpoint  [x] Reset to checkpoint",
                 Style::default().fg(Color::DarkGray),
             )]),
         ];
@@ -374,10 +374,10 @@ impl Component for DevComponent {
                     self.action_tx
                         .send(Action::SetMiningInterval(self.mining_interval))?;
                 }
-                KeyCode::Char('r') => {
+                KeyCode::Char('x') => {
                     self.action_tx.send(Action::ResetToCheckpoint)?;
                 }
-                KeyCode::Char('s') => {
+                KeyCode::Char('p') => {
                     self.action_tx.send(Action::SaveCheckpoint)?;
                 }
                 KeyCode::Char('f') => {

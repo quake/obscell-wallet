@@ -135,7 +135,7 @@ impl AccountsComponent {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Accounts [n]New [i]Import")
+                    .title("Accounts [n]New [i]Import [e]Export")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )

@@ -60,15 +60,38 @@ impl Tab {
         tabs
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> Line<'static> {
         match self {
-            Tab::Settings => "Settings",
-            Tab::Accounts => "Accounts",
-            Tab::Send => "Send",
-            Tab::Receive => "Receive",
-            Tab::Tokens => "Tokens",
-            Tab::History => "History",
-            Tab::Dev => "Dev",
+            Tab::Settings => Line::from(vec![
+                Span::styled("S", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("ettings"),
+            ]),
+            Tab::Accounts => Line::from(vec![
+                Span::styled("A", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("ccounts"),
+            ]),
+            Tab::Send => Line::from(vec![
+                Span::styled("W", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("ithdraw"),
+            ]),
+            Tab::Receive => Line::from(vec![
+                Span::raw("Recei"),
+                Span::styled("v", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("e"),
+            ]),
+            Tab::Tokens => Line::from(vec![
+                Span::raw("T"),
+                Span::styled("o", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("kens"),
+            ]),
+            Tab::History => Line::from(vec![
+                Span::styled("H", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("istory"),
+            ]),
+            Tab::Dev => Line::from(vec![
+                Span::styled("D", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("ev"),
+            ]),
         }
     }
 
@@ -360,25 +383,25 @@ impl App {
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Rescan)?;
             }
-            KeyCode::Char('1') if key.modifiers.is_empty() => {
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Settings;
             }
-            KeyCode::Char('2') if key.modifiers.is_empty() => {
+            KeyCode::Char('a') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Accounts;
             }
-            KeyCode::Char('3') if key.modifiers.is_empty() => {
+            KeyCode::Char('w') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Send;
             }
-            KeyCode::Char('4') if key.modifiers.is_empty() => {
+            KeyCode::Char('v') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Receive;
             }
-            KeyCode::Char('5') if key.modifiers.is_empty() => {
+            KeyCode::Char('o') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Tokens;
             }
-            KeyCode::Char('6') if key.modifiers.is_empty() => {
+            KeyCode::Char('h') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::History;
             }
-            KeyCode::Char('7') if key.modifiers.is_empty() && self.dev_mode => {
+            KeyCode::Char('d') if key.modifiers.is_empty() && self.dev_mode => {
                 self.active_tab = Tab::Dev;
             }
             KeyCode::Tab => {
@@ -1697,13 +1720,7 @@ impl App {
             // Draw tabs
             let titles: Vec<Line> = Tab::all(dev_mode)
                 .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    Line::from(vec![
-                        Span::styled(format!("[{}]", i + 1), Style::default().fg(Color::DarkGray)),
-                        Span::raw(t.title()),
-                    ])
-                })
+                .map(|t| t.title())
                 .collect();
 
             let tabs = Tabs::new(titles)
@@ -1866,13 +1883,7 @@ impl App {
     fn draw_tabs(&self, f: &mut Frame, area: Rect) {
         let titles: Vec<Line> = Tab::all(self.dev_mode)
             .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                Line::from(vec![
-                    Span::styled(format!("[{}]", i + 1), Style::default().fg(Color::DarkGray)),
-                    Span::raw(t.title()),
-                ])
-            })
+            .map(|t| t.title())
             .collect();
 
         let tabs = Tabs::new(titles)
@@ -1901,7 +1912,7 @@ impl App {
                     .title("Send")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("Send view - Coming soon...")
+                let paragraph = Paragraph::new("Withdraw view - Coming soon...")
                     .block(block)
                     .style(Style::default().fg(Color::Gray));
                 f.render_widget(paragraph, area);

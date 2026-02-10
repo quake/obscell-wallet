@@ -87,11 +87,12 @@ impl SettingsComponent {
         let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
 
-        // Network list
+        // Network list with hotkey hints
+        let hotkeys = ["[T]estnet", "[M]ainnet", "[L]ocal"];
         let items: Vec<ListItem> = NETWORKS
             .iter()
             .enumerate()
-            .map(|(i, (name, display_name, _url))| {
+            .map(|(i, (name, _, _url))| {
                 let is_current = *name == current_network;
                 let is_selected = i == selected_index;
 
@@ -105,9 +106,9 @@ impl SettingsComponent {
                     Style::default().fg(Color::White)
                 };
 
-                let marker = if is_current { " [active]" } else { "" };
+                let marker = if is_current { " ✓" } else { "" };
                 let content = Line::from(vec![Span::styled(
-                    format!("{}{}", display_name, marker),
+                    format!("{}{}", hotkeys[i], marker),
                     style,
                 )]);
                 ListItem::new(content)
@@ -227,17 +228,17 @@ impl Component for SettingsComponent {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.previous();
             }
-            KeyCode::Char('1') => {
+            KeyCode::Char('t') => {
                 self.selected_index = 0;
                 self.list_state.select(Some(0));
                 self.select_network()?;
             }
-            KeyCode::Char('2') => {
+            KeyCode::Char('m') => {
                 self.selected_index = 1;
                 self.list_state.select(Some(1));
                 self.select_network()?;
             }
-            KeyCode::Char('3') => {
+            KeyCode::Char('l') => {
                 self.selected_index = 2;
                 self.list_state.select(Some(2));
                 self.select_network()?;
