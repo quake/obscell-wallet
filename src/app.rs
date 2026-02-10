@@ -1026,14 +1026,60 @@ impl App {
                         return Ok(());
                     }
 
+                    // Filter CT cells to only those matching the selected token
+                    let matching_ct_cells: Vec<_> = available_ct_cells
+                        .iter()
+                        .filter(|c| c.type_script_args == token_balance.type_script_args)
+                        .cloned()
+                        .collect();
+
+                    if matching_ct_cells.is_empty() {
+                        self.tokens_component.error_message =
+                            Some("No CT cells for selected token".to_string());
+                        self.status_message = "CT transfer failed: no matching cells".to_string();
+                        return Ok(());
+                    }
+
+                    // Get stealth cells (CKB) to use as funding for the transfer
+                    // CT transfers may need extra capacity for change outputs
+                    let stealth_cells = match self.store.get_stealth_cells(account.id) {
+                        Ok(cells) => cells,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Failed to get stealth cells: {}", e));
+                            self.status_message = "CT transfer failed: storage error".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    // Find a funding cell with enough capacity (255 CKB + fees)
+                    const MIN_FUNDING_CAPACITY: u64 = 256_00000000; // 256 CKB
+                    let funding_cell = stealth_cells
+                        .iter()
+                        .find(|c| c.capacity >= MIN_FUNDING_CAPACITY);
+
                     // Build the CT transaction
-                    let builder = CtTxBuilder::new(
+                    let mut builder = CtTxBuilder::new(
                         self.config.clone(),
                         token_balance.type_script_args.clone(),
                     );
+
+                    // Add funding cell if available
+                    let funding_input = if let Some(fc) = funding_cell {
+                        let funding = FundingCell {
+                            out_point: fc.out_point.clone(),
+                            capacity: fc.capacity,
+                            lock_script_args: fc.stealth_script_args.clone(),
+                        };
+                        builder = builder.funding_cell(funding.clone());
+                        Some(funding)
+                    } else {
+                        None
+                    };
+
                     let builder = match builder
                         .add_output(stealth_addr, amount_value)
-                        .select_inputs(&available_ct_cells, amount_value)
+                        .select_inputs(&matching_ct_cells, amount_value)
                     {
                         Ok(b) => b,
                         Err(e) => {
@@ -1059,18 +1105,23 @@ impl App {
                     };
 
                     // Sign the transaction
-                    // Note: No funding cell for now - transfers need to have sufficient CT input cells
-                    let signed_tx =
-                        match CtTxBuilder::sign(built_tx.clone(), account, &input_cells, None) {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                self.tokens_component.error_message =
-                                    Some(format!("Signing failed: {}", e));
-                                self.status_message =
-                                    "CT transfer failed: signing error".to_string();
-                                return Ok(());
-                            }
-                        };
+                    let funding_lock_args = funding_input
+                        .as_ref()
+                        .map(|f| f.lock_script_args.as_slice());
+                    let signed_tx = match CtTxBuilder::sign(
+                        built_tx.clone(),
+                        account,
+                        &input_cells,
+                        funding_lock_args,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Signing failed: {}", e));
+                            self.status_message = "CT transfer failed: signing error".to_string();
+                            return Ok(());
+                        }
+                    };
 
                     // Submit the transaction
                     match self.scanner.rpc().send_transaction(signed_tx) {
@@ -1105,6 +1156,16 @@ impl App {
                                 .remove_spent_ct_cells(account.id, &spent_out_points)
                             {
                                 info!("Failed to remove spent CT cells: {}", e);
+                            }
+
+                            // Remove spent funding cell from store (if used)
+                            if let Some(ref fc) = funding_input
+                                && let Err(e) = self.store.remove_spent_cells(
+                                    account.id,
+                                    std::slice::from_ref(&fc.out_point),
+                                )
+                            {
+                                info!("Failed to remove spent funding cell: {}", e);
                             }
 
                             // Refresh CT balances
