@@ -90,8 +90,21 @@ impl AccountsComponent {
         selected_index: usize,
         is_mainnet: bool,
     ) {
-        let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(35), Constraint::Min(0)]).split(area);
+
+        // Helper to truncate string to fit width (accounting for borders)
+        let max_width = chunks[1].width.saturating_sub(2) as usize;
+        let truncate = |s: &str| -> String {
+            if s.chars().count() <= max_width {
+                s.to_string()
+            } else if max_width <= 3 {
+                ".".repeat(max_width)
+            } else {
+                let chars: Vec<char> = s.chars().collect();
+                let truncated: String = chars[..max_width - 3].iter().collect();
+                format!("{}...", truncated)
+            }
+        };
 
         // Account list
         let items: Vec<ListItem> = accounts
@@ -122,7 +135,7 @@ impl AccountsComponent {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Accounts [n]New [i]Import [r]Rescan [R]Full")
+                    .title("Accounts [n]New [i]Import")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
@@ -137,8 +150,8 @@ impl AccountsComponent {
 
         // Account details
         let details = if let Some(acc) = accounts.get(selected_index) {
-            let stealth_addr = acc.stealth_address();
-            let ckb_addr = acc.one_time_ckb_address(is_mainnet);
+            let stealth_addr = truncate(&acc.stealth_address());
+            let ckb_addr = truncate(&acc.one_time_ckb_address(is_mainnet));
 
             vec![
                 Line::from(vec![
@@ -232,8 +245,21 @@ impl Component for AccountsComponent {
     }
 
     fn draw(&mut self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(35), Constraint::Min(0)]).split(area);
+
+        // Helper to truncate string to fit width (accounting for borders)
+        let max_width = chunks[1].width.saturating_sub(2) as usize;
+        let truncate = |s: &str| -> String {
+            if s.chars().count() <= max_width {
+                s.to_string()
+            } else if max_width <= 3 {
+                ".".repeat(max_width)
+            } else {
+                let chars: Vec<char> = s.chars().collect();
+                let truncated: String = chars[..max_width - 3].iter().collect();
+                format!("{}...", truncated)
+            }
+        };
 
         // Account list
         let items: Vec<ListItem> = self
@@ -262,7 +288,7 @@ impl Component for AccountsComponent {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Accounts [n]New [i]Import [r]Rescan [R]Full")
+                    .title("Accounts [n]New [i]Import")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
@@ -277,8 +303,8 @@ impl Component for AccountsComponent {
 
         // Account details
         let details = if let Some(acc) = self.accounts.get(self.selected_index) {
-            let stealth_addr = acc.stealth_address();
-            let ckb_addr = acc.one_time_ckb_address(self.is_mainnet);
+            let stealth_addr = truncate(&acc.stealth_address());
+            let ckb_addr = truncate(&acc.one_time_ckb_address(self.is_mainnet));
 
             vec![
                 Line::from(vec![

@@ -8,10 +8,10 @@ use tracing::{debug, info, warn};
 pub fn get_data_dir() -> PathBuf {
     if let Ok(s) = std::env::var("OBSCELL_WALLET_DATA") {
         PathBuf::from(s)
-    } else if let Some(proj_dirs) = ProjectDirs::from("com", "obscell", "obscell-wallet") {
-        proj_dirs.data_local_dir().to_path_buf()
     } else {
-        PathBuf::from(".").join(".data")
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("data")
     }
 }
 

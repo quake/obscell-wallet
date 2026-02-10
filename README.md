@@ -176,14 +176,16 @@ cargo test --test integration e2e_ct_genesis_mint -- --nocapture --test-threads=
 
 ## Configuration
 
-Configuration is stored in platform-specific directories:
+Configuration files are stored in platform-specific directories:
 - Linux: `~/.config/obscell-wallet/`
 - macOS: `~/Library/Application Support/com.obscell.obscell-wallet/`
 - Windows: `%APPDATA%\obscell\obscell-wallet\`
 
+Data (wallet database) is stored in `./data/` by default (in the directory where the TUI is launched).
+
 Or set via environment variables:
 - `OBSCELL_WALLET_CONFIG`: Config directory path
-- `OBSCELL_WALLET_DATA`: Data directory path
+- `OBSCELL_WALLET_DATA`: Data directory path (default: `./data/`)
 
 ## Dependencies
 
