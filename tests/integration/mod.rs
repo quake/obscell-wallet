@@ -70,19 +70,12 @@ impl TestEnv {
         let (contracts, checkpoint) = if let Some(checkpoint) = devnet.load_checkpoint() {
             println!("Found checkpoint at block {}", checkpoint);
 
-            // Load contract info
-            if let Some(contracts_info) = ContractDeployer::load_deployed_info() {
-                // Verify contracts are still deployed
-                let deployer = ContractDeployer::new(DevNet::RPC_URL, miner_key, miner_lock_args);
-                if deployer.are_all_deployed(&contracts_info)? {
-                    println!("Contract still deployed, reusing existing setup");
-                    (contracts_info, checkpoint)
-                } else {
-                    println!("Contract no longer deployed, redeploying...");
-                    Self::deploy_and_checkpoint(&devnet, &miner_key, &miner_lock_args)?
-                }
+            // Load contract info from devnet.toml
+            if let Some(contracts_info) = ContractDeployer::load_from_config() {
+                println!("Contract config found, reusing existing setup");
+                (contracts_info, checkpoint)
             } else {
-                println!("No contract info found, deploying...");
+                println!("No devnet.toml found, deploying...");
                 Self::deploy_and_checkpoint(&devnet, &miner_key, &miner_lock_args)?
             }
         } else {

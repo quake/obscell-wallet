@@ -53,18 +53,22 @@ fn create_test_config(env: &TestEnv) -> Config {
             stealth_lock: CellDepConfig {
                 tx_hash: format!("0x{}", hex::encode(stealth_lock_tx_hash.as_bytes())),
                 index: stealth_lock_index,
+                ..Default::default()
             },
             ckb_auth: CellDepConfig {
                 tx_hash: format!("0x{}", hex::encode(ckb_auth_tx_hash.as_bytes())),
                 index: ckb_auth_index,
+                ..Default::default()
             },
             ct_token: CellDepConfig {
                 tx_hash: format!("0x{}", hex::encode(ct_token_tx_hash.as_bytes())),
                 index: ct_token_index,
+                ..Default::default()
             },
             ct_info: CellDepConfig {
                 tx_hash: format!("0x{}", hex::encode(ct_info_tx_hash.as_bytes())),
                 index: ct_info_index,
+                ..Default::default()
             },
         },
     }

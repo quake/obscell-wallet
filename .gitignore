@@ -1,8 +1,6 @@
 /target/
-Cargo.lock
-.data/
-.config/
-*.log
+data/
+config/devnet.toml
 
 # Test fixtures - runtime data (stealth-lock kept in repo, ckb and devnet setup via setup.sh)
 tests/fixtures/ckb

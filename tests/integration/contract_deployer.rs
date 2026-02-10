@@ -72,125 +72,41 @@ impl ContractDeployer {
         }
     }
 
-    /// Get the path to the deployed contracts info file.
-    fn contracts_info_file() -> PathBuf {
+    /// Get the path to the devnet config file.
+    fn devnet_config_file() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("devnet")
-            .join(".contracts")
+            .join("config")
+            .join("devnet.toml")
     }
 
-    /// Load deployed contracts info from file.
-    pub fn load_deployed_info() -> Option<DeployedContracts> {
-        let path = Self::contracts_info_file();
+    pub fn load_from_config() -> Option<DeployedContracts> {
+        let path = Self::devnet_config_file();
         if !path.exists() {
             return None;
         }
 
         let content = fs::read_to_string(&path).ok()?;
-        let mut lines = content.lines();
+        let config: obscell_wallet::config::Config = toml::from_str(&content).ok()?;
 
-        // Parse stealth-lock info
-        let stealth_tx_hash = lines.next()?;
-        let stealth_output_index: u32 = lines.next()?.parse().ok()?;
-        let stealth_data_hash = lines.next()?;
-        let stealth_type_id_hash = lines.next();
+        let parse_h256 = |s: &String| -> Option<H256> {
+            H256::from_slice(&hex::decode(s.trim_start_matches("0x")).ok()?).ok()
+        };
 
-        // Parse ckb-auth info
-        let auth_tx_hash = lines.next()?;
-        let auth_output_index: u32 = lines.next()?.parse().ok()?;
-        let auth_data_hash = lines.next()?;
-
-        // Parse ct-info-type info
-        let ct_info_tx_hash = lines.next()?;
-        let ct_info_output_index: u32 = lines.next()?.parse().ok()?;
-        let ct_info_data_hash = lines.next()?;
-        let ct_info_type_id_hash = lines.next();
-
-        // Parse ct-token-type info
-        let ct_token_tx_hash = lines.next()?;
-        let ct_token_output_index: u32 = lines.next()?.parse().ok()?;
-        let ct_token_data_hash = lines.next()?;
-        let ct_token_type_id_hash = lines.next();
+        let parse_dep = |dep: &obscell_wallet::config::CellDepConfig| -> Option<DeployedContract> {
+            Some(DeployedContract {
+                tx_hash: parse_h256(&dep.tx_hash)?,
+                output_index: dep.index,
+                data_hash: dep.data_hash.as_ref().and_then(parse_h256)?,
+                type_id_hash: dep.type_id_hash.as_ref().and_then(parse_h256),
+            })
+        };
 
         Some(DeployedContracts {
-            stealth_lock: DeployedContract {
-                tx_hash: H256::from_slice(
-                    &hex::decode(stealth_tx_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                output_index: stealth_output_index,
-                data_hash: H256::from_slice(
-                    &hex::decode(stealth_data_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                type_id_hash: stealth_type_id_hash.and_then(|h| {
-                    if h.is_empty() {
-                        None
-                    } else {
-                        H256::from_slice(&hex::decode(h.trim_start_matches("0x")).ok()?).ok()
-                    }
-                }),
-            },
-            ckb_auth: DeployedContract {
-                tx_hash: H256::from_slice(
-                    &hex::decode(auth_tx_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                output_index: auth_output_index,
-                data_hash: H256::from_slice(
-                    &hex::decode(auth_data_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                type_id_hash: None, // ckb-auth doesn't use type_id
-            },
-            ct_info_type: DeployedContract {
-                tx_hash: H256::from_slice(
-                    &hex::decode(ct_info_tx_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                output_index: ct_info_output_index,
-                data_hash: H256::from_slice(
-                    &hex::decode(ct_info_data_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                type_id_hash: ct_info_type_id_hash.and_then(|h| {
-                    if h.is_empty() {
-                        None
-                    } else {
-                        H256::from_slice(&hex::decode(h.trim_start_matches("0x")).ok()?).ok()
-                    }
-                }),
-            },
-            ct_token_type: DeployedContract {
-                tx_hash: H256::from_slice(
-                    &hex::decode(ct_token_tx_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                output_index: ct_token_output_index,
-                data_hash: H256::from_slice(
-                    &hex::decode(ct_token_data_hash.trim_start_matches("0x")).ok()?,
-                )
-                .ok()?,
-                type_id_hash: ct_token_type_id_hash.and_then(|h| {
-                    if h.is_empty() {
-                        None
-                    } else {
-                        H256::from_slice(&hex::decode(h.trim_start_matches("0x")).ok()?).ok()
-                    }
-                }),
-            },
+            stealth_lock: parse_dep(&config.cell_deps.stealth_lock)?,
+            ckb_auth: parse_dep(&config.cell_deps.ckb_auth)?,
+            ct_info_type: parse_dep(&config.cell_deps.ct_info)?,
+            ct_token_type: parse_dep(&config.cell_deps.ct_token)?,
         })
-    }
-
-    /// Get the path to the devnet config file.
-    fn devnet_config_file() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("devnet")
-            .join("devnet.toml")
     }
 
     /// Generate devnet.toml config file from deployed contracts.
@@ -250,18 +166,29 @@ impl ContractDeployer {
                 ckb_auth: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ckb_auth.tx_hash.as_bytes())),
                     index: info.ckb_auth.output_index,
+                    data_hash: Some(format!("0x{}", hex::encode(info.ckb_auth.data_hash.as_bytes()))),
+                    type_id_hash: None,
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.stealth_lock.tx_hash.as_bytes())),
                     index: info.stealth_lock.output_index,
+                    data_hash: Some(format!("0x{}", hex::encode(info.stealth_lock.data_hash.as_bytes()))),
+                    type_id_hash: info.stealth_lock.type_id_hash.as_ref()
+                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_token: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_token_type.tx_hash.as_bytes())),
                     index: info.ct_token_type.output_index,
+                    data_hash: Some(format!("0x{}", hex::encode(info.ct_token_type.data_hash.as_bytes()))),
+                    type_id_hash: info.ct_token_type.type_id_hash.as_ref()
+                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_info: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_info_type.tx_hash.as_bytes())),
                     index: info.ct_info_type.output_index,
+                    data_hash: Some(format!("0x{}", hex::encode(info.ct_info_type.data_hash.as_bytes()))),
+                    type_id_hash: info.ct_info_type.type_id_hash.as_ref()
+                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
             },
         };
@@ -271,42 +198,6 @@ impl ContractDeployer {
 
         println!("Generated devnet config: {}", path.display());
         Ok(())
-    }
-
-    /// Save deployed contracts info to file.
-    fn save_deployed_info(info: &DeployedContracts) -> Result<(), String> {
-        let path = Self::contracts_info_file();
-        let content = format!(
-            "0x{}\n{}\n0x{}\n{}\n0x{}\n{}\n0x{}\n0x{}\n{}\n0x{}\n{}\n0x{}\n{}\n0x{}\n{}",
-            hex::encode(info.stealth_lock.tx_hash.as_bytes()),
-            info.stealth_lock.output_index,
-            hex::encode(info.stealth_lock.data_hash.as_bytes()),
-            info.stealth_lock
-                .type_id_hash
-                .as_ref()
-                .map(|h| format!("0x{}", hex::encode(h.as_bytes())))
-                .unwrap_or_default(),
-            hex::encode(info.ckb_auth.tx_hash.as_bytes()),
-            info.ckb_auth.output_index,
-            hex::encode(info.ckb_auth.data_hash.as_bytes()),
-            hex::encode(info.ct_info_type.tx_hash.as_bytes()),
-            info.ct_info_type.output_index,
-            hex::encode(info.ct_info_type.data_hash.as_bytes()),
-            info.ct_info_type
-                .type_id_hash
-                .as_ref()
-                .map(|h| format!("0x{}", hex::encode(h.as_bytes())))
-                .unwrap_or_default(),
-            hex::encode(info.ct_token_type.tx_hash.as_bytes()),
-            info.ct_token_type.output_index,
-            hex::encode(info.ct_token_type.data_hash.as_bytes()),
-            info.ct_token_type
-                .type_id_hash
-                .as_ref()
-                .map(|h| format!("0x{}", hex::encode(h.as_bytes())))
-                .unwrap_or_default(),
-        );
-        fs::write(&path, content).map_err(|e| format!("Failed to save contracts info: {}", e))
     }
 
     /// Check if a contract is already deployed by checking if the cell exists.
@@ -339,8 +230,8 @@ impl ContractDeployer {
     /// Returns the deployed contracts info.
     /// Note: This function generates blocks to confirm each deployment.
     pub fn deploy_all(&self) -> Result<DeployedContracts, String> {
-        // Check if already deployed
-        if let Some(info) = Self::load_deployed_info()
+        // Check if already deployed (from devnet.toml)
+        if let Some(info) = Self::load_from_config()
             && self.are_all_deployed(&info)?
         {
             println!(
@@ -420,9 +311,6 @@ impl ContractDeployer {
             ct_info_type,
             ct_token_type,
         };
-
-        // Save deployment info
-        Self::save_deployed_info(&info)?;
 
         // Generate devnet.toml config file for the wallet application
         Self::generate_devnet_config(&info)?;
