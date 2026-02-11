@@ -12,7 +12,7 @@ use ratatui::{
 use crate::{
     domain::{
         account::Account,
-        cell::{TxRecord, TxStatus, TxType},
+        cell::{TxRecord, TxType},
     },
     tui::Frame,
 };
@@ -24,7 +24,7 @@ pub struct HistoryComponent {
     pub account: Option<Account>,
     pub transactions: Vec<TxRecord>,
     list_state: ListState,
-    selected_index: usize,
+    pub selected_index: usize,
 }
 
 impl HistoryComponent {
@@ -115,6 +115,49 @@ impl HistoryComponent {
         format!("{}", timestamp)
     }
 
+    /// Format delta as display string with sign.
+    fn format_delta(tx: &TxRecord) -> (String, Color) {
+        match &tx.tx_type {
+            TxType::Ckb { delta } => {
+                let ckb_amount = *delta as f64 / 100_000_000.0;
+                if *delta >= 0 {
+                    (format!("+{:.8} CKB", ckb_amount), Color::Green)
+                } else {
+                    (format!("{:.8} CKB", ckb_amount), Color::Red)
+                }
+            }
+            TxType::Ct { delta, .. } => {
+                if *delta >= 0 {
+                    (format!("+{} CT", delta), Color::Green)
+                } else {
+                    (format!("{} CT", delta), Color::Red)
+                }
+            }
+            TxType::CtGenesis { .. } => ("New Token".to_string(), Color::Cyan),
+        }
+    }
+
+    /// Get transaction type label.
+    fn tx_type_label(tx: &TxRecord) -> &'static str {
+        match &tx.tx_type {
+            TxType::Ckb { delta } => {
+                if *delta >= 0 {
+                    "Receive"
+                } else {
+                    "Send"
+                }
+            }
+            TxType::Ct { delta, .. } => {
+                if *delta >= 0 {
+                    "CT Recv"
+                } else {
+                    "CT Send"
+                }
+            }
+            TxType::CtGenesis { .. } => "Create",
+        }
+    }
+
     /// Static draw method for use in app.rs draw loop.
     pub fn draw_static(
         f: &mut Frame,
@@ -139,32 +182,14 @@ impl HistoryComponent {
                     Style::default().fg(Color::White)
                 };
 
-                let direction = tx.direction();
-                let direction_color = match &tx.tx_type {
-                    TxType::StealthSend { .. } => Color::Red,
-                    TxType::StealthReceive { .. } => Color::Green,
-                    TxType::CkbSend { .. } => Color::Red,
-                    TxType::CtTransfer { .. } => Color::Yellow,
-                    TxType::CtMint { .. } => Color::Magenta,
-                    TxType::CtGenesis { .. } => Color::Cyan,
-                };
-
-                let amount_str = tx
-                    .amount_ckb()
-                    .map(|a| format!("{:.8} CKB", a))
-                    .unwrap_or_else(|| "CT".to_string());
-
-                let status_indicator = match tx.status {
-                    TxStatus::Pending => "...",
-                    TxStatus::Confirmed => " ",
-                    TxStatus::Failed => "X ",
-                };
+                let (amount_str, delta_color) = Self::format_delta(tx);
+                let type_label = Self::tx_type_label(tx);
 
                 let content = Line::from(vec![
-                    Span::styled(status_indicator, Style::default().fg(Color::DarkGray)),
+                    Span::styled("  ", Style::default()), // Status placeholder (all confirmed)
                     Span::styled(
-                        format!("{:<8}", direction),
-                        Style::default().fg(direction_color),
+                        format!("{:<8}", type_label),
+                        Style::default().fg(delta_color),
                     ),
                     Span::styled(amount_str, style),
                     Span::raw(" "),
@@ -202,22 +227,18 @@ impl HistoryComponent {
 
         // Transaction details
         let details = if let Some(tx) = transactions.get(selected_index) {
+            let (amount_str, delta_color) = Self::format_delta(tx);
+            let type_label = Self::tx_type_label(tx);
+
             let mut lines = vec![
                 Line::from(vec![
                     Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(tx.direction(), Style::default().fg(Color::White)),
+                    Span::styled(type_label, Style::default().fg(delta_color)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("{:?}", tx.status),
-                        Style::default().fg(match tx.status {
-                            TxStatus::Pending => Color::Yellow,
-                            TxStatus::Confirmed => Color::Green,
-                            TxStatus::Failed => Color::Red,
-                        }),
-                    ),
+                    Span::styled("Confirmed", Style::default().fg(Color::Green)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
@@ -227,30 +248,21 @@ impl HistoryComponent {
                 Line::from(""),
             ];
 
-            // Add amount
-            if let Some(amount) = tx.amount_ckb() {
-                lines.push(Line::from(vec![
-                    Span::styled("Amount: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("{:.8} CKB", amount),
-                        Style::default().fg(Color::Green),
-                    ),
-                ]));
-                lines.push(Line::from(""));
-            }
+            // Add amount/delta
+            lines.push(Line::from(vec![
+                Span::styled("Amount: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(amount_str, Style::default().fg(delta_color)),
+            ]));
+            lines.push(Line::from(""));
 
-            // Add recipient for sends
-            if let TxType::StealthSend { to, .. } | TxType::CkbSend { to, .. } = &tx.tx_type {
+            // Add token ID for CT transactions
+            if let TxType::Ct { token, .. } = &tx.tx_type {
                 lines.push(Line::from(vec![Span::styled(
-                    "Recipient:",
+                    "Token ID:",
                     Style::default().fg(Color::DarkGray),
                 )]));
-                // Show truncated address
-                let truncated = if to.len() > 40 {
-                    format!("{}...{}", &to[..20], &to[to.len() - 16..])
-                } else {
-                    to.clone()
-                };
+                let token_hex = hex::encode(token);
+                let truncated = format!("{}...{}", &token_hex[..8], &token_hex[56..]);
                 lines.push(Line::from(vec![Span::styled(
                     truncated,
                     Style::default().fg(Color::Yellow),
@@ -258,14 +270,15 @@ impl HistoryComponent {
                 lines.push(Line::from(""));
             }
 
-            // Add block number if confirmed
-            if let Some(block) = tx.block_number {
-                lines.push(Line::from(vec![
-                    Span::styled("Block: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{}", block), Style::default().fg(Color::White)),
-                ]));
-                lines.push(Line::from(""));
-            }
+            // Add block number (always present since all are confirmed)
+            lines.push(Line::from(vec![
+                Span::styled("Block: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}", tx.block_number),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+            lines.push(Line::from(""));
 
             // Add timestamp
             lines.push(Line::from(vec![

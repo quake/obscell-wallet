@@ -1,7 +1,7 @@
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_sdk::{
+    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
     CkbRpcClient,
-    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode},
 };
 use color_eyre::eyre::Result;
 
@@ -54,6 +54,45 @@ impl RpcClient {
         Ok(result)
     }
 
+    /// Search for transactions with a given lock script (using prefix search).
+    /// Returns transactions where the script appears in inputs or outputs.
+    pub fn get_transactions_by_lock_prefix(
+        &self,
+        code_hash: &[u8; 32],
+        limit: u32,
+        after_cursor: Option<JsonBytes>,
+    ) -> Result<ckb_sdk::rpc::ckb_indexer::Pagination<Tx>> {
+        let script = ckb_jsonrpc_types::Script {
+            code_hash: ckb_types::H256::from_slice(code_hash)?,
+            hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+            args: JsonBytes::default(), // Empty args for prefix search
+        };
+
+        let search_key = SearchKey {
+            script,
+            script_type: ScriptType::Lock,
+            script_search_mode: Some(SearchMode::Prefix),
+            filter: None,
+            with_data: Some(false),
+            group_by_transaction: Some(true), // Group by transaction to get TxWithCells
+        };
+
+        let result =
+            self.client
+                .get_transactions(search_key, Order::Desc, limit.into(), after_cursor)?;
+
+        Ok(result)
+    }
+
+    /// Get transaction by hash.
+    pub fn get_transaction(
+        &self,
+        tx_hash: ckb_types::H256,
+    ) -> Result<Option<ckb_jsonrpc_types::TransactionWithStatusResponse>> {
+        let result = self.client.get_transaction(tx_hash)?;
+        Ok(result)
+    }
+
     /// Send a transaction.
     pub fn send_transaction(&self, tx: ckb_jsonrpc_types::Transaction) -> Result<ckb_types::H256> {
         let hash = self.client.send_transaction(tx, None)?;
@@ -63,5 +102,19 @@ impl RpcClient {
     /// Get the RPC URL.
     pub fn rpc_url(&self) -> &str {
         &self.config.network.rpc_url
+    }
+
+    /// Get block header by block number.
+    pub fn get_block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<ckb_jsonrpc_types::HeaderView>> {
+        let result = self.client.get_header_by_number(block_number.into())?;
+        Ok(result)
+    }
+
+    /// Get the config.
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 }

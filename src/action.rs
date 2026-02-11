@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use strum::Display;
 
+use crate::infra::scanner::ScanUpdate;
+
 /// Actions that can be triggered by user input or internal events.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Display)]
 #[strum(serialize_all = "snake_case")]
 pub enum Action {
     Tick,
@@ -43,6 +45,9 @@ pub enum Action {
     SendTransaction,
     Rescan,
     FullRescan,
+
+    // Background scan updates
+    ScanProgress(ScanUpdate),
 
     // Token actions
     SelectToken(usize),

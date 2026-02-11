@@ -190,8 +190,8 @@ impl Store {
         self.save_tx_history(account_id, &records)
     }
 
-    /// Save all transaction records for an account (internal).
-    fn save_tx_history(&self, account_id: u64, records: &[TxRecord]) -> Result<()> {
+    /// Save all transaction records for an account.
+    pub fn save_tx_history(&self, account_id: u64, records: &[TxRecord]) -> Result<()> {
         let mut wtxn = self.env.write_txn()?;
         let db: Database<U64<BE>, SerdeRmp<Vec<TxRecord>>> =
             self.env.create_database(&mut wtxn, Some("tx_history"))?;
@@ -224,21 +224,53 @@ impl Store {
         Ok(records.into_iter().find(|r| &r.tx_hash == tx_hash))
     }
 
-    /// Update transaction status.
-    pub fn update_tx_status(
+    // ==================== TX History Index Storage ====================
+    // Stores all tx_hashes that an account has ever been involved in,
+    // even after cells are spent. This enables full history reconstruction on rescan.
+
+    /// Get the set of all tx_hashes for an account's history index.
+    pub fn get_tx_history_index(&self, account_id: u64) -> Result<Vec<[u8; 32]>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<Vec<[u8; 32]>>>> =
+            self.env.open_database(&rtxn, Some("tx_history_index"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &account_id)?.unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Save the tx history index for an account.
+    pub fn save_tx_history_index(&self, account_id: u64, tx_hashes: &[[u8; 32]]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<Vec<[u8; 32]>>> = self
+            .env
+            .create_database(&mut wtxn, Some("tx_history_index"))?;
+        db.put(&mut wtxn, &account_id, &tx_hashes.to_vec())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Add tx_hashes to the history index (deduplicated).
+    pub fn add_to_tx_history_index(
         &self,
         account_id: u64,
-        tx_hash: &[u8; 32],
-        status: crate::domain::cell::TxStatus,
-        block_number: Option<u64>,
+        new_tx_hashes: &[[u8; 32]],
     ) -> Result<()> {
-        let mut records = self.get_tx_history(account_id)?;
-        if let Some(record) = records.iter_mut().find(|r| &r.tx_hash == tx_hash) {
-            record.status = status;
-            record.block_number = block_number;
-            self.save_tx_history(account_id, &records)?;
+        let mut tx_hashes = self.get_tx_history_index(account_id)?;
+
+        for tx_hash in new_tx_hashes {
+            if !tx_hashes.contains(tx_hash) {
+                tx_hashes.push(*tx_hash);
+            }
         }
-        Ok(())
+
+        self.save_tx_history_index(account_id, &tx_hashes)
+    }
+
+    /// Clear the tx history index for an account.
+    pub fn clear_tx_history_index(&self, account_id: u64) -> Result<()> {
+        self.save_tx_history_index(account_id, &[])
     }
 
     // ==================== CT Cell Storage ====================
@@ -397,6 +429,8 @@ impl Store {
         self.clear_stealth_cells(account_id)?;
         self.clear_ct_cells(account_id)?;
         self.clear_ct_info_cells(account_id)?;
+        self.clear_tx_history_index(account_id)?;
+        self.save_tx_history(account_id, &[])?;
         Ok(())
     }
 }

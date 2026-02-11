@@ -3,140 +3,89 @@ use serde::{Deserialize, Serialize};
 // ==================== Transaction History ====================
 
 /// Transaction type for history records.
+/// Now represents net balance change (delta) rather than direction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TxType {
-    /// Sent CKB to a stealth address.
-    StealthSend {
-        /// Recipient stealth address (hex encoded).
-        to: String,
-        /// Amount in shannons.
-        amount: u64,
+    /// CKB balance change.
+    Ckb {
+        /// Net change in shannons (positive = received, negative = sent).
+        delta: i64,
     },
-    /// Received CKB at a stealth address.
-    StealthReceive {
-        /// Amount in shannons.
-        amount: u64,
-    },
-    /// Sent CKB to a CKB address (non-stealth).
-    CkbSend {
-        /// Recipient CKB address.
-        to: String,
-        /// Amount in shannons.
-        amount: u64,
-    },
-    /// Transferred confidential tokens.
-    CtTransfer {
-        /// Token type script hash.
+    /// Confidential token balance change (mint or transfer).
+    Ct {
+        /// Token ID (first 32 bytes of type args).
         token: [u8; 32],
-        /// Amount transferred.
-        amount: u64,
+        /// Net change in token amount (positive = received, negative = sent).
+        delta: i64,
     },
-    /// Minted confidential tokens.
-    CtMint {
-        /// Token type script hash.
-        token: [u8; 32],
-        /// Amount minted.
-        amount: u64,
-    },
-    /// Created a new CT token (genesis).
+    /// Create new token (genesis transaction).
     CtGenesis {
-        /// Token ID (type script hash).
-        token_id: [u8; 32],
+        /// Token ID of the newly created token.
+        token: [u8; 32],
     },
 }
 
 /// Transaction status.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TxStatus {
-    /// Transaction submitted but not yet confirmed.
-    Pending,
     /// Transaction confirmed on chain.
     Confirmed,
-    /// Transaction failed or rejected.
-    Failed,
 }
 
 /// A record of a transaction for history display.
+/// Records are derived from on-chain data, showing net balance changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxRecord {
     /// Transaction hash.
     pub tx_hash: [u8; 32],
-    /// Type of transaction.
+    /// Type of transaction (CKB or CT with delta).
     pub tx_type: TxType,
-    /// Unix timestamp (seconds since epoch).
+    /// Unix timestamp (seconds since epoch, from block header).
     pub timestamp: i64,
-    /// Current status.
-    pub status: TxStatus,
-    /// Block number when confirmed (None if pending).
-    pub block_number: Option<u64>,
+    /// Block number when confirmed.
+    pub block_number: u64,
 }
 
 impl TxRecord {
-    /// Create a new transaction record.
-    pub fn new(tx_hash: [u8; 32], tx_type: TxType, status: TxStatus) -> Self {
+    /// Create a CKB transaction record.
+    pub fn ckb(tx_hash: [u8; 32], delta: i64, timestamp: i64, block_number: u64) -> Self {
         Self {
             tx_hash,
-            tx_type,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-            status,
-            block_number: None,
+            tx_type: TxType::Ckb { delta },
+            timestamp,
+            block_number,
         }
     }
 
-    /// Create a stealth send record.
-    pub fn stealth_send(tx_hash: [u8; 32], to: String, amount: u64) -> Self {
-        Self::new(
+    /// Create a CT token transaction record.
+    pub fn ct(
+        tx_hash: [u8; 32],
+        token: [u8; 32],
+        delta: i64,
+        timestamp: i64,
+        block_number: u64,
+    ) -> Self {
+        Self {
             tx_hash,
-            TxType::StealthSend { to, amount },
-            TxStatus::Pending,
-        )
+            tx_type: TxType::Ct { token, delta },
+            timestamp,
+            block_number,
+        }
     }
 
-    /// Create a CKB address send record (non-stealth).
-    pub fn ckb_send(tx_hash: [u8; 32], to: String, amount: u64) -> Self {
-        Self::new(tx_hash, TxType::CkbSend { to, amount }, TxStatus::Pending)
-    }
-
-    /// Create a stealth receive record.
-    pub fn stealth_receive(tx_hash: [u8; 32], amount: u64) -> Self {
-        Self::new(
+    /// Create a CT genesis (create token) transaction record.
+    pub fn ct_genesis(
+        tx_hash: [u8; 32],
+        token: [u8; 32],
+        timestamp: i64,
+        block_number: u64,
+    ) -> Self {
+        Self {
             tx_hash,
-            TxType::StealthReceive { amount },
-            TxStatus::Confirmed,
-        )
-    }
-
-    /// Create a CT token transfer record.
-    pub fn ct_transfer(tx_hash: [u8; 32], token: [u8; 32], amount: u64) -> Self {
-        Self::new(
-            tx_hash,
-            TxType::CtTransfer { token, amount },
-            TxStatus::Pending,
-        )
-    }
-
-    /// Create a CT token mint record.
-    pub fn ct_mint(tx_hash: [u8; 32], token: [u8; 32], amount: u64) -> Self {
-        Self::new(tx_hash, TxType::CtMint { token, amount }, TxStatus::Pending)
-    }
-
-    /// Create a CT token genesis record.
-    pub fn ct_genesis(tx_hash: [u8; 32], token_id: [u8; 32]) -> Self {
-        Self::new(tx_hash, TxType::CtGenesis { token_id }, TxStatus::Pending)
-    }
-
-    /// Mark as confirmed with block number.
-    pub fn confirm(&mut self, block_number: u64) {
-        self.status = TxStatus::Confirmed;
-        self.block_number = Some(block_number);
-    }
-
-    /// Mark as failed.
-    pub fn fail(&mut self) {
-        self.status = TxStatus::Failed;
+            tx_type: TxType::CtGenesis { token },
+            timestamp,
+            block_number,
+        }
     }
 
     /// Get display-friendly tx hash (shortened).
@@ -148,26 +97,39 @@ impl TxRecord {
         )
     }
 
-    /// Get display-friendly amount in CKB.
-    pub fn amount_ckb(&self) -> Option<f64> {
+    /// Get the delta value (net change).
+    pub fn delta(&self) -> i64 {
         match &self.tx_type {
-            TxType::StealthSend { amount, .. } => Some(*amount as f64 / 100_000_000.0),
-            TxType::StealthReceive { amount } => Some(*amount as f64 / 100_000_000.0),
-            TxType::CkbSend { amount, .. } => Some(*amount as f64 / 100_000_000.0),
-            TxType::CtTransfer { .. } | TxType::CtMint { .. } | TxType::CtGenesis { .. } => None,
+            TxType::Ckb { delta } => *delta,
+            TxType::Ct { delta, .. } => *delta,
+            TxType::CtGenesis { .. } => 0,
         }
     }
 
-    /// Get transaction direction label.
-    pub fn direction(&self) -> &'static str {
+    /// Get display-friendly delta in CKB (for CKB transactions).
+    pub fn delta_ckb(&self) -> Option<f64> {
         match &self.tx_type {
-            TxType::StealthSend { .. } => "Send",
-            TxType::StealthReceive { .. } => "Receive",
-            TxType::CkbSend { .. } => "Send (CKB)",
-            TxType::CtTransfer { .. } => "Transfer",
-            TxType::CtMint { .. } => "Mint",
-            TxType::CtGenesis { .. } => "Genesis",
+            TxType::Ckb { delta } => Some(*delta as f64 / 100_000_000.0),
+            TxType::Ct { .. } | TxType::CtGenesis { .. } => None,
         }
+    }
+
+    /// Get the token ID (for CT transactions).
+    pub fn token_id(&self) -> Option<[u8; 32]> {
+        match &self.tx_type {
+            TxType::Ckb { .. } => None,
+            TxType::Ct { token, .. } | TxType::CtGenesis { token } => Some(*token),
+        }
+    }
+
+    /// Check if this is a CKB transaction.
+    pub fn is_ckb(&self) -> bool {
+        matches!(self.tx_type, TxType::Ckb { .. })
+    }
+
+    /// Check if this is a CT transaction.
+    pub fn is_ct(&self) -> bool {
+        matches!(self.tx_type, TxType::Ct { .. })
     }
 }
 
@@ -437,41 +399,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tx_record_stealth_send() {
+    fn test_tx_record_ckb_positive() {
         let tx_hash = [0xab; 32];
-        let to = "ckt1qrfrwcdnvssswdwpn3s9v8fp87emat306ctjwsm3nmlkjg8e".to_string();
-        let amount = 100_00000000; // 100 CKB
+        let delta = 100_00000000i64; // +100 CKB (received)
+        let timestamp = 1234567890;
+        let block_number = 1000;
 
-        let record = TxRecord::stealth_send(tx_hash, to.clone(), amount);
+        let record = TxRecord::ckb(tx_hash, delta, timestamp, block_number);
 
         assert_eq!(record.tx_hash, tx_hash);
-        assert_eq!(record.status, TxStatus::Pending);
-        assert_eq!(record.direction(), "Send");
-        assert_eq!(record.amount_ckb(), Some(100.0));
-
-        if let TxType::StealthSend {
-            to: addr,
-            amount: amt,
-        } = &record.tx_type
-        {
-            assert_eq!(addr, &to);
-            assert_eq!(*amt, amount);
-        } else {
-            panic!("Expected StealthSend type");
-        }
+        assert_eq!(record.delta(), delta);
+        assert_eq!(record.delta_ckb(), Some(100.0));
+        assert!(record.is_ckb());
+        assert!(!record.is_ct());
+        assert_eq!(record.block_number, block_number);
     }
 
     #[test]
-    fn test_tx_record_stealth_receive() {
+    fn test_tx_record_ckb_negative() {
         let tx_hash = [0xcd; 32];
-        let amount = 50_00000000; // 50 CKB
+        let delta = -50_00000000i64; // -50 CKB (sent)
+        let timestamp = 1234567890;
+        let block_number = 2000;
 
-        let record = TxRecord::stealth_receive(tx_hash, amount);
+        let record = TxRecord::ckb(tx_hash, delta, timestamp, block_number);
 
-        assert_eq!(record.tx_hash, tx_hash);
-        assert_eq!(record.status, TxStatus::Confirmed);
-        assert_eq!(record.direction(), "Receive");
-        assert_eq!(record.amount_ckb(), Some(50.0));
+        assert_eq!(record.delta(), delta);
+        assert_eq!(record.delta_ckb(), Some(-50.0));
+    }
+
+    #[test]
+    fn test_tx_record_ct() {
+        let tx_hash = [0xef; 32];
+        let token = [0x11; 32];
+        let delta = 1000i64; // +1000 tokens (received)
+        let timestamp = 1234567890;
+        let block_number = 3000;
+
+        let record = TxRecord::ct(tx_hash, token, delta, timestamp, block_number);
+
+        assert_eq!(record.delta(), delta);
+        assert_eq!(record.token_id(), Some(token));
+        assert!(record.is_ct());
+        assert!(!record.is_ckb());
+        assert_eq!(record.delta_ckb(), None);
     }
 
     #[test]
@@ -482,36 +453,12 @@ mod tests {
             0xab, 0xcd, 0xef, 0x99,
         ];
 
-        let record = TxRecord::stealth_receive(tx_hash, 100);
+        let record = TxRecord::ckb(tx_hash, 100, 0, 0);
 
         // short_hash should be first 4 bytes ... last 4 bytes
         let short = record.short_hash();
         assert!(short.starts_with("12345678"));
         assert!(short.ends_with("abcdef99"));
         assert!(short.contains("..."));
-    }
-
-    #[test]
-    fn test_tx_record_confirm() {
-        let tx_hash = [0xef; 32];
-        let mut record = TxRecord::stealth_send(tx_hash, "addr".to_string(), 1000);
-
-        assert_eq!(record.status, TxStatus::Pending);
-        assert_eq!(record.block_number, None);
-
-        record.confirm(12345678);
-
-        assert_eq!(record.status, TxStatus::Confirmed);
-        assert_eq!(record.block_number, Some(12345678));
-    }
-
-    #[test]
-    fn test_tx_record_fail() {
-        let tx_hash = [0xaa; 32];
-        let mut record = TxRecord::stealth_send(tx_hash, "addr".to_string(), 1000);
-
-        record.fail();
-
-        assert_eq!(record.status, TxStatus::Failed);
     }
 }

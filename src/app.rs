@@ -20,7 +20,7 @@ use crate::{
     config::Config,
     domain::{
         account::AccountManager,
-        cell::{TxRecord, aggregate_ct_balances_with_info},
+        cell::aggregate_ct_balances_with_info,
         ct_info::{CtInfoData, MINTABLE},
         ct_mint::{
             CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
@@ -145,6 +145,8 @@ pub struct App {
     pub auto_mining_interval: u64,
     pub indexer_synced: bool,
     pub checkpoint_block: Option<u64>,
+    // Background scan channel
+    pub scan_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::scanner::ScanUpdate>>,
 }
 
 impl App {
@@ -234,7 +236,182 @@ impl App {
             auto_mining_interval: 3,
             indexer_synced: false,
             checkpoint_block: None,
+            // Background scan
+            scan_update_rx: None,
         })
+    }
+
+    /// Switch to a new tab and refresh data as needed.
+    /// When switching to History tab, loads history for the currently selected account.
+    fn switch_tab(&mut self, new_tab: Tab) {
+        self.active_tab = new_tab;
+
+        // When switching to History tab, refresh history for currently selected account
+        if new_tab == Tab::History {
+            let accounts = &self.accounts_component.accounts;
+            let selected_index = self.accounts_component.selected_index;
+            if let Some(account) = accounts.get(selected_index) {
+                // Update history component's account to match selected account
+                self.history_component.set_account(Some(account.clone()));
+                // Load history for this account
+                if let Ok(history) = self.store.get_tx_history(account.id) {
+                    self.history_component.set_transactions(history);
+                }
+            }
+        }
+    }
+
+    /// Handle background scan progress updates.
+    fn handle_scan_update(
+        &mut self,
+        update: crate::infra::scanner::ScanUpdate,
+    ) -> Result<()> {
+        use crate::infra::scanner::ScanUpdate;
+
+        match update {
+            ScanUpdate::Started { is_full_rescan } => {
+                if is_full_rescan {
+                    self.status_message = "Full rescan started...".to_string();
+                } else {
+                    self.status_message = "Scanning...".to_string();
+                }
+            }
+            ScanUpdate::CellScanProgress {
+                cells_scanned,
+                cells_matched,
+            } => {
+                self.status_message = format!(
+                    "Scanning cells: {} scanned, {} matched",
+                    cells_scanned, cells_matched
+                );
+            }
+            ScanUpdate::CellScanComplete {
+                stealth_cells_found,
+                ct_cells_found,
+            } => {
+                self.status_message = format!(
+                    "Cells found: {} stealth, {} CT. Scanning history...",
+                    stealth_cells_found, ct_cells_found
+                );
+            }
+            ScanUpdate::HistoryScanProgress {
+                txs_processed,
+                total_txs,
+            } => {
+                // txs_processed = transactions checked, total_txs = relevant transactions found
+                self.status_message = format!(
+                    "Scanning history: {} checked, {} found",
+                    txs_processed, total_txs
+                );
+            }
+            ScanUpdate::Complete {
+                total_stealth_cells,
+                total_ct_cells,
+                total_tx_records,
+            } => {
+                self.is_scanning = false;
+                self.scan_update_rx = None;
+
+                // Refresh all UI components
+                self.refresh_after_scan()?;
+
+                // Calculate total capacity from stealth cells
+                let accounts = self.account_manager.list_accounts()?;
+                let mut total_capacity = 0u64;
+                for account in &accounts {
+                    if let Ok(cells) = self.store.get_stealth_cells(account.id) {
+                        let capacity: u64 = cells.iter().map(|c| c.capacity).sum();
+                        total_capacity += capacity;
+                        // Update account balance
+                        let _ = self.account_manager.update_balance(account.id, capacity);
+                    }
+                }
+
+                let ckb_amount = total_capacity as f64 / 100_000_000.0;
+                self.status_message = format!(
+                    "Scan complete: {} stealth, {} CT cells, {} tx records, {:.4} CKB",
+                    total_stealth_cells, total_ct_cells, total_tx_records, ckb_amount
+                );
+
+                // Refresh accounts display with updated balances
+                self.accounts_component
+                    .set_accounts(self.account_manager.list_accounts()?);
+
+                if let Ok(tip) = self.scanner.get_tip_block_number() {
+                    self.tip_block_number = Some(tip);
+                }
+            }
+            ScanUpdate::Error(msg) => {
+                self.is_scanning = false;
+                self.scan_update_rx = None;
+                self.status_message = format!("Scan error: {}", msg);
+                info!("Background scan error: {}", msg);
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh UI components after a scan completes.
+    fn refresh_after_scan(&mut self) -> Result<()> {
+        // Refresh accounts list
+        let updated_accounts = self.account_manager.list_accounts()?;
+        self.accounts_component.set_accounts(updated_accounts.clone());
+
+        // Refresh send component's account balance
+        if let Some(ref current_account) = self.send_component.account {
+            if let Some(updated) = updated_accounts
+                .iter()
+                .find(|a| a.id == current_account.id)
+            {
+                self.send_component.set_account(Some(updated.clone()));
+            }
+        }
+
+        // Refresh receive component's account
+        if let Some(ref current_account) = self.receive_component.account {
+            if let Some(updated) = updated_accounts
+                .iter()
+                .find(|a| a.id == current_account.id)
+            {
+                self.receive_component.set_account(Some(updated.clone()));
+            }
+        }
+
+        // Refresh history component
+        let history_account_id = self.history_component.account.as_ref().map(|a| a.id);
+        if let Some(account_id) = history_account_id {
+            if let Some(updated) = updated_accounts.iter().find(|a| a.id == account_id) {
+                self.history_component.set_account(Some(updated.clone()));
+            }
+            // Reload transaction history
+            if let Ok(history) = self.store.get_tx_history(account_id) {
+                self.history_component.set_transactions(history);
+            }
+        }
+
+        // Refresh tokens display for current account
+        if let Some(ref current_account) = self.tokens_component.account.clone() {
+            // Update tokens component's account
+            if let Some(updated) = updated_accounts
+                .iter()
+                .find(|a| a.id == current_account.id)
+            {
+                self.tokens_component.set_account(Some(updated.clone()));
+            }
+
+            if let Ok(ct_cells) = self.store.get_ct_cells(current_account.id) {
+                let ct_info_cells = self
+                    .store
+                    .get_ct_info_cells(current_account.id)
+                    .unwrap_or_default();
+                let balances =
+                    aggregate_ct_balances_with_info(&ct_cells, &ct_info_cells, &self.config);
+                self.tokens_component.set_balances(balances);
+                self.tokens_component.set_ct_cells(ct_cells);
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -395,7 +572,7 @@ impl App {
             KeyCode::Tab => {
                 let tabs = Tab::all(self.dev_mode);
                 let next_index = (self.active_tab.index(self.dev_mode) + 1) % tabs.len();
-                self.active_tab = Tab::from_index(next_index, self.dev_mode);
+                self.switch_tab(Tab::from_index(next_index, self.dev_mode));
             }
             KeyCode::BackTab => {
                 let tabs = Tab::all(self.dev_mode);
@@ -404,29 +581,29 @@ impl App {
                 } else {
                     self.active_tab.index(self.dev_mode) - 1
                 };
-                self.active_tab = Tab::from_index(prev_index, self.dev_mode);
+                self.switch_tab(Tab::from_index(prev_index, self.dev_mode));
             }
             // Tab hotkeys for quick navigation
             KeyCode::Char('t') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::Settings;
+                self.switch_tab(Tab::Settings);
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::Accounts;
+                self.switch_tab(Tab::Accounts);
             }
             KeyCode::Char('s') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::Send;
+                self.switch_tab(Tab::Send);
             }
             KeyCode::Char('v') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::Receive;
+                self.switch_tab(Tab::Receive);
             }
             KeyCode::Char('o') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::Tokens;
+                self.switch_tab(Tab::Tokens);
             }
             KeyCode::Char('h') if key.modifiers.is_empty() => {
-                self.active_tab = Tab::History;
+                self.switch_tab(Tab::History);
             }
             KeyCode::Char('d') if key.modifiers.is_empty() && self.dev_mode => {
-                self.active_tab = Tab::Dev;
+                self.switch_tab(Tab::Dev);
             }
             // Global hotkey: r for Full Rescan
             KeyCode::Char('r') if key.modifiers.is_empty() => {
@@ -500,7 +677,7 @@ impl App {
             let title_width = tab.title().width();
             let tab_width = 1 + title_width + 1; // space + title + space
             if rel_x < offset + tab_width {
-                self.active_tab = *tab;
+                self.switch_tab(*tab);
                 return Ok(());
             }
             offset += tab_width;
@@ -520,6 +697,17 @@ impl App {
                     .unwrap_or_default()
                     .as_secs();
 
+                // Check for background scan updates
+                let mut updates = Vec::new();
+                if let Some(ref mut rx) = self.scan_update_rx {
+                    while let Ok(update) = rx.try_recv() {
+                        updates.push(update);
+                    }
+                }
+                for update in updates {
+                    self.handle_scan_update(update)?;
+                }
+
                 // Auto-scan for new cells every 5 seconds (if not already scanning)
                 let auto_scan_interval = 5u64;
                 let should_auto_scan = !self.is_scanning
@@ -529,125 +717,23 @@ impl App {
                         .unwrap_or(true);
 
                 if should_auto_scan {
-                    self.is_scanning = true;
                     let accounts = self.account_manager.list_accounts()?;
                     if !accounts.is_empty() {
-                        match self.scanner.incremental_scan(&accounts) {
-                            Ok(scan_all_result) => {
-                                let mut has_new = false;
-                                for result in &scan_all_result.stealth_results {
-                                    if !result.new_cells.is_empty() {
-                                        has_new = true;
-                                        if let Err(e) = self.account_manager.update_balance(
-                                            result.account_id,
-                                            result.total_capacity,
-                                        ) {
-                                            info!(
-                                                "Failed to update balance for account {}: {}",
-                                                result.account_id, e
-                                            );
-                                        }
-                                    }
-                                }
+                        // Start background auto-scan
+                        self.is_scanning = true;
+                        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        self.scan_update_rx = Some(rx);
 
-                                // Check for new CT or CT-info cells too
-                                if scan_all_result
-                                    .ct_results
-                                    .iter()
-                                    .any(|r| !r.new_cells.is_empty())
-                                    || scan_all_result
-                                        .ct_info_results
-                                        .iter()
-                                        .any(|r| !r.new_cells.is_empty())
-                                {
-                                    has_new = true;
-                                }
-
-                                if has_new {
-                                    // Refresh accounts list
-                                    let updated_accounts = self.account_manager.list_accounts()?;
-                                    self.accounts_component.set_accounts(updated_accounts.clone());
-
-                                    // Refresh send component's account balance
-                                    if let Some(ref current_account) = self.send_component.account {
-                                        if let Some(updated) = updated_accounts
-                                            .iter()
-                                            .find(|a| a.id == current_account.id)
-                                        {
-                                            self.send_component.set_account(Some(updated.clone()));
-                                        }
-                                    }
-
-                                    // Refresh receive component's account
-                                    if let Some(ref current_account) = self.receive_component.account
-                                    {
-                                        if let Some(updated) = updated_accounts
-                                            .iter()
-                                            .find(|a| a.id == current_account.id)
-                                        {
-                                            self.receive_component.set_account(Some(updated.clone()));
-                                        }
-                                    }
-
-                                    // Refresh history component's account
-                                    if let Some(ref current_account) = self.history_component.account
-                                    {
-                                        if let Some(updated) = updated_accounts
-                                            .iter()
-                                            .find(|a| a.id == current_account.id)
-                                        {
-                                            self.history_component.set_account(Some(updated.clone()));
-                                        }
-                                    }
-
-                                    // Refresh tokens display for current account
-                                    if let Some(ref current_account) =
-                                        self.tokens_component.account.clone()
-                                    {
-                                        // Update tokens component's account
-                                        if let Some(updated) = updated_accounts
-                                            .iter()
-                                            .find(|a| a.id == current_account.id)
-                                        {
-                                            self.tokens_component.set_account(Some(updated.clone()));
-                                        }
-
-                                        if let Ok(ct_cells) =
-                                            self.store.get_ct_cells(current_account.id)
-                                        {
-                                            let ct_info_cells = self
-                                                .store
-                                                .get_ct_info_cells(current_account.id)
-                                                .unwrap_or_default();
-                                            let balances = aggregate_ct_balances_with_info(
-                                                &ct_cells,
-                                                &ct_info_cells,
-                                                &self.config,
-                                            );
-                                            self.tokens_component.set_balances(balances);
-                                            self.tokens_component.set_ct_cells(ct_cells);
-                                        }
-                                    }
-
-                                    if let Ok(tip) = self.scanner.get_tip_block_number() {
-                                        self.tip_block_number = Some(tip);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                info!("Auto-scan failed: {}", e);
-                            }
-                        }
+                        Scanner::spawn_background_scan(
+                            self.config.clone(),
+                            self.store.clone(),
+                            accounts,
+                            false, // incremental scan
+                            tx,
+                        );
                     }
-                    // Update timestamp after scan completes, so interval is measured
-                    // from end of last scan, not start
-                    self.last_auto_scan = Some(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    );
-                    self.is_scanning = false;
+                    // Update timestamp immediately so we don't spam scans
+                    self.last_auto_scan = Some(now);
                 }
 
                 // Handle auto-mining in dev mode
@@ -680,6 +766,9 @@ impl App {
                 {
                     self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
                 }
+            }
+            Action::ScanProgress(update) => {
+                self.handle_scan_update(update)?;
             }
             Action::Quit => {
                 self.should_quit = true;
@@ -746,160 +835,58 @@ impl App {
                 self.status_message = format!("Selected account {}", index);
             }
             Action::Rescan => {
-                self.status_message = "Rescanning...".to_string();
-                self.is_scanning = true;
+                if self.is_scanning {
+                    self.status_message = "Scan already in progress...".to_string();
+                    return Ok(());
+                }
 
-                // Get accounts to scan
                 let accounts = self.account_manager.list_accounts()?;
                 if accounts.is_empty() {
                     self.status_message = "No accounts to scan".to_string();
-                    self.is_scanning = false;
-                } else {
-                    // Incremental scan: stealth + CT + CT-info in one pass
-                    match self.scanner.incremental_scan(&accounts) {
-                        Ok(scan_all_result) => {
-                            let mut total_cells = 0usize;
-                            let mut total_capacity = 0u64;
-                            let mut new_receives = 0usize;
-
-                            for result in &scan_all_result.stealth_results {
-                                total_cells += result.cells.len();
-                                total_capacity += result.total_capacity;
-                                new_receives += result.new_cells.len();
-
-                                // Update account balance
-                                if let Err(e) = self
-                                    .account_manager
-                                    .update_balance(result.account_id, result.total_capacity)
-                                {
-                                    info!(
-                                        "Failed to update balance for account {}: {}",
-                                        result.account_id, e
-                                    );
-                                }
-                            }
-
-                            // Log CT-info results
-                            let new_ct_info: usize = scan_all_result
-                                .ct_info_results
-                                .iter()
-                                .map(|r| r.new_cells.len())
-                                .sum();
-                            if new_ct_info > 0 {
-                                let total_ct_info: usize = scan_all_result
-                                    .ct_info_results
-                                    .iter()
-                                    .map(|r| r.cells.len())
-                                    .sum();
-                                info!(
-                                    "CT-info scan: {} cells found (+{} new)",
-                                    total_ct_info, new_ct_info
-                                );
-                            }
-
-                            // Refresh accounts display
-                            self.accounts_component
-                                .set_accounts(self.account_manager.list_accounts()?);
-
-                            // Refresh tokens display for current account
-                            if let Some(account) = &self.tokens_component.account
-                                && let Ok(ct_cells) = self.store.get_ct_cells(account.id)
-                            {
-                                let ct_info_cells =
-                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                                let balances = aggregate_ct_balances_with_info(
-                                    &ct_cells,
-                                    &ct_info_cells,
-                                    &self.config,
-                                );
-                                self.tokens_component.set_balances(balances);
-                                self.tokens_component.set_ct_cells(ct_cells);
-                            }
-
-                            // Refresh history for current account
-                            if let Some(account) = &self.history_component.account
-                                && let Ok(history) = self.store.get_tx_history(account.id)
-                            {
-                                self.history_component.set_transactions(history);
-                            }
-
-                            let ckb_amount = total_capacity as f64 / 100_000_000.0;
-                            if new_receives > 0 {
-                                self.status_message = format!(
-                                    "Scan complete: {} cells, {:.8} CKB (+{} new)",
-                                    total_cells, ckb_amount, new_receives
-                                );
-                            } else {
-                                self.status_message = format!(
-                                    "Scan complete: {} cells, {:.8} CKB",
-                                    total_cells, ckb_amount
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Scan failed: {}", e);
-                        }
-                    }
-
-                    self.is_scanning = false;
+                    return Ok(());
                 }
+
+                // Start background scan
+                self.status_message = "Scanning in background...".to_string();
+                self.is_scanning = true;
+
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                self.scan_update_rx = Some(rx);
+
+                Scanner::spawn_background_scan(
+                    self.config.clone(),
+                    self.store.clone(),
+                    accounts,
+                    false, // incremental scan
+                    tx,
+                );
             }
             Action::FullRescan => {
-                // Full rescan: clear all cells and scan from beginning
-                self.status_message = "Full rescan: scanning from block 0...".to_string();
-                self.is_scanning = true;
+                if self.is_scanning {
+                    self.status_message = "Scan already in progress...".to_string();
+                    return Ok(());
+                }
 
                 let accounts = self.account_manager.list_accounts()?;
                 if accounts.is_empty() {
                     self.status_message = "No accounts to scan".to_string();
-                    self.is_scanning = false;
-                } else {
-                    // Full scan: clears stored cells internally, starts from None cursor
-                    match self.scanner.full_scan_all(&accounts) {
-                        Ok(scan_all_result) => {
-                            let mut total_cells = 0usize;
-                            let mut total_capacity = 0u64;
-
-                            for result in &scan_all_result.stealth_results {
-                                total_cells += result.cells.len();
-                                total_capacity += result.total_capacity;
-
-                                // Update account balance
-                                if let Err(e) = self
-                                    .account_manager
-                                    .update_balance(result.account_id, result.total_capacity)
-                                {
-                                    info!(
-                                        "Failed to update balance for account {}: {}",
-                                        result.account_id, e
-                                    );
-                                }
-                            }
-
-                            // Refresh accounts display
-                            self.accounts_component
-                                .set_accounts(self.account_manager.list_accounts()?);
-
-                            // Refresh history for current account
-                            if let Some(account) = &self.history_component.account
-                                && let Ok(history) = self.store.get_tx_history(account.id)
-                            {
-                                self.history_component.set_transactions(history);
-                            }
-
-                            let ckb_amount = total_capacity as f64 / 100_000_000.0;
-                            self.status_message = format!(
-                                "Full rescan complete: {} cells, {:.8} CKB",
-                                total_cells, ckb_amount
-                            );
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Full rescan failed: {}", e);
-                        }
-                    }
-
-                    self.is_scanning = false;
+                    return Ok(());
                 }
+
+                // Start background full rescan
+                self.status_message = "Full rescan in background...".to_string();
+                self.is_scanning = true;
+
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                self.scan_update_rx = Some(rx);
+
+                Scanner::spawn_background_scan(
+                    self.config.clone(),
+                    self.store.clone(),
+                    accounts,
+                    true, // full rescan
+                    tx,
+                );
             }
             Action::SendTransaction => {
                 // Get send parameters
@@ -1015,32 +1002,8 @@ impl App {
                                 &tx_hash_hex[56..]
                             );
 
-                            // Save transaction record to history
-                            let tx_record = match address_type {
-                                AddressType::Stealth => TxRecord::stealth_send(
-                                    tx_hash.0,
-                                    recipient.clone(),
-                                    amount_shannon,
-                                ),
-                                AddressType::Ckb => TxRecord::ckb_send(
-                                    tx_hash.0,
-                                    recipient.clone(),
-                                    amount_shannon,
-                                ),
-                                AddressType::Unknown => TxRecord::stealth_send(
-                                    tx_hash.0,
-                                    recipient.clone(),
-                                    amount_shannon,
-                                ),
-                            };
-                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
-                                info!("Failed to save transaction record: {}", e);
-                            }
-
-                            // Refresh history display
-                            if let Ok(history) = self.store.get_tx_history(account.id) {
-                                self.history_component.set_transactions(history);
-                            }
+                            // Note: Transaction history is now derived from on-chain data,
+                            // not recorded at send time. History will update after rescan.
 
                             // Remove spent cells from store
                             let spent_out_points: Vec<_> =
@@ -1236,20 +1199,8 @@ impl App {
                             ));
                             self.status_message = format!("Transferred {} CT tokens", amount_value);
 
-                            // Save transaction record to history
-                            let tx_record = TxRecord::ct_transfer(
-                                tx_hash.0,
-                                token_balance.token_id,
-                                amount_value,
-                            );
-                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
-                                info!("Failed to save CT transaction record: {}", e);
-                            }
-
-                            // Refresh history display
-                            if let Ok(history) = self.store.get_tx_history(account.id) {
-                                self.history_component.set_transactions(history);
-                            }
+                            // Note: Transaction history is now derived from on-chain data,
+                            // not recorded at send time. History will update after rescan.
 
                             // Remove spent CT cells from store
                             let spent_out_points: Vec<_> =
@@ -1441,17 +1392,8 @@ impl App {
                             ));
                             self.status_message = format!("Minted {} CT tokens", amount_value);
 
-                            // Save transaction record to history
-                            let tx_record =
-                                TxRecord::ct_mint(tx_hash.0, token_balance.token_id, amount_value);
-                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
-                                info!("Failed to save CT mint record: {}", e);
-                            }
-
-                            // Refresh history display
-                            if let Ok(history) = self.store.get_tx_history(account.id) {
-                                self.history_component.set_transactions(history);
-                            }
+                            // Note: Transaction history is now derived from on-chain data,
+                            // not recorded at send time. History will update after rescan.
 
                             // Remove spent funding cell from store
                             if let Err(e) = self.store.remove_spent_cells(
@@ -1598,16 +1540,8 @@ impl App {
                                 &hex::encode(&token_id[28..])
                             );
 
-                            // Save transaction record to history
-                            let tx_record = TxRecord::ct_genesis(tx_hash.0, token_id);
-                            if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
-                                info!("Failed to save genesis record: {}", e);
-                            }
-
-                            // Refresh history display
-                            if let Ok(history) = self.store.get_tx_history(account.id) {
-                                self.history_component.set_transactions(history);
-                            }
+                            // Note: Transaction history is now derived from on-chain data,
+                            // not recorded at send time. History will update after rescan.
 
                             // Remove spent stealth cell from store
                             if let Err(e) = self.store.remove_spent_cells(
@@ -1653,7 +1587,7 @@ impl App {
             }
             // Dev mode actions
             Action::TabDev if self.dev_mode => {
-                self.active_tab = Tab::Dev;
+                self.switch_tab(Tab::Dev);
             }
             Action::GenerateBlock if self.dev_mode => {
                 if let Some(ref devnet) = self.devnet {
@@ -1959,7 +1893,7 @@ impl App {
 
                     // If currently on Dev tab, switch to Settings
                     if self.active_tab == Tab::Dev {
-                        self.active_tab = Tab::Settings;
+                        self.switch_tab(Tab::Settings);
                     }
                 }
 
@@ -2035,6 +1969,10 @@ impl App {
         let tokens_is_editing = self.tokens_component.is_editing;
         let tokens_error_message = self.tokens_component.error_message.clone();
         let tokens_success_message = self.tokens_component.success_message.clone();
+        // History component data
+        let history_transactions = self.history_component.transactions.clone();
+        let history_selected_index = self.history_component.selected_index;
+        let history_account = self.history_component.account.clone();
         // Dev mode data
         let dev_mode = self.dev_mode;
         let indexer_synced = self.indexer_synced;
@@ -2225,14 +2163,13 @@ impl App {
                     );
                 }
                 Tab::History => {
-                    let block = Block::default()
-                        .title("History")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray));
-                    let paragraph = Paragraph::new("History view - Coming soon...")
-                        .block(block)
-                        .style(Style::default().fg(Color::Gray));
-                    f.render_widget(paragraph, chunks[2]);
+                    HistoryComponent::draw_static(
+                        f,
+                        chunks[2],
+                        &history_transactions,
+                        history_selected_index,
+                        history_account.as_ref(),
+                    );
                 }
                 Tab::Dev => {
                     DevComponent::draw_static(
