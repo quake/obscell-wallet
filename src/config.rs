@@ -246,19 +246,28 @@ impl Config {
         // Try to load from config file
         if let Some(config) = Self::load_from_file(network) {
             info!("Loaded config from file for network: {}", network);
+            debug!(
+                "Using stealth_lock_code_hash: {}",
+                config.contracts.stealth_lock_code_hash
+            );
             return config;
         }
 
         // Fall back to hardcoded defaults
-        debug!(
+        warn!(
             "No config file found for network '{}', using hardcoded defaults",
             network
         );
-        match network {
+        let config = match network {
             "mainnet" => Self::mainnet(),
             "devnet" => Self::devnet(),
             _ => Self::testnet(),
-        }
+        };
+        debug!(
+            "Using hardcoded stealth_lock_code_hash: {}",
+            config.contracts.stealth_lock_code_hash
+        );
+        config
     }
 
     /// Try to load config from file.
@@ -311,5 +320,53 @@ impl Config {
         std::fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_devnet_config_loads_from_file() {
+        // This test verifies that devnet config is loaded from config/devnet.toml
+        // and NOT using the hardcoded defaults
+        let config = Config::from_network("devnet");
+
+        // Print actual loaded value for debugging
+        println!(
+            "Loaded stealth_lock_code_hash: {}",
+            config.contracts.stealth_lock_code_hash
+        );
+        println!("Loaded from network: {}", config.network.name);
+
+        // The config/devnet.toml has this code_hash:
+        // 0x78a2db71ff8ccbca6c515e469f7346cf8d987c4c4aa8c2e85ba8ad045b5776fa
+        let devnet_toml_code_hash =
+            "0x78a2db71ff8ccbca6c515e469f7346cf8d987c4c4aa8c2e85ba8ad045b5776fa";
+
+        // The hardcoded Config::devnet() has:
+        // 0xe5e49e1d9e89a41e74830c2286489876723b976b530214ac00318a933f7b3335
+        // The testnet has:
+        // 0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6
+
+        let testnet_code_hash =
+            "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6";
+
+        assert_ne!(
+            config.contracts.stealth_lock_code_hash, testnet_code_hash,
+            "Devnet config should NOT use testnet stealth_lock_code_hash! \
+             This means config/devnet.toml is not being loaded correctly."
+        );
+
+        assert_eq!(
+            config.contracts.stealth_lock_code_hash, devnet_toml_code_hash,
+            "Devnet config should load stealth_lock_code_hash from config/devnet.toml"
+        );
+
+        assert_eq!(
+            config.network.name, "devnet",
+            "Network name should be devnet"
+        );
     }
 }

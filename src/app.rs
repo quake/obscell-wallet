@@ -1782,6 +1782,9 @@ impl App {
                     .set_is_mainnet(self.config.network.name == "mainnet");
 
                 // Reset UI components with the first account (if any)
+                // First update receive component's config for the new network
+                self.receive_component.set_config(new_config);
+
                 if let Some(first_account) = accounts.first() {
                     self.receive_component
                         .set_account(Some(first_account.clone()));

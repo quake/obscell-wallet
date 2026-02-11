@@ -256,4 +256,69 @@ mod tests {
             testnet_addr
         );
     }
+
+    /// Test that receive component uses the correct code hash from config.
+    #[test]
+    fn test_receive_uses_config_code_hash() {
+        use crate::config::Config;
+        use ckb_sdk::Address;
+        use std::str::FromStr;
+        use tokio::sync::mpsc;
+
+        let (action_tx, _action_rx) = mpsc::unbounded_channel();
+        let mut receive = ReceiveComponent::new(action_tx);
+
+        // Load devnet config (should come from config/devnet.toml)
+        let config = Config::from_network("devnet");
+        let expected_code_hash = config.contracts.stealth_lock_code_hash.clone();
+
+        println!("Using stealth_lock_code_hash: {}", expected_code_hash);
+
+        // Verify it's NOT the testnet code hash
+        let testnet_code_hash =
+            "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6";
+        assert_ne!(
+            expected_code_hash, testnet_code_hash,
+            "Config should NOT be using testnet code hash"
+        );
+
+        // Set config
+        receive.set_config(config);
+
+        // Create a test account
+        let account = crate::domain::account::Account::new(1, "test".to_string());
+        receive.set_account(Some(account));
+
+        // Verify address was generated
+        let address = receive
+            .one_time_address
+            .as_ref()
+            .expect("Address should be generated");
+        println!("Generated address: {}", address);
+
+        // Parse the address to extract the code hash
+        let parsed = Address::from_str(address).expect("Should parse address");
+        let payload = parsed.payload();
+
+        // Get the code hash from the payload - Full variant has named fields
+        match payload {
+            AddressPayload::Full {
+                code_hash, args, ..
+            } => {
+                let code_hash_in_addr = hex::encode(code_hash.as_slice());
+                println!("Code hash in address: 0x{}", code_hash_in_addr);
+                println!("Args length: {}", args.len());
+
+                // Verify it matches the devnet config
+                let expected_without_prefix = expected_code_hash
+                    .strip_prefix("0x")
+                    .unwrap_or(&expected_code_hash);
+                assert_eq!(
+                    code_hash_in_addr, expected_without_prefix,
+                    "Address should contain devnet code hash, not testnet"
+                );
+            }
+            _ => panic!("Expected Full address payload"),
+        }
+    }
 }
