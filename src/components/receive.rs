@@ -57,7 +57,19 @@ impl ReceiveComponent {
     }
 
     /// Set the current account to show receive info for.
+    /// Only regenerates addresses if the account ID actually changed.
     pub fn set_account(&mut self, account: Option<Account>) {
+        // Check if account actually changed (by ID)
+        let old_id = self.account.as_ref().map(|a| a.id);
+        let new_id = account.as_ref().map(|a| a.id);
+
+        if old_id == new_id {
+            // Account didn't change, just update the reference (for balance updates etc.)
+            self.account = account;
+            return;
+        }
+
+        // Account changed, regenerate addresses
         self.account = account;
         self.is_spinning = true;
         self.regenerate_pool();
