@@ -26,6 +26,8 @@ pub struct ReceiveComponent {
     pub one_time_address: Option<String>,
     /// Config for network and contract info
     config: Option<Config>,
+    /// Whether address is spinning (auto-refreshing)
+    pub is_spinning: bool,
 }
 
 impl ReceiveComponent {
@@ -35,6 +37,7 @@ impl ReceiveComponent {
             account: None,
             one_time_address: None,
             config: None,
+            is_spinning: true,
         }
     }
 
@@ -47,6 +50,7 @@ impl ReceiveComponent {
     /// Set the current account to show receive info for.
     pub fn set_account(&mut self, account: Option<Account>) {
         self.account = account;
+        self.is_spinning = true; // Reset to spinning when account changes
         self.regenerate_address();
     }
 
@@ -102,8 +106,9 @@ impl ReceiveComponent {
         area: Rect,
         account: Option<&Account>,
         one_time_address: Option<&str>,
+        is_spinning: bool,
     ) {
-        let chunks = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
 
         // Stealth address info
         let stealth_info = if let Some(acc) = account {
@@ -124,11 +129,7 @@ impl ReceiveComponent {
                 )]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    format!("  {}", &stealth_addr[..66]),
-                    Style::default().fg(Color::Cyan),
-                )]),
-                Line::from(vec![Span::styled(
-                    format!("  {}", &stealth_addr[66..]),
+                    stealth_addr,
                     Style::default().fg(Color::Cyan),
                 )]),
                 Line::from(""),
@@ -157,7 +158,33 @@ impl ReceiveComponent {
 
         // One-time address info
         let one_time_info = if account.is_some() {
-            let addr_display = one_time_address.unwrap_or("Press [g] to generate");
+            let addr_display = one_time_address.unwrap_or("(generating...)");
+
+            // Status and action based on spinning state
+            let (status_text, status_style, action_text) = if is_spinning {
+                (
+                    "Generating addresses... Press Enter to select",
+                    Style::default().fg(Color::Yellow),
+                    "",
+                )
+            } else {
+                (
+                    "Address selected! Copy the address above.",
+                    Style::default().fg(Color::Green),
+                    "Press Enter to start generating again",
+                )
+            };
+
+            // Address style - blinking effect when spinning
+            let addr_style = if is_spinning {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::RAPID_BLINK)
+            } else {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            };
 
             vec![
                 Line::from(""),
@@ -169,15 +196,18 @@ impl ReceiveComponent {
                 )]),
                 Line::from(""),
                 // Display address on single line for easy copying
-                Line::from(vec![Span::styled(
-                    addr_display,
-                    Style::default().fg(Color::Magenta),
-                )]),
+                Line::from(vec![Span::styled(addr_display, addr_style)]),
                 Line::from(""),
-                Line::from(vec![Span::styled(
-                    "[g] Generate new one-time address",
-                    Style::default().fg(Color::DarkGray),
-                )]),
+                Line::from(vec![Span::styled(status_text, status_style)]),
+                if !action_text.is_empty() {
+                    Line::from(vec![Span::styled(
+                        action_text,
+                        Style::default().fg(Color::DarkGray),
+                    )])
+                } else {
+                    Line::from("")
+                },
+                Line::from(""),
                 Line::from(vec![Span::styled(
                     "Each one-time address should only be used once for privacy.",
                     Style::default().fg(Color::DarkGray),
@@ -199,9 +229,9 @@ impl ReceiveComponent {
 
 impl Component for ReceiveComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        if let KeyCode::Char('g') = key.code {
-            // Generate a new one-time address
-            self.regenerate_address();
+        if key.code == KeyCode::Enter {
+            // Toggle spinning state
+            self.is_spinning = !self.is_spinning;
         }
         Ok(())
     }
@@ -212,6 +242,7 @@ impl Component for ReceiveComponent {
             area,
             self.account.as_ref(),
             self.one_time_address.as_deref(),
+            self.is_spinning,
         );
     }
 }

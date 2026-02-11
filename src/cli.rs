@@ -15,8 +15,9 @@ pub struct Args {
     pub frame_rate: f64,
 
     /// Network to connect to (testnet, mainnet, devnet)
-    #[arg(short, long, default_value = "testnet")]
-    pub network: String,
+    /// If not specified, uses last selected network or defaults to testnet
+    #[arg(short, long)]
+    pub network: Option<String>,
 
     /// Custom RPC URL (overrides network default)
     #[arg(long)]

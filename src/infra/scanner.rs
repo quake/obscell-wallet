@@ -732,6 +732,11 @@ impl Scanner {
     pub fn full_scan_all(&self, accounts: &[Account]) -> Result<ScanAllResult> {
         info!("Starting full scan for {} accounts", accounts.len());
 
+        // Clear the scan cursor to ensure we start fresh
+        if let Err(e) = self.clear_cursor() {
+            info!("Failed to clear scan cursor: {}", e);
+        }
+
         // Clear all stored cells for each account
         for account in accounts {
             if let Err(e) = self.store.clear_all_cells_for_account(account.id) {

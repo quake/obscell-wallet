@@ -17,6 +17,13 @@ pub enum TxType {
         /// Amount in shannons.
         amount: u64,
     },
+    /// Sent CKB to a CKB address (non-stealth).
+    CkbSend {
+        /// Recipient CKB address.
+        to: String,
+        /// Amount in shannons.
+        amount: u64,
+    },
     /// Transferred confidential tokens.
     CtTransfer {
         /// Token type script hash.
@@ -88,6 +95,11 @@ impl TxRecord {
         )
     }
 
+    /// Create a CKB address send record (non-stealth).
+    pub fn ckb_send(tx_hash: [u8; 32], to: String, amount: u64) -> Self {
+        Self::new(tx_hash, TxType::CkbSend { to, amount }, TxStatus::Pending)
+    }
+
     /// Create a stealth receive record.
     pub fn stealth_receive(tx_hash: [u8; 32], amount: u64) -> Self {
         Self::new(
@@ -141,6 +153,7 @@ impl TxRecord {
         match &self.tx_type {
             TxType::StealthSend { amount, .. } => Some(*amount as f64 / 100_000_000.0),
             TxType::StealthReceive { amount } => Some(*amount as f64 / 100_000_000.0),
+            TxType::CkbSend { amount, .. } => Some(*amount as f64 / 100_000_000.0),
             TxType::CtTransfer { .. } | TxType::CtMint { .. } | TxType::CtGenesis { .. } => None,
         }
     }
@@ -150,6 +163,7 @@ impl TxRecord {
         match &self.tx_type {
             TxType::StealthSend { .. } => "Send",
             TxType::StealthReceive { .. } => "Receive",
+            TxType::CkbSend { .. } => "Send (CKB)",
             TxType::CtTransfer { .. } => "Transfer",
             TxType::CtMint { .. } => "Mint",
             TxType::CtGenesis { .. } => "Genesis",

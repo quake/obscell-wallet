@@ -1,4 +1,4 @@
-//! Send component for sending CKB to stealth addresses.
+//! Send component for sending CKB to stealth addresses or CKB addresses.
 
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -22,7 +22,18 @@ pub enum SendField {
     Confirm,
 }
 
-/// Component for sending CKB to stealth addresses.
+/// Type of recipient address
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressType {
+    /// Stealth address (132 hex chars)
+    Stealth,
+    /// CKB address (ckb1.../ckt1...)
+    Ckb,
+    /// Unknown/invalid
+    Unknown,
+}
+
+/// Component for sending CKB to stealth addresses or CKB addresses.
 pub struct SendComponent {
     action_tx: UnboundedSender<Action>,
     pub account: Option<Account>,
@@ -63,6 +74,27 @@ impl SendComponent {
         self.success_message = None;
     }
 
+    /// Detect the type of address from recipient string.
+    pub fn detect_address_type(&self) -> AddressType {
+        let recipient = self.recipient.trim();
+        if recipient.is_empty() {
+            return AddressType::Unknown;
+        }
+
+        // Check for CKB address (starts with ckb1 or ckt1)
+        if recipient.starts_with("ckb1") || recipient.starts_with("ckt1") {
+            return AddressType::Ckb;
+        }
+
+        // Check for stealth address (132 hex chars, optionally with 0x prefix)
+        let hex_str = recipient.trim_start_matches("0x");
+        if hex_str.len() == 132 && hex::decode(hex_str).is_ok() {
+            return AddressType::Stealth;
+        }
+
+        AddressType::Unknown
+    }
+
     /// Parse the amount string to shannons (u64).
     pub fn parse_amount(&self) -> Option<u64> {
         let s = self.amount.trim();
@@ -93,18 +125,26 @@ impl SendComponent {
             return Some("Recipient address is required".to_string());
         }
 
-        // Validate recipient format (should be 132 hex chars for stealth address)
-        let recipient = self.recipient.trim().trim_start_matches("0x");
-        if recipient.len() != 132 {
-            return Some(format!(
-                "Invalid stealth address length: {} (expected 132 hex chars)",
-                recipient.len()
-            ));
-        }
-
-        if hex::decode(recipient).is_err() {
-            return Some("Invalid stealth address format (not valid hex)".to_string());
-        }
+        // Validate address based on type
+        match self.detect_address_type() {
+            AddressType::Unknown => Some(
+                "Invalid address format. Use stealth (132 hex) or CKB (ckb1.../ckt1...)"
+                    .to_string(),
+            ),
+            AddressType::Stealth => {
+                // Already validated in detect_address_type
+                None
+            }
+            AddressType::Ckb => {
+                // Try to parse as CKB address
+                use ckb_sdk::Address;
+                use std::str::FromStr;
+                if Address::from_str(self.recipient.trim()).is_err() {
+                    return Some("Invalid CKB address format".to_string());
+                }
+                None
+            }
+        }?;
 
         match self.parse_amount() {
             None => Some("Invalid amount format".to_string()),
@@ -197,6 +237,7 @@ impl SendComponent {
         account: Option<&Account>,
         recipient: &str,
         amount: &str,
+        address_type: AddressType,
         focused_field: SendField,
         is_editing: bool,
         error_message: Option<&str>,
@@ -256,7 +297,7 @@ impl SendComponent {
         };
 
         let recipient_text = if recipient.is_empty() && focused_field != SendField::Recipient {
-            "Enter stealth address (132 hex chars)"
+            "Enter address (stealth or CKB)"
         } else if recipient.is_empty() {
             "│"
         } else {
@@ -268,17 +309,32 @@ impl SendComponent {
             recipient_display.push('│');
         }
 
+        // Determine title based on address type
+        let title_prefix = if focused_field == SendField::Recipient {
+            "> "
+        } else {
+            "  "
+        };
+
+        let type_indicator = match address_type {
+            AddressType::Stealth => " [Stealth]",
+            AddressType::Ckb => " [CKB Address]",
+            AddressType::Unknown => {
+                if recipient.is_empty() {
+                    " [Stealth or CKB Address]"
+                } else {
+                    " [Invalid]"
+                }
+            }
+        };
+
         let recipient_widget = Paragraph::new(vec![
             Line::from(""),
             Line::from(vec![Span::styled(recipient_display, recipient_style)]),
         ])
         .block(
             Block::default()
-                .title(if focused_field == SendField::Recipient {
-                    "> Recipient Stealth Address"
-                } else {
-                    "  Recipient Stealth Address"
-                })
+                .title(format!("{}Recipient{}", title_prefix, type_indicator))
                 .borders(Borders::ALL)
                 .border_style(if focused_field == SendField::Recipient {
                     Style::default().fg(Color::Cyan)
@@ -386,9 +442,9 @@ impl SendComponent {
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
             if is_editing {
-                "[Esc] Stop editing  [Tab/↓] Next field  [Shift+Tab/↑] Prev field"
+                "ESC: Stop editing | Enter: Confirm and next field"
             } else {
-                "[Enter/e] Edit field  [Tab/↓] Next field  [c] Clear all  [Enter on Confirm] Send"
+                "Up/Down: Navigate | Enter: Edit/Confirm"
             },
             Style::default().fg(Color::DarkGray),
         )]));
@@ -410,53 +466,48 @@ impl Component for SendComponent {
         let on_input_field =
             self.focused_field == SendField::Recipient || self.focused_field == SendField::Amount;
 
-        match key.code {
-            KeyCode::Tab | KeyCode::Down => {
-                self.is_editing = false;
-                self.next_field();
-            }
-            KeyCode::BackTab | KeyCode::Up => {
-                self.is_editing = false;
-                self.prev_field();
-            }
-            KeyCode::Esc => {
-                self.is_editing = false;
-            }
-            KeyCode::Enter => {
-                if self.focused_field == SendField::Confirm {
-                    if let Some(err) = self.validate() {
-                        self.error_message = Some(err);
-                    } else {
-                        self.action_tx.send(Action::SendTransaction)?;
-                    }
-                } else if on_input_field {
-                    // Enter on input field toggles editing mode
-                    self.is_editing = !self.is_editing;
-                } else {
+        if self.is_editing && on_input_field {
+            // Editing mode - handle character input
+            match key.code {
+                KeyCode::Esc => {
+                    self.is_editing = false;
+                }
+                KeyCode::Enter => {
+                    // Confirm current field and move to next
                     self.is_editing = false;
                     self.next_field();
                 }
-            }
-            KeyCode::Char(c) => {
-                if self.is_editing && on_input_field {
+                KeyCode::Char(c) => {
                     self.handle_char(c);
-                } else if !self.is_editing {
-                    // Navigation shortcuts when not editing
-                    match c {
-                        'j' => self.next_field(),
-                        'k' => self.prev_field(),
-                        'c' => self.clear(),
-                        'e' if on_input_field => self.is_editing = true,
-                        _ => {}
-                    }
                 }
-            }
-            KeyCode::Backspace => {
-                if self.is_editing && on_input_field {
+                KeyCode::Backspace => {
                     self.handle_backspace();
                 }
+                _ => {}
             }
-            _ => {}
+        } else {
+            // Navigation mode
+            match key.code {
+                KeyCode::Down => {
+                    self.next_field();
+                }
+                KeyCode::Up => {
+                    self.prev_field();
+                }
+                KeyCode::Enter => {
+                    if self.focused_field == SendField::Confirm {
+                        if let Some(err) = self.validate() {
+                            self.error_message = Some(err);
+                        } else {
+                            self.action_tx.send(Action::SendTransaction)?;
+                        }
+                    } else if on_input_field {
+                        // Enter on input field starts editing mode
+                        self.is_editing = true;
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -468,6 +519,7 @@ impl Component for SendComponent {
             self.account.as_ref(),
             &self.recipient,
             &self.amount,
+            self.detect_address_type(),
             self.focused_field,
             self.is_editing,
             self.error_message.as_deref(),

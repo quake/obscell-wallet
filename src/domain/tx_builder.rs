@@ -3,13 +3,16 @@
 //! Builds CKB transactions that send to stealth lock scripts, handling
 //! input selection, change outputs, and signing with derived stealth keys.
 
+use std::str::FromStr;
+
 use ckb_hash::blake2b_256;
 use ckb_jsonrpc_types::{
     CellDep, CellInput, CellOutput, DepType, JsonBytes, OutPoint, Script, Transaction, Uint32,
     Uint64,
 };
+use ckb_sdk::Address;
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 use crate::{
@@ -37,13 +40,23 @@ pub struct StealthTxBuilder {
     fee: u64,
 }
 
-/// Output specification for a stealth transaction.
+/// Output type for transaction outputs.
 #[derive(Debug, Clone)]
-pub struct TxOutput {
-    /// Recipient stealth address (66 bytes = view_pub || spend_pub).
-    pub stealth_address: Vec<u8>,
-    /// Amount in shannons.
-    pub capacity: u64,
+pub enum TxOutput {
+    /// Output to a stealth address.
+    Stealth {
+        /// Recipient stealth address (66 bytes = view_pub || spend_pub).
+        stealth_address: Vec<u8>,
+        /// Amount in shannons.
+        capacity: u64,
+    },
+    /// Output to a CKB address (secp256k1_blake160_sighash_all lock).
+    Ckb {
+        /// Lock script for the CKB address.
+        lock_script: Script,
+        /// Amount in shannons.
+        capacity: u64,
+    },
 }
 
 /// A built transaction ready for submission.
@@ -85,11 +98,57 @@ impl StealthTxBuilder {
     ///
     /// `stealth_address` should be 66 bytes (compressed view_pub || spend_pub).
     pub fn add_output(mut self, stealth_address: Vec<u8>, capacity: u64) -> Self {
-        self.outputs.push(TxOutput {
+        self.outputs.push(TxOutput::Stealth {
             stealth_address,
             capacity,
         });
         self
+    }
+
+    /// Add an output to send to a CKB address.
+    ///
+    /// `ckb_address` should be a valid CKB address string (ckb1.../ckt1...).
+    pub fn add_ckb_output(mut self, ckb_address: &str) -> Result<(Self, u64)> {
+        let address =
+            Address::from_str(ckb_address).map_err(|e| eyre!("Invalid CKB address: {}", e))?;
+        let payload = address.payload();
+
+        // Convert payload to lock script
+        let lock_script: Script = Script::from(ckb_types::packed::Script::from(payload));
+
+        // Calculate minimum capacity for this lock script
+        // Lock script overhead: 8 (capacity) + lock_script_size
+        // Lock script size = 1 (code_hash len prefix) + 32 (code_hash) + 1 (hash_type) + 4 (args len prefix) + args.len()
+        let args_len = lock_script.args.len();
+        let min_capacity = (8 + 32 + 1 + args_len as u64) * 100_000_000; // In shannons
+
+        self.outputs.push(TxOutput::Ckb {
+            lock_script,
+            capacity: min_capacity, // Will be set properly later
+        });
+
+        Ok((self, min_capacity))
+    }
+
+    /// Add an output to send to a CKB address with a specific capacity.
+    pub fn add_ckb_output_with_capacity(
+        mut self,
+        ckb_address: &str,
+        capacity: u64,
+    ) -> Result<Self> {
+        let address =
+            Address::from_str(ckb_address).map_err(|e| eyre!("Invalid CKB address: {}", e))?;
+        let payload = address.payload();
+
+        // Convert payload to lock script
+        let lock_script: Script = Script::from(ckb_types::packed::Script::from(payload));
+
+        self.outputs.push(TxOutput::Ckb {
+            lock_script,
+            capacity,
+        });
+
+        Ok(self)
     }
 
     /// Select inputs from available cells to cover the required amount.
@@ -141,7 +200,14 @@ impl StealthTxBuilder {
         }
 
         let total_input: u64 = self.inputs.iter().map(|c| c.capacity).sum();
-        let total_output: u64 = self.outputs.iter().map(|o| o.capacity).sum();
+        let total_output: u64 = self
+            .outputs
+            .iter()
+            .map(|o| match o {
+                TxOutput::Stealth { capacity, .. } => *capacity,
+                TxOutput::Ckb { capacity, .. } => *capacity,
+            })
+            .sum();
 
         if total_input < total_output + self.fee {
             return Err(eyre!(
@@ -166,13 +232,30 @@ impl StealthTxBuilder {
 
         // Add recipient outputs
         for output in &self.outputs {
-            let (script, _script_args) =
-                self.build_stealth_output_script(&output.stealth_address)?;
-            outputs.push(CellOutput {
-                capacity: Uint64::from(output.capacity),
-                lock: script,
-                type_: None,
-            });
+            match output {
+                TxOutput::Stealth {
+                    stealth_address,
+                    capacity,
+                } => {
+                    let (script, _script_args) =
+                        self.build_stealth_output_script(stealth_address)?;
+                    outputs.push(CellOutput {
+                        capacity: Uint64::from(*capacity),
+                        lock: script,
+                        type_: None,
+                    });
+                }
+                TxOutput::Ckb {
+                    lock_script,
+                    capacity,
+                } => {
+                    outputs.push(CellOutput {
+                        capacity: Uint64::from(*capacity),
+                        lock: lock_script.clone(),
+                        type_: None,
+                    });
+                }
+            }
             outputs_data.push(JsonBytes::default());
         }
 

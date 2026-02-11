@@ -14,7 +14,7 @@ use crate::{
     cli::Args,
     components::{
         Component, accounts::AccountsComponent, dev::DevComponent, history::HistoryComponent,
-        receive::ReceiveComponent, send::SendComponent, settings::SettingsComponent,
+        receive::ReceiveComponent, send::{AddressType, SendComponent}, settings::SettingsComponent,
         tokens::TokensComponent,
     },
     config::Config,
@@ -29,7 +29,7 @@ use crate::{
         ct_tx_builder::CtTxBuilder,
         tx_builder::{StealthTxBuilder, parse_stealth_address},
     },
-    infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::Store},
+    infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::{Store, SELECTED_NETWORK_KEY}},
     tui::{Event, Frame, Tui},
 };
 
@@ -37,9 +37,9 @@ use crate::{
 pub enum Tab {
     Settings,
     Accounts,
+    Tokens,
     Send,
     Receive,
-    Tokens,
     History,
     Dev,
 }
@@ -49,9 +49,9 @@ impl Tab {
         let mut tabs = vec![
             Tab::Settings,
             Tab::Accounts,
+            Tab::Tokens,
             Tab::Send,
             Tab::Receive,
-            Tab::Tokens,
             Tab::History,
         ];
         if dev_mode {
@@ -69,16 +69,16 @@ impl Tab {
                 Span::raw("tings"),
             ]),
             Tab::Accounts => Line::from(vec![Span::styled("A", underline), Span::raw("ccounts")]),
+            Tab::Tokens => Line::from(vec![
+                Span::raw("T"),
+                Span::styled("o", underline),
+                Span::raw("kens"),
+            ]),
             Tab::Send => Line::from(vec![Span::styled("S", underline), Span::raw("end")]),
             Tab::Receive => Line::from(vec![
                 Span::raw("Recei"),
                 Span::styled("v", underline),
                 Span::raw("e"),
-            ]),
-            Tab::Tokens => Line::from(vec![
-                Span::raw("T"),
-                Span::styled("o", underline),
-                Span::raw("kens"),
             ]),
             Tab::History => Line::from(vec![Span::styled("H", underline), Span::raw("istory")]),
             Tab::Dev => Line::from(vec![Span::styled("D", underline), Span::raw("ev")]),
@@ -89,9 +89,9 @@ impl Tab {
         match self {
             Tab::Settings => 0,
             Tab::Accounts => 1,
-            Tab::Send => 2,
-            Tab::Receive => 3,
-            Tab::Tokens => 4,
+            Tab::Tokens => 2,
+            Tab::Send => 3,
+            Tab::Receive => 4,
             Tab::History => 5,
             Tab::Dev if dev_mode => 6,
             Tab::Dev => 5, // Fallback if somehow Dev tab is accessed without dev_mode
@@ -102,9 +102,9 @@ impl Tab {
         match index {
             0 => Tab::Settings,
             1 => Tab::Accounts,
-            2 => Tab::Send,
-            3 => Tab::Receive,
-            4 => Tab::Tokens,
+            2 => Tab::Tokens,
+            3 => Tab::Send,
+            4 => Tab::Receive,
             5 => Tab::History,
             6 if dev_mode => Tab::Dev,
             _ => Tab::Settings,
@@ -150,7 +150,21 @@ pub struct App {
 impl App {
     pub fn new(args: &Args) -> Result<Self> {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
-        let config = Config::new(&args.network, args.rpc_url.as_deref());
+
+        // Determine network: CLI arg > saved preference > default "testnet"
+        let network = if let Some(ref net) = args.network {
+            net.clone()
+        } else if let Ok(global_store) = Store::global() {
+            global_store
+                .load_metadata::<String>(SELECTED_NETWORK_KEY)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "testnet".to_string())
+        } else {
+            "testnet".to_string()
+        };
+
+        let config = Config::new(&network, args.rpc_url.as_deref());
         let store = Store::new(&config.network.name)?;
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
@@ -378,13 +392,22 @@ impl App {
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.action_tx.send(Action::Suspend)?;
             }
-            KeyCode::Char('?') if key.modifiers.is_empty() => {
-                self.action_tx.send(Action::Help)?;
+            KeyCode::Tab => {
+                let tabs = Tab::all(self.dev_mode);
+                let next_index = (self.active_tab.index(self.dev_mode) + 1) % tabs.len();
+                self.active_tab = Tab::from_index(next_index, self.dev_mode);
             }
-            KeyCode::Char('r') if key.modifiers.is_empty() => {
-                self.action_tx.send(Action::Rescan)?;
+            KeyCode::BackTab => {
+                let tabs = Tab::all(self.dev_mode);
+                let prev_index = if self.active_tab.index(self.dev_mode) == 0 {
+                    tabs.len() - 1
+                } else {
+                    self.active_tab.index(self.dev_mode) - 1
+                };
+                self.active_tab = Tab::from_index(prev_index, self.dev_mode);
             }
-            KeyCode::Char('t') if key.modifiers.is_empty() && self.active_tab != Tab::Tokens => {
+            // Tab hotkeys for quick navigation
+            KeyCode::Char('t') if key.modifiers.is_empty() => {
                 self.active_tab = Tab::Settings;
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
@@ -405,19 +428,9 @@ impl App {
             KeyCode::Char('d') if key.modifiers.is_empty() && self.dev_mode => {
                 self.active_tab = Tab::Dev;
             }
-            KeyCode::Tab => {
-                let tabs = Tab::all(self.dev_mode);
-                let next_index = (self.active_tab.index(self.dev_mode) + 1) % tabs.len();
-                self.active_tab = Tab::from_index(next_index, self.dev_mode);
-            }
-            KeyCode::BackTab => {
-                let tabs = Tab::all(self.dev_mode);
-                let prev_index = if self.active_tab.index(self.dev_mode) == 0 {
-                    tabs.len() - 1
-                } else {
-                    self.active_tab.index(self.dev_mode) - 1
-                };
-                self.active_tab = Tab::from_index(prev_index, self.dev_mode);
+            // Global hotkey: r for Full Rescan
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                self.action_tx.send(Action::FullRescan)?;
             }
             _ => match self.active_tab {
                 Tab::Settings => {
@@ -551,24 +564,69 @@ impl App {
                                 }
 
                                 if has_new {
-                                    self.accounts_component
-                                        .set_accounts(self.account_manager.list_accounts()?);
+                                    // Refresh accounts list
+                                    let updated_accounts = self.account_manager.list_accounts()?;
+                                    self.accounts_component.set_accounts(updated_accounts.clone());
+
+                                    // Refresh send component's account balance
+                                    if let Some(ref current_account) = self.send_component.account {
+                                        if let Some(updated) = updated_accounts
+                                            .iter()
+                                            .find(|a| a.id == current_account.id)
+                                        {
+                                            self.send_component.set_account(Some(updated.clone()));
+                                        }
+                                    }
+
+                                    // Refresh receive component's account
+                                    if let Some(ref current_account) = self.receive_component.account
+                                    {
+                                        if let Some(updated) = updated_accounts
+                                            .iter()
+                                            .find(|a| a.id == current_account.id)
+                                        {
+                                            self.receive_component.set_account(Some(updated.clone()));
+                                        }
+                                    }
+
+                                    // Refresh history component's account
+                                    if let Some(ref current_account) = self.history_component.account
+                                    {
+                                        if let Some(updated) = updated_accounts
+                                            .iter()
+                                            .find(|a| a.id == current_account.id)
+                                        {
+                                            self.history_component.set_account(Some(updated.clone()));
+                                        }
+                                    }
 
                                     // Refresh tokens display for current account
-                                    if let Some(account) = &self.tokens_component.account
-                                        && let Ok(ct_cells) = self.store.get_ct_cells(account.id)
+                                    if let Some(ref current_account) =
+                                        self.tokens_component.account.clone()
                                     {
-                                        let ct_info_cells = self
-                                            .store
-                                            .get_ct_info_cells(account.id)
-                                            .unwrap_or_default();
-                                        let balances = aggregate_ct_balances_with_info(
-                                            &ct_cells,
-                                            &ct_info_cells,
-                                            &self.config,
-                                        );
-                                        self.tokens_component.set_balances(balances);
-                                        self.tokens_component.set_ct_cells(ct_cells);
+                                        // Update tokens component's account
+                                        if let Some(updated) = updated_accounts
+                                            .iter()
+                                            .find(|a| a.id == current_account.id)
+                                        {
+                                            self.tokens_component.set_account(Some(updated.clone()));
+                                        }
+
+                                        if let Ok(ct_cells) =
+                                            self.store.get_ct_cells(current_account.id)
+                                        {
+                                            let ct_info_cells = self
+                                                .store
+                                                .get_ct_info_cells(current_account.id)
+                                                .unwrap_or_default();
+                                            let balances = aggregate_ct_balances_with_info(
+                                                &ct_cells,
+                                                &ct_info_cells,
+                                                &self.config,
+                                            );
+                                            self.tokens_component.set_balances(balances);
+                                            self.tokens_component.set_ct_cells(ct_cells);
+                                        }
                                     }
 
                                     if let Ok(tip) = self.scanner.get_tip_block_number() {
@@ -847,21 +905,11 @@ impl App {
                 // Get send parameters
                 let recipient = self.send_component.recipient.clone();
                 let amount = self.send_component.parse_amount();
+                let address_type = self.send_component.detect_address_type();
 
                 if let (Some(ref account), Some(amount_shannon)) =
                     (self.send_component.account.clone(), amount)
                 {
-                    // Parse the recipient stealth address
-                    let stealth_addr = match parse_stealth_address(&recipient) {
-                        Ok(addr) => addr,
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Invalid recipient: {}", e));
-                            self.status_message = "Send failed: invalid address".to_string();
-                            return Ok(());
-                        }
-                    };
-
                     // Get available cells for this account
                     let available_cells = match self.store.get_stealth_cells(account.id) {
                         Ok(cells) => cells,
@@ -880,12 +928,43 @@ impl App {
                         return Ok(());
                     }
 
-                    // Build the transaction
+                    // Build the transaction based on address type
                     let builder = StealthTxBuilder::new(self.config.clone());
-                    let builder = match builder
-                        .add_output(stealth_addr, amount_shannon)
-                        .select_inputs(&available_cells, amount_shannon)
-                    {
+                    let builder = match address_type {
+                        AddressType::Stealth => {
+                            // Parse the recipient stealth address
+                            let stealth_addr = match parse_stealth_address(&recipient) {
+                                Ok(addr) => addr,
+                                Err(e) => {
+                                    self.send_component.error_message =
+                                        Some(format!("Invalid stealth address: {}", e));
+                                    self.status_message = "Send failed: invalid address".to_string();
+                                    return Ok(());
+                                }
+                            };
+                            builder.add_output(stealth_addr, amount_shannon)
+                        }
+                        AddressType::Ckb => {
+                            // Use the CKB address directly
+                            match builder.add_ckb_output_with_capacity(&recipient, amount_shannon) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    self.send_component.error_message =
+                                        Some(format!("Invalid CKB address: {}", e));
+                                    self.status_message = "Send failed: invalid address".to_string();
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        AddressType::Unknown => {
+                            self.send_component.error_message =
+                                Some("Invalid recipient address format".to_string());
+                            self.status_message = "Send failed: invalid address".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    let builder = match builder.select_inputs(&available_cells, amount_shannon) {
                         Ok(b) => b,
                         Err(e) => {
                             self.send_component.error_message =
@@ -924,19 +1003,36 @@ impl App {
                     match self.scanner.rpc().send_transaction(signed_tx) {
                         Ok(tx_hash) => {
                             let amount_ckb = amount_shannon as f64 / 100_000_000.0;
+                            let tx_hash_hex = hex::encode(&tx_hash.0);
                             self.send_component.success_message = Some(format!(
-                                "Transaction sent! Hash: {}...{}",
-                                &hex::encode(&tx_hash.0[..4]),
-                                &hex::encode(&tx_hash.0[28..])
+                                "Sent {:.8} CKB! Tx: 0x{}",
+                                amount_ckb, tx_hash_hex
                             ));
-                            self.status_message = format!("Sent {:.8} CKB", amount_ckb);
+                            self.status_message = format!(
+                                "Sent {:.8} CKB (tx: 0x{}...{})",
+                                amount_ckb,
+                                &tx_hash_hex[..8],
+                                &tx_hash_hex[56..]
+                            );
 
                             // Save transaction record to history
-                            let tx_record = TxRecord::stealth_send(
-                                tx_hash.0,
-                                recipient.clone(),
-                                amount_shannon,
-                            );
+                            let tx_record = match address_type {
+                                AddressType::Stealth => TxRecord::stealth_send(
+                                    tx_hash.0,
+                                    recipient.clone(),
+                                    amount_shannon,
+                                ),
+                                AddressType::Ckb => TxRecord::ckb_send(
+                                    tx_hash.0,
+                                    recipient.clone(),
+                                    amount_shannon,
+                                ),
+                                AddressType::Unknown => TxRecord::stealth_send(
+                                    tx_hash.0,
+                                    recipient.clone(),
+                                    amount_shannon,
+                                ),
+                            };
                             if let Err(e) = self.store.save_tx_record(account.id, &tx_record) {
                                 info!("Failed to save transaction record: {}", e);
                             }
@@ -955,8 +1051,14 @@ impl App {
                                 info!("Failed to remove spent cells: {}", e);
                             }
 
-                            // Clear send form
-                            self.send_component.clear();
+                            // Clear send form inputs but keep success message visible
+                            self.send_component.recipient.clear();
+                            self.send_component.amount.clear();
+                            self.send_component.focused_field =
+                                crate::components::send::SendField::Recipient;
+                            self.send_component.is_editing = false;
+                            self.send_component.error_message = None;
+                            // Note: success_message is kept to show the tx hash to user
                         }
                         Err(e) => {
                             self.send_component.error_message =
@@ -1863,6 +1965,11 @@ impl App {
 
                 self.dev_mode = new_dev_mode;
 
+                // Save network preference to global store
+                if let Ok(global_store) = Store::global() {
+                    let _ = global_store.save_metadata(SELECTED_NETWORK_KEY, &self.config.network.name);
+                }
+
                 // Refresh tip block for new network
                 match self.scanner.get_tip_block_number() {
                     Ok(tip) => {
@@ -1888,12 +1995,20 @@ impl App {
         let status_message = self.status_message.clone();
         let accounts = self.accounts_component.accounts.clone();
         let selected_index = self.accounts_component.selected_index;
+        let accounts_focus = self.accounts_component.focus;
+        let accounts_selected_operation = self.accounts_component.selected_operation;
         let tip_block_number = self.tip_block_number;
+        // Regenerate address on every frame when spinning
+        if self.receive_component.is_spinning {
+            self.receive_component.regenerate_address();
+        }
         let receive_account = self.receive_component.account.clone();
         let receive_one_time_address = self.receive_component.one_time_address.clone();
+        let receive_is_spinning = self.receive_component.is_spinning;
         let send_account = self.send_component.account.clone();
         let send_recipient = self.send_component.recipient.clone();
         let send_amount = self.send_component.amount.clone();
+        let send_address_type = self.send_component.detect_address_type();
         let send_focused_field = self.send_component.focused_field;
         let send_is_editing = self.send_component.is_editing;
         let send_error_message = self.send_component.error_message.clone();
@@ -1906,6 +2021,8 @@ impl App {
         let tokens_balances = self.tokens_component.balances.clone();
         let tokens_selected_index = self.tokens_component.selected_index;
         let tokens_mode = self.tokens_component.mode;
+        let tokens_list_focus = self.tokens_component.list_focus;
+        let tokens_selected_operation = self.tokens_component.selected_operation;
         let tokens_transfer_recipient = self.tokens_component.transfer_recipient.clone();
         let tokens_transfer_amount = self.tokens_component.transfer_amount.clone();
         let tokens_transfer_field = self.tokens_component.transfer_field;
@@ -1944,6 +2061,11 @@ impl App {
             .as_ref()
             .map(|d| d.is_editing)
             .unwrap_or(false);
+        let dev_selected_operation = self
+            .dev_component
+            .as_ref()
+            .map(|d| d.selected_operation)
+            .unwrap_or(0);
         let dev_error_message = self
             .dev_component
             .as_ref()
@@ -2050,6 +2172,8 @@ impl App {
                         chunks[2],
                         &accounts,
                         selected_index,
+                        accounts_focus,
+                        accounts_selected_operation,
                         is_mainnet,
                     );
                 }
@@ -2060,6 +2184,7 @@ impl App {
                         send_account.as_ref(),
                         &send_recipient,
                         &send_amount,
+                        send_address_type,
                         send_focused_field,
                         send_is_editing,
                         send_error_message.as_deref(),
@@ -2072,6 +2197,7 @@ impl App {
                         chunks[2],
                         receive_account.as_ref(),
                         receive_one_time_address.as_deref(),
+                        receive_is_spinning,
                     );
                 }
                 Tab::Tokens => {
@@ -2082,6 +2208,8 @@ impl App {
                         &tokens_balances,
                         tokens_selected_index,
                         tokens_mode,
+                        tokens_list_focus,
+                        tokens_selected_operation,
                         &tokens_transfer_recipient,
                         &tokens_transfer_amount,
                         tokens_transfer_field,
@@ -2117,6 +2245,7 @@ impl App {
                         dev_miner_balance,
                         &dev_faucet_amount,
                         dev_is_editing,
+                        dev_selected_operation,
                         dev_error_message.as_deref(),
                         dev_success_message.as_deref(),
                     );
@@ -2134,7 +2263,7 @@ impl App {
                 Span::styled(&tip_str, Style::default().fg(Color::Yellow)),
                 Span::raw("  |  "),
                 Span::styled(
-                    "[r]Rescan [q]Quit [?]Help",
+                    "[r]Full Rescan [q]Quit",
                     Style::default().fg(Color::DarkGray),
                 ),
             ])])

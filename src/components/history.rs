@@ -143,6 +143,7 @@ impl HistoryComponent {
                 let direction_color = match &tx.tx_type {
                     TxType::StealthSend { .. } => Color::Red,
                     TxType::StealthReceive { .. } => Color::Green,
+                    TxType::CkbSend { .. } => Color::Red,
                     TxType::CtTransfer { .. } => Color::Yellow,
                     TxType::CtMint { .. } => Color::Magenta,
                     TxType::CtGenesis { .. } => Color::Cyan,
@@ -239,7 +240,7 @@ impl HistoryComponent {
             }
 
             // Add recipient for sends
-            if let TxType::StealthSend { to, .. } = &tx.tx_type {
+            if let TxType::StealthSend { to, .. } | TxType::CkbSend { to, .. } = &tx.tx_type {
                 lines.push(Line::from(vec![Span::styled(
                     "Recipient:",
                     Style::default().fg(Color::DarkGray),
@@ -280,7 +281,7 @@ impl HistoryComponent {
             vec![
                 Line::from("No transaction selected"),
                 Line::from(""),
-                Line::from("Press [r] to rescan for transactions"),
+                Line::from("Use Up/Down to navigate"),
             ]
         };
 
@@ -304,10 +305,10 @@ impl Default for HistoryComponent {
 impl Component for HistoryComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 self.next();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.previous();
             }
             _ => {}

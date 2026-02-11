@@ -1,16 +1,19 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
+use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::get_network_data_dir,
+    config::{get_data_dir, get_network_data_dir},
     domain::{
         account::Account,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
     },
 };
+
+/// Key for storing the selected network preference in global store.
+pub const SELECTED_NETWORK_KEY: &str = "selected_network";
 
 /// Wrapper around LMDB database for persistent storage.
 #[derive(Clone)]
@@ -21,6 +24,11 @@ pub struct Store {
 impl Store {
     pub fn new(network: &str) -> Result<Self> {
         Self::with_path(get_network_data_dir(network).join("wallet.mdb"))
+    }
+
+    /// Create a global store for cross-network preferences (stored in base data dir).
+    pub fn global() -> Result<Self> {
+        Self::with_path(get_data_dir().join("global.mdb"))
     }
 
     pub fn with_path(path: PathBuf) -> Result<Self> {

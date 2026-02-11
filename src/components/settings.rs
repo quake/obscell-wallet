@@ -88,11 +88,10 @@ impl SettingsComponent {
             .split(area);
 
         // Network list with hotkey hints
-        let hotkeys = ["[T]estnet", "[M]ainnet", "[L]ocal"];
         let items: Vec<ListItem> = NETWORKS
             .iter()
             .enumerate()
-            .map(|(i, (name, _, _url))| {
+            .map(|(i, (name, display_name, _url))| {
                 let is_current = *name == current_network;
                 let is_selected = i == selected_index;
 
@@ -108,7 +107,7 @@ impl SettingsComponent {
 
                 let marker = if is_current { " ✓" } else { "" };
                 let content = Line::from(vec![Span::styled(
-                    format!("{}{}", hotkeys[i], marker),
+                    format!("{}{}", display_name, marker),
                     style,
                 )]);
                 ListItem::new(content)
@@ -222,26 +221,11 @@ impl SettingsComponent {
 impl Component for SettingsComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 self.next();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.previous();
-            }
-            KeyCode::Char('t') => {
-                self.selected_index = 0;
-                self.list_state.select(Some(0));
-                self.select_network()?;
-            }
-            KeyCode::Char('m') => {
-                self.selected_index = 1;
-                self.list_state.select(Some(1));
-                self.select_network()?;
-            }
-            KeyCode::Char('l') => {
-                self.selected_index = 2;
-                self.list_state.select(Some(2));
-                self.select_network()?;
             }
             KeyCode::Enter => {
                 self.select_network()?;

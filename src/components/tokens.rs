@@ -34,6 +34,44 @@ pub enum TokensMode {
     Genesis,
 }
 
+/// Focus state within List mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListFocus {
+    /// Focus on token list.
+    Tokens,
+    /// Focus on operation menu.
+    Operations,
+}
+
+/// Available operations in List mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenOperation {
+    Transfer,
+    Mint,
+    Genesis,
+    Rescan,
+}
+
+impl TokenOperation {
+    fn all() -> &'static [TokenOperation] {
+        &[
+            TokenOperation::Transfer,
+            TokenOperation::Mint,
+            TokenOperation::Genesis,
+            TokenOperation::Rescan,
+        ]
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            TokenOperation::Transfer => "Transfer",
+            TokenOperation::Mint => "Mint (Issuer)",
+            TokenOperation::Genesis => "Create New Token",
+            TokenOperation::Rescan => "Rescan Blockchain",
+        }
+    }
+}
+
 /// Input field focus state for transfer mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferField {
@@ -59,6 +97,9 @@ pub struct TokensComponent {
     pub selected_index: usize,
     list_state: ListState,
     pub mode: TokensMode,
+    // List mode state
+    pub list_focus: ListFocus,
+    pub selected_operation: usize,
     // Transfer mode state
     pub transfer_recipient: String,
     pub transfer_amount: String,
@@ -89,6 +130,8 @@ impl TokensComponent {
             selected_index: 0,
             list_state,
             mode: TokensMode::List,
+            list_focus: ListFocus::Tokens,
+            selected_operation: 0,
             transfer_recipient: String::new(),
             transfer_amount: String::new(),
             transfer_field: TransferField::Recipient,
@@ -98,7 +141,7 @@ impl TokensComponent {
             mint_field: TransferField::Recipient,
             genesis_supply_cap: String::new(),
             genesis_unlimited: true,
-            genesis_field: GenesisField::SupplyCap,
+            genesis_field: GenesisField::Unlimited,
             error_message: None,
             success_message: None,
         }
@@ -112,10 +155,15 @@ impl TokensComponent {
     /// Set token balances.
     pub fn set_balances(&mut self, balances: Vec<CtBalance>) {
         self.balances = balances;
-        if !self.balances.is_empty() && self.selected_index >= self.balances.len() {
-            self.selected_index = self.balances.len() - 1;
+        if self.balances.is_empty() {
+            // Auto-focus Operations menu when list is empty
+            self.list_focus = ListFocus::Operations;
+        } else {
+            if self.selected_index >= self.balances.len() {
+                self.selected_index = self.balances.len() - 1;
+            }
+            self.list_state.select(Some(self.selected_index));
         }
-        self.list_state.select(Some(self.selected_index));
     }
 
     /// Set CT cells.
@@ -148,7 +196,7 @@ impl TokensComponent {
     pub fn clear_genesis(&mut self) {
         self.genesis_supply_cap.clear();
         self.genesis_unlimited = true;
-        self.genesis_field = GenesisField::SupplyCap;
+        self.genesis_field = GenesisField::Unlimited;
         self.is_editing = false;
     }
 
@@ -215,9 +263,9 @@ impl TokensComponent {
             }
             TokensMode::Genesis => {
                 self.genesis_field = match self.genesis_field {
-                    GenesisField::SupplyCap => GenesisField::Unlimited,
-                    GenesisField::Unlimited => GenesisField::Confirm,
-                    GenesisField::Confirm => GenesisField::SupplyCap,
+                    GenesisField::Unlimited => GenesisField::SupplyCap,
+                    GenesisField::SupplyCap => GenesisField::Confirm,
+                    GenesisField::Confirm => GenesisField::Unlimited,
                 };
             }
             TokensMode::List => {}
@@ -242,9 +290,9 @@ impl TokensComponent {
             }
             TokensMode::Genesis => {
                 self.genesis_field = match self.genesis_field {
-                    GenesisField::SupplyCap => GenesisField::Confirm,
-                    GenesisField::Unlimited => GenesisField::SupplyCap,
-                    GenesisField::Confirm => GenesisField::Unlimited,
+                    GenesisField::Unlimited => GenesisField::Confirm,
+                    GenesisField::SupplyCap => GenesisField::Unlimited,
+                    GenesisField::Confirm => GenesisField::SupplyCap,
                 };
             }
             TokensMode::List => {}
@@ -465,6 +513,8 @@ impl TokensComponent {
         balances: &[CtBalance],
         selected_index: usize,
         mode: TokensMode,
+        list_focus: ListFocus,
+        selected_operation: usize,
         transfer_recipient: &str,
         transfer_amount: &str,
         transfer_field: TransferField,
@@ -480,7 +530,16 @@ impl TokensComponent {
     ) {
         match mode {
             TokensMode::List => {
-                Self::draw_list_mode(f, area, account, balances, selected_index);
+                Self::draw_list_mode(
+                    f,
+                    area,
+                    account,
+                    balances,
+                    selected_index,
+                    list_focus,
+                    selected_operation,
+                    error_message,
+                );
             }
             TokensMode::Transfer => {
                 Self::draw_transfer_mode(
@@ -525,15 +584,23 @@ impl TokensComponent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_list_mode(
         f: &mut Frame,
         area: Rect,
         account: Option<&Account>,
         balances: &[CtBalance],
         selected_index: usize,
+        list_focus: ListFocus,
+        selected_operation: usize,
+        error_message: Option<&str>,
     ) {
         let chunks = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
+
+        // Left side: split into token list and operations menu
+        let left_chunks =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(8)]).split(chunks[0]);
 
         // Token list
         let items: Vec<ListItem> = balances
@@ -569,17 +636,18 @@ impl TokensComponent {
         list_state.select(Some(selected_index));
 
         let account_name = account.map(|a| a.name.as_str()).unwrap_or("None");
-        let title = format!(
-            "Token Balances - {} [n]New [t]Transfer [m]Mint [r]Rescan",
-            account_name
-        );
+        let list_border_color = if list_focus == ListFocus::Tokens {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
 
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title(title)
+                    .title(format!("Token Balances - {}", account_name))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
+                    .border_style(Style::default().fg(list_border_color)),
             )
             .highlight_style(
                 Style::default()
@@ -588,9 +656,56 @@ impl TokensComponent {
             )
             .highlight_symbol("> ");
 
-        f.render_stateful_widget(list, chunks[0], &mut list_state);
+        f.render_stateful_widget(list, left_chunks[0], &mut list_state);
 
-        // Token details
+        // Operations menu
+        let ops = TokenOperation::all();
+        let op_items: Vec<ListItem> = ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let style = if i == selected_operation && list_focus == ListFocus::Operations {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(Span::styled(op.label(), style)))
+            })
+            .collect();
+
+        let mut op_state = ListState::default();
+        if list_focus == ListFocus::Operations {
+            op_state.select(Some(selected_operation));
+        }
+
+        let ops_border_color = if list_focus == ListFocus::Operations {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+
+        let ops_list = List::new(op_items)
+            .block(
+                Block::default()
+                    .title("Operations")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(ops_border_color)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+
+        f.render_stateful_widget(ops_list, left_chunks[1], &mut op_state);
+
+        // Right side: Token details
+        let right_chunks =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(chunks[1]);
+
         let details = if let Some(bal) = balances.get(selected_index) {
             vec![
                 Line::from(vec![
@@ -622,19 +737,13 @@ impl TokensComponent {
                         Style::default().fg(Color::White),
                     ),
                 ]),
-                Line::from(""),
-                Line::from(""),
-                Line::from(vec![Span::styled(
-                    "[n] New  [t] Transfer  [m] Mint  [r] Rescan  [j/k] Navigate",
-                    Style::default().fg(Color::DarkGray),
-                )]),
             ]
         } else {
             vec![
                 Line::from("No tokens found"),
                 Line::from(""),
-                Line::from("Press [n] to create a new token"),
-                Line::from("Press [r] to rescan for tokens"),
+                Line::from("Select an operation from the menu"),
+                Line::from("to create a new token or rescan."),
             ]
         };
 
@@ -645,7 +754,25 @@ impl TokensComponent {
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
 
-        f.render_widget(details_widget, chunks[1]);
+        f.render_widget(details_widget, right_chunks[0]);
+
+        // Status/error message
+        let status_text = if let Some(err) = error_message {
+            Line::from(Span::styled(err, Style::default().fg(Color::Red)))
+        } else {
+            Line::from(Span::styled(
+                "Up/Down: Navigate | Enter: Select/Execute",
+                Style::default().fg(Color::DarkGray),
+            ))
+        };
+
+        let status_widget = Paragraph::new(status_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+
+        f.render_widget(status_widget, right_chunks[1]);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -833,7 +960,7 @@ impl TokensComponent {
 
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
-            "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back to list",
+            "Up/Down: Navigate | Enter: Edit/Confirm | ESC: Back",
             Style::default().fg(Color::DarkGray),
         )]));
 
@@ -1023,7 +1150,7 @@ impl TokensComponent {
 
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
-            "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back to list",
+            "Up/Down: Navigate | Enter: Edit/Confirm | ESC: Back",
             Style::default().fg(Color::DarkGray),
         )]));
 
@@ -1050,8 +1177,8 @@ impl TokensComponent {
     ) {
         let chunks = Layout::vertical([
             Constraint::Length(5), // Account info
+            Constraint::Length(3), // Options (Unlimited checkbox)
             Constraint::Length(5), // Supply cap
-            Constraint::Length(3), // Unlimited checkbox
             Constraint::Length(5), // Confirm button
             Constraint::Min(0),    // Status/help
         ])
@@ -1089,7 +1216,40 @@ impl TokensComponent {
         );
         f.render_widget(info_widget, chunks[0]);
 
-        // Supply cap input - always show cursor when focused (direct input mode)
+        // Options (Unlimited checkbox) - now in chunks[1]
+        let checkbox_style = if focused_field == GenesisField::Unlimited {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let checkbox_text = if unlimited {
+            "[x] Unlimited"
+        } else {
+            "[ ] Unlimited"
+        };
+
+        let checkbox_widget = Paragraph::new(vec![Line::from(vec![Span::styled(
+            checkbox_text,
+            checkbox_style,
+        )])])
+        .block(
+            Block::default()
+                .title(if focused_field == GenesisField::Unlimited {
+                    "> Options"
+                } else {
+                    "  Options"
+                })
+                .borders(Borders::ALL)
+                .border_style(if focused_field == GenesisField::Unlimited {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+        );
+        f.render_widget(checkbox_widget, chunks[1]);
+
+        // Supply cap input - now in chunks[2]
         let supply_style = if focused_field == GenesisField::SupplyCap {
             if unlimited {
                 Style::default().fg(Color::DarkGray) // Disabled when unlimited is checked
@@ -1135,40 +1295,7 @@ impl TokensComponent {
                     Style::default().fg(Color::DarkGray)
                 }),
         );
-        f.render_widget(supply_widget, chunks[1]);
-
-        // Unlimited checkbox
-        let checkbox_style = if focused_field == GenesisField::Unlimited {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
-        let checkbox_text = if unlimited {
-            "[x] Unlimited"
-        } else {
-            "[ ] Unlimited"
-        };
-
-        let checkbox_widget = Paragraph::new(vec![Line::from(vec![Span::styled(
-            checkbox_text,
-            checkbox_style,
-        )])])
-        .block(
-            Block::default()
-                .title(if focused_field == GenesisField::Unlimited {
-                    "> Options"
-                } else {
-                    "  Options"
-                })
-                .borders(Borders::ALL)
-                .border_style(if focused_field == GenesisField::Unlimited {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                }),
-        );
-        f.render_widget(checkbox_widget, chunks[2]);
+        f.render_widget(supply_widget, chunks[2]);
 
         // Confirm button
         let confirm_style = if focused_field == GenesisField::Confirm {
@@ -1218,9 +1345,9 @@ impl TokensComponent {
         status_lines.push(Line::from(""));
         status_lines.push(Line::from(vec![Span::styled(
             if focused_field == GenesisField::Unlimited {
-                "[Space/Enter] Toggle  [Tab] Next  [Esc] Back"
+                "Space/Enter: Toggle | Up/Down: Navigate | ESC: Back"
             } else {
-                "[Tab] Next field  [Enter] Confirm  [c] Clear  [Esc] Back"
+                "Up/Down: Navigate | Enter: Edit/Confirm | ESC: Back"
             },
             Style::default().fg(Color::DarkGray),
         )]));
@@ -1265,61 +1392,114 @@ impl Component for TokensComponent {
 
         match self.mode {
             TokensMode::List => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        self.next_token();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.prev_token();
-                    }
-                    KeyCode::Char('t') => {
-                        // Enter transfer mode
-                        if !self.balances.is_empty() {
-                            self.mode = TokensMode::Transfer;
-                            self.clear_transfer();
-                        } else {
-                            self.error_message = Some("No tokens to transfer".to_string());
+                let ops = TokenOperation::all();
+                match self.list_focus {
+                    ListFocus::Tokens => {
+                        match key.code {
+                            KeyCode::Down => {
+                                // If at last item or list is empty, move to Operations
+                                if self.balances.is_empty()
+                                    || self.selected_index >= self.balances.len().saturating_sub(1)
+                                {
+                                    self.list_focus = ListFocus::Operations;
+                                    self.selected_operation = 0;
+                                } else {
+                                    self.next_token();
+                                }
+                            }
+                            KeyCode::Up => {
+                                // If at first item, wrap to Operations (bottom)
+                                if self.selected_index == 0 {
+                                    self.list_focus = ListFocus::Operations;
+                                    self.selected_operation = ops.len() - 1;
+                                } else {
+                                    self.prev_token();
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Select current token for transfer
+                                if !self.balances.is_empty() {
+                                    self.mode = TokensMode::Transfer;
+                                    self.clear_transfer();
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    KeyCode::Char('m') => {
-                        // Enter mint mode
-                        self.mode = TokensMode::Mint;
-                        self.clear_mint();
-                    }
-                    KeyCode::Char('n') => {
-                        // Enter genesis mode (create new token)
-                        self.mode = TokensMode::Genesis;
-                        self.clear_genesis();
-                    }
-                    KeyCode::Char('r') => {
-                        self.action_tx.send(Action::Rescan)?;
-                    }
-                    KeyCode::Enter => {
-                        // Select token and enter transfer mode
-                        if !self.balances.is_empty() {
-                            self.action_tx
-                                .send(Action::SelectToken(self.selected_index))?;
+                    ListFocus::Operations => {
+                        match key.code {
+                            KeyCode::Down => {
+                                // If at last operation, wrap to List (top)
+                                if self.selected_operation >= ops.len() - 1 {
+                                    if !self.balances.is_empty() {
+                                        self.list_focus = ListFocus::Tokens;
+                                        self.selected_index = 0;
+                                        self.list_state.select(Some(0));
+                                    } else {
+                                        // Wrap within operations if list is empty
+                                        self.selected_operation = 0;
+                                    }
+                                } else {
+                                    self.selected_operation += 1;
+                                }
+                            }
+                            KeyCode::Up => {
+                                // If at first operation, move to List (bottom)
+                                if self.selected_operation == 0 {
+                                    if !self.balances.is_empty() {
+                                        self.list_focus = ListFocus::Tokens;
+                                        self.selected_index = self.balances.len() - 1;
+                                        self.list_state.select(Some(self.selected_index));
+                                    } else {
+                                        // Wrap within operations if list is empty
+                                        self.selected_operation = ops.len() - 1;
+                                    }
+                                } else {
+                                    self.selected_operation -= 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Execute selected operation
+                                if let Some(op) = ops.get(self.selected_operation) {
+                                    match op {
+                                        TokenOperation::Transfer => {
+                                            if !self.balances.is_empty() {
+                                                self.mode = TokensMode::Transfer;
+                                                self.clear_transfer();
+                                            } else {
+                                                self.error_message =
+                                                    Some("No tokens to transfer".to_string());
+                                            }
+                                        }
+                                        TokenOperation::Mint => {
+                                            self.mode = TokensMode::Mint;
+                                            self.clear_mint();
+                                        }
+                                        TokenOperation::Genesis => {
+                                            self.mode = TokensMode::Genesis;
+                                            self.clear_genesis();
+                                        }
+                                        TokenOperation::Rescan => {
+                                            self.action_tx.send(Action::Rescan)?;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    _ => {}
                 }
             }
             TokensMode::Transfer | TokensMode::Mint | TokensMode::Genesis => {
                 // Check if we're on an input field (Recipient or Amount)
                 let on_input_field = self.needs_direct_input();
 
-                if on_input_field {
-                    // Direct input mode - process characters immediately
+                if self.is_editing && on_input_field {
+                    // Editing mode - process characters
                     match key.code {
                         KeyCode::Esc => {
-                            // Return to list mode
-                            self.mode = TokensMode::List;
-                        }
-                        KeyCode::Tab | KeyCode::Down => {
-                            self.next_field();
-                        }
-                        KeyCode::BackTab | KeyCode::Up => {
-                            self.prev_field();
+                            // Exit editing mode
+                            self.is_editing = false;
                         }
                         KeyCode::Char(c) => {
                             self.handle_char(c);
@@ -1328,21 +1508,24 @@ impl Component for TokensComponent {
                             self.handle_backspace();
                         }
                         KeyCode::Enter => {
+                            // Exit editing and move to next field
+                            self.is_editing = false;
                             self.next_field();
                         }
                         _ => {}
                     }
                 } else {
-                    // Not on input field - handle navigation and actions
+                    // Navigation mode - handle field switching and actions
                     match key.code {
                         KeyCode::Esc => {
                             // Return to list mode
                             self.mode = TokensMode::List;
+                            self.list_focus = ListFocus::Operations;
                         }
-                        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                        KeyCode::Down => {
                             self.next_field();
                         }
-                        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Up => {
                             self.prev_field();
                         }
                         KeyCode::Char(' ') if self.mode == TokensMode::Genesis => {
@@ -1352,14 +1535,11 @@ impl Component for TokensComponent {
                             }
                         }
                         KeyCode::Enter => {
-                            let is_confirm = match self.mode {
-                                TokensMode::Transfer => {
-                                    self.transfer_field == TransferField::Confirm
-                                }
-                                TokensMode::Mint => self.mint_field == TransferField::Confirm,
-                                TokensMode::Genesis => self.genesis_field == GenesisField::Confirm,
-                                TokensMode::List => false,
-                            };
+                            // On input field - start editing
+                            if on_input_field {
+                                self.is_editing = true;
+                                return Ok(());
+                            }
 
                             // Handle unlimited toggle on Enter in Genesis mode
                             if self.mode == TokensMode::Genesis
@@ -1368,6 +1548,15 @@ impl Component for TokensComponent {
                                 self.genesis_unlimited = !self.genesis_unlimited;
                                 return Ok(());
                             }
+
+                            let is_confirm = match self.mode {
+                                TokensMode::Transfer => {
+                                    self.transfer_field == TransferField::Confirm
+                                }
+                                TokensMode::Mint => self.mint_field == TransferField::Confirm,
+                                TokensMode::Genesis => self.genesis_field == GenesisField::Confirm,
+                                TokensMode::List => false,
+                            };
 
                             if is_confirm {
                                 // Validate and execute
@@ -1397,12 +1586,6 @@ impl Component for TokensComponent {
                                 }
                             }
                         }
-                        KeyCode::Char('c') => match self.mode {
-                            TokensMode::Transfer => self.clear_transfer(),
-                            TokensMode::Mint => self.clear_mint(),
-                            TokensMode::Genesis => self.clear_genesis(),
-                            TokensMode::List => {}
-                        },
                         _ => {}
                     }
                 }
@@ -1419,6 +1602,8 @@ impl Component for TokensComponent {
             &self.balances,
             self.selected_index,
             self.mode,
+            self.list_focus,
+            self.selected_operation,
             &self.transfer_recipient,
             &self.transfer_amount,
             self.transfer_field,
