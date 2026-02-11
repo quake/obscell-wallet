@@ -32,6 +32,16 @@ pub enum TokensMode {
     Mint,
     /// Create new token (genesis).
     Genesis,
+    /// Entering passphrase for signing.
+    EnteringPassphrase,
+}
+
+/// Pending token action that requires passphrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingTokenAction {
+    Transfer,
+    Mint,
+    Genesis,
 }
 
 /// Focus state within List mode.
@@ -116,6 +126,11 @@ pub struct TokensComponent {
     // Messages
     pub error_message: Option<String>,
     pub success_message: Option<String>,
+    // Passphrase input state
+    pub passphrase_input: String,
+    pub pending_action: Option<PendingTokenAction>,
+    /// Previous mode before entering passphrase (to return to on cancel)
+    previous_mode: TokensMode,
 }
 
 impl TokensComponent {
@@ -144,6 +159,9 @@ impl TokensComponent {
             genesis_field: GenesisField::Unlimited,
             error_message: None,
             success_message: None,
+            passphrase_input: String::new(),
+            pending_action: None,
+            previous_mode: TokensMode::List,
         }
     }
 
@@ -198,6 +216,20 @@ impl TokensComponent {
         self.genesis_unlimited = true;
         self.genesis_field = GenesisField::Unlimited;
         self.is_editing = false;
+    }
+
+    /// Start passphrase input mode for signing a transaction.
+    pub fn start_passphrase_input(&mut self, action: PendingTokenAction) {
+        self.previous_mode = self.mode;
+        self.passphrase_input.clear();
+        self.pending_action = Some(action);
+        self.error_message = None;
+        self.mode = TokensMode::EnteringPassphrase;
+    }
+
+    /// Check if component is in passphrase input mode.
+    pub fn is_entering_passphrase(&self) -> bool {
+        self.mode == TokensMode::EnteringPassphrase
     }
 
     /// Parse genesis supply cap to u128.
@@ -268,7 +300,7 @@ impl TokensComponent {
                     GenesisField::Confirm => GenesisField::Unlimited,
                 };
             }
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::EnteringPassphrase => {}
         }
     }
 
@@ -295,7 +327,7 @@ impl TokensComponent {
                     GenesisField::Confirm => GenesisField::SupplyCap,
                 };
             }
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::EnteringPassphrase => {}
         }
     }
 
@@ -331,7 +363,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::EnteringPassphrase => {}
         }
     }
 
@@ -361,7 +393,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::EnteringPassphrase => {}
         }
     }
 
@@ -405,7 +437,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::EnteringPassphrase => {}
         }
     }
 
@@ -527,7 +559,15 @@ impl TokensComponent {
         _is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
+        passphrase_input: &str,
+        pending_action: Option<PendingTokenAction>,
     ) {
+        // Show passphrase overlay if in EnteringPassphrase mode
+        if mode == TokensMode::EnteringPassphrase {
+            Self::draw_passphrase_overlay(f, area, passphrase_input, pending_action, error_message);
+            return;
+        }
+
         match mode {
             TokensMode::List => {
                 Self::draw_list_mode(
@@ -580,6 +620,9 @@ impl TokensComponent {
                     error_message,
                     success_message,
                 );
+            }
+            TokensMode::EnteringPassphrase => {
+                // Handled above, but compiler needs exhaustive match
             }
         }
     }
@@ -1360,10 +1403,76 @@ impl TokensComponent {
         f.render_widget(status_widget, chunks[4]);
     }
 
+    fn draw_passphrase_overlay(
+        f: &mut Frame,
+        area: Rect,
+        passphrase_input: &str,
+        pending_action: Option<PendingTokenAction>,
+        error_message: Option<&str>,
+    ) {
+        let action_name = match pending_action {
+            Some(PendingTokenAction::Transfer) => "Transfer Token",
+            Some(PendingTokenAction::Mint) => "Mint Token",
+            Some(PendingTokenAction::Genesis) => "Create Token",
+            None => "Sign Transaction",
+        };
+
+        let block = Block::default()
+            .title(format!("Sign: {}", action_name))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+        // Instructions
+        let instructions = Paragraph::new(vec![Line::from(vec![Span::styled(
+            "Enter your wallet passphrase to sign and send the transaction:",
+            Style::default().fg(Color::Gray),
+        )])]);
+        f.render_widget(instructions, chunks[0]);
+
+        // Passphrase input (show masked)
+        let masked: String = "*".repeat(passphrase_input.len());
+        let input_widget = Paragraph::new(masked)
+            .style(Style::default().fg(Color::White))
+            .block(
+                Block::default()
+                    .title("Passphrase")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(input_widget, chunks[1]);
+
+        // Error message or hint
+        let hint_text = if let Some(err) = error_message {
+            Line::from(vec![Span::styled(
+                format!("Error: {}", err),
+                Style::default().fg(Color::Red),
+            )])
+        } else {
+            Line::from(vec![Span::styled(
+                "[Enter] Sign & Send    [Esc] Cancel",
+                Style::default().fg(Color::DarkGray),
+            )])
+        };
+        let hint = Paragraph::new(vec![hint_text]);
+        f.render_widget(hint, chunks[2]);
+    }
+
     /// Check if we're on an input field that needs direct character input.
     pub fn needs_direct_input(&self) -> bool {
         match self.mode {
             TokensMode::List => false,
+            TokensMode::EnteringPassphrase => true,
             TokensMode::Transfer => matches!(
                 self.transfer_field,
                 TransferField::Recipient | TransferField::Amount
@@ -1378,14 +1487,57 @@ impl TokensComponent {
         }
     }
 
-    /// Check if actively editing (typing input).
+    /// Check if actively editing (typing input) or entering passphrase.
     pub fn is_editing(&self) -> bool {
-        self.is_editing
+        self.is_editing || self.mode == TokensMode::EnteringPassphrase
     }
 }
 
 impl Component for TokensComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle passphrase input mode first
+        if self.mode == TokensMode::EnteringPassphrase {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel and return to previous mode
+                    self.mode = self.previous_mode;
+                    self.passphrase_input.clear();
+                    self.pending_action = None;
+                }
+                KeyCode::Enter => {
+                    if !self.passphrase_input.is_empty() {
+                        // Send action with passphrase based on pending action
+                        match self.pending_action {
+                            Some(PendingTokenAction::Transfer) => {
+                                self.action_tx.send(Action::TransferTokenWithPassphrase(
+                                    self.passphrase_input.clone(),
+                                ))?;
+                            }
+                            Some(PendingTokenAction::Mint) => {
+                                self.action_tx.send(Action::MintTokenWithPassphrase(
+                                    self.passphrase_input.clone(),
+                                ))?;
+                            }
+                            Some(PendingTokenAction::Genesis) => {
+                                self.action_tx.send(Action::CreateTokenWithPassphrase(
+                                    self.passphrase_input.clone(),
+                                ))?;
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.passphrase_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.passphrase_input.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         // Clear previous messages on any input
         self.error_message = None;
 
@@ -1554,7 +1706,7 @@ impl Component for TokensComponent {
                                 }
                                 TokensMode::Mint => self.mint_field == TransferField::Confirm,
                                 TokensMode::Genesis => self.genesis_field == GenesisField::Confirm,
-                                TokensMode::List => false,
+                                TokensMode::List | TokensMode::EnteringPassphrase => false,
                             };
 
                             if is_confirm {
@@ -1563,24 +1715,28 @@ impl Component for TokensComponent {
                                     TokensMode::Transfer => self.validate_transfer(),
                                     TokensMode::Mint => self.validate_mint(),
                                     TokensMode::Genesis => self.validate_genesis(),
-                                    TokensMode::List => None,
+                                    TokensMode::List | TokensMode::EnteringPassphrase => None,
                                 };
 
                                 if let Some(err) = validation_error {
                                     self.error_message = Some(err);
                                 } else {
-                                    // Send the action
+                                    // Start passphrase input instead of directly sending
                                     match self.mode {
                                         TokensMode::Transfer => {
-                                            self.action_tx.send(Action::TransferToken)?;
+                                            self.start_passphrase_input(
+                                                PendingTokenAction::Transfer,
+                                            );
                                         }
                                         TokensMode::Mint => {
-                                            self.action_tx.send(Action::MintToken)?;
+                                            self.start_passphrase_input(PendingTokenAction::Mint);
                                         }
                                         TokensMode::Genesis => {
-                                            self.action_tx.send(Action::CreateToken)?;
+                                            self.start_passphrase_input(
+                                                PendingTokenAction::Genesis,
+                                            );
                                         }
-                                        TokensMode::List => {}
+                                        TokensMode::List | TokensMode::EnteringPassphrase => {}
                                     }
                                 }
                             }
@@ -1588,6 +1744,9 @@ impl Component for TokensComponent {
                         _ => {}
                     }
                 }
+            }
+            TokensMode::EnteringPassphrase => {
+                // Passphrase input is handled earlier in this function
             }
         }
         Ok(())
@@ -1615,6 +1774,8 @@ impl Component for TokensComponent {
             self.is_editing,
             self.error_message.as_deref(),
             self.success_message.as_deref(),
+            &self.passphrase_input,
+            self.pending_action,
         );
     }
 }

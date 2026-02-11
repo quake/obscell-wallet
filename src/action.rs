@@ -33,6 +33,8 @@ pub enum Action {
 
     // Settings actions
     SwitchNetwork(String),
+    ExportWalletBackup,
+    ExportWalletBackupWithPassphrase(String),
 
     // Account actions
     CreateAccount,
@@ -43,6 +45,7 @@ pub enum Action {
 
     // Transaction actions
     SendTransaction,
+    SendTransactionWithPassphrase(String),
     Rescan,
     FullRescan,
 
@@ -52,8 +55,11 @@ pub enum Action {
     // Token actions
     SelectToken(usize),
     TransferToken,
+    TransferTokenWithPassphrase(String),
     MintToken,
+    MintTokenWithPassphrase(String),
     CreateToken,
+    CreateTokenWithPassphrase(String),
 
     // Input handling
     EnterInput,
@@ -80,4 +86,11 @@ pub enum Action {
     SetMiningInterval(u64),
     SendFaucet,
     RefreshDevStatus,
+
+    // Wallet setup actions
+    GenerateMnemonic,
+    CreateWallet,
+    RestoreFromMnemonic,
+    RestoreFromBackup,
+    WalletSetupComplete,
 }

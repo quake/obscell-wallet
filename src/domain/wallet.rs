@@ -32,6 +32,10 @@ pub struct WalletMeta {
     pub seed_salt: [u8; SALT_SIZE],
     /// Number of accounts derived from this wallet.
     pub account_count: u32,
+    /// Encrypted mnemonic phrase (for backup export).
+    /// This is encrypted with the same salt as the seed.
+    #[serde(default)]
+    pub encrypted_mnemonic: Option<Vec<u8>>,
 }
 
 /// Data for export (before encryption).
@@ -73,10 +77,15 @@ pub fn create_wallet_meta(
     let key = crate::domain::crypto::derive_key(passphrase, &seed_salt)?;
     let encrypted_seed = encrypt(&key, seed.as_bytes())?;
 
+    // Also encrypt the mnemonic phrase for backup export
+    let mnemonic_bytes = mnemonic.phrase().as_bytes();
+    let encrypted_mnemonic = encrypt(&key, mnemonic_bytes)?;
+
     Ok(WalletMeta {
         encrypted_seed,
         seed_salt,
         account_count: 0,
+        encrypted_mnemonic: Some(encrypted_mnemonic),
     })
 }
 
@@ -172,6 +181,21 @@ pub fn decrypt_spend_key(
 /// Verify passphrase by attempting to decrypt the seed.
 pub fn verify_passphrase(meta: &WalletMeta, passphrase: &str) -> bool {
     decrypt_seed(meta, passphrase).is_ok()
+}
+
+/// Decrypt mnemonic from wallet metadata for backup export.
+pub fn decrypt_mnemonic(meta: &WalletMeta, passphrase: &str) -> Result<Mnemonic, &'static str> {
+    let encrypted = meta
+        .encrypted_mnemonic
+        .as_ref()
+        .ok_or("No mnemonic stored in wallet")?;
+
+    let key = crate::domain::crypto::derive_key(passphrase, &meta.seed_salt)?;
+    let decrypted = decrypt(&key, encrypted)?;
+
+    let phrase =
+        std::str::from_utf8(&decrypted).map_err(|_| "Invalid mnemonic encoding in wallet")?;
+    Mnemonic::new(phrase, Language::English).map_err(|_| "Invalid mnemonic in wallet")
 }
 
 /// Export wallet to encrypted string.
@@ -348,5 +372,23 @@ mod tests {
 
         assert!(verify_passphrase(&meta, "correct"));
         assert!(!verify_passphrase(&meta, "wrong"));
+    }
+
+    #[test]
+    fn test_decrypt_mnemonic_roundtrip() {
+        let mnemonic = generate_mnemonic();
+        let passphrase = "test_passphrase";
+
+        // Create wallet which stores encrypted mnemonic
+        let meta = create_wallet_meta(&mnemonic, passphrase).unwrap();
+        assert!(meta.encrypted_mnemonic.is_some());
+
+        // Decrypt and verify it matches original
+        let decrypted = decrypt_mnemonic(&meta, passphrase).unwrap();
+        assert_eq!(decrypted.phrase(), mnemonic.phrase());
+
+        // Wrong passphrase should fail
+        let result = decrypt_mnemonic(&meta, "wrong");
+        assert!(result.is_err());
     }
 }

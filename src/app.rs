@@ -14,8 +14,10 @@ use crate::{
     cli::Args,
     components::{
         Component, accounts::AccountsComponent, dev::DevComponent, history::HistoryComponent,
-        receive::ReceiveComponent, send::{AddressType, SendComponent}, settings::SettingsComponent,
-        tokens::TokensComponent,
+        receive::ReceiveComponent, send::{AddressType, SendComponent, SendMode},
+        settings::SettingsComponent,
+        settings::SettingsMode,
+        tokens::TokensComponent, wallet_setup::{SetupMode, WalletSetupComponent},
     },
     config::Config,
     domain::{
@@ -33,6 +35,15 @@ use crate::{
     infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::{Store, SELECTED_NETWORK_KEY}},
     tui::{Event, Frame, Tui},
 };
+
+/// Application mode - whether we're in wallet setup or normal operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    /// First-time setup or wallet needs to be created/restored
+    WalletSetup,
+    /// Normal tab-based operation
+    Normal,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -109,6 +120,7 @@ pub struct App {
     pub should_quit: bool,
     pub should_suspend: bool,
     pub config: Config,
+    pub mode: AppMode,
     pub active_tab: Tab,
     pub last_tick_key_events: Vec<KeyEvent>,
     pub action_tx: UnboundedSender<Action>,
@@ -118,6 +130,9 @@ pub struct App {
     pub scanner: Scanner,
     pub account_manager: AccountManager,
     pub wallet_meta: Option<WalletMeta>,
+    /// Session passphrase - kept in memory after wallet setup/unlock
+    pub session_passphrase: Option<String>,
+    pub wallet_setup_component: WalletSetupComponent,
     pub settings_component: SettingsComponent,
     pub accounts_component: AccountsComponent,
     pub receive_component: ReceiveComponent,
@@ -200,10 +215,21 @@ impl App {
         // Load existing wallet meta or initialize as None
         let wallet_meta = store.load_wallet_meta().ok().flatten();
 
+        // Determine initial mode based on whether wallet exists
+        let initial_mode = if wallet_meta.is_some() {
+            AppMode::Normal
+        } else {
+            AppMode::WalletSetup
+        };
+
+        // Create wallet setup component
+        let wallet_setup_component = WalletSetupComponent::new(action_tx.clone());
+
         Ok(Self {
             should_quit: false,
             should_suspend: false,
             config,
+            mode: initial_mode,
             active_tab: Tab::Settings,
             last_tick_key_events: Vec::new(),
             action_tx,
@@ -213,6 +239,8 @@ impl App {
             scanner,
             account_manager,
             wallet_meta,
+            session_passphrase: None,
+            wallet_setup_component,
             settings_component,
             accounts_component,
             receive_component,
@@ -521,8 +549,26 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle wallet setup mode - route all key events to wallet setup component
+        if self.mode == AppMode::WalletSetup {
+            // Only allow Ctrl+C to quit
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.action_tx.send(Action::Quit)?;
+                return Ok(());
+            }
+            // Route to wallet setup component
+            self.wallet_setup_component.handle_key_event(key)?;
+            return Ok(());
+        }
+
+        // Normal mode
+        // Check if we're in an input mode that should capture all keystrokes
         let is_editing = match self.active_tab {
-            Tab::Send => self.send_component.is_editing,
+            Tab::Send => {
+                self.send_component.is_editing
+                    || self.send_component.mode == SendMode::EnteringPassphrase
+            }
+            Tab::Settings => self.settings_component.mode == SettingsMode::EnteringPassphrase,
             Tab::Tokens => self.tokens_component.is_editing(),
             Tab::Dev => self
                 .dev_component
@@ -545,6 +591,9 @@ impl App {
             match self.active_tab {
                 Tab::Send => {
                     self.send_component.handle_key_event(key)?;
+                }
+                Tab::Settings => {
+                    self.settings_component.handle_key_event(key)?;
                 }
                 Tab::Tokens => {
                     self.tokens_component.handle_key_event(key)?;
@@ -636,6 +685,13 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Result<()> {
+        // Handle wallet setup mode paste
+        if self.mode == AppMode::WalletSetup {
+            self.wallet_setup_component.paste(text);
+            return Ok(());
+        }
+
+        // Normal mode paste
         match self.active_tab {
             Tab::Send => {
                 self.send_component.paste(text);
@@ -774,21 +830,24 @@ impl App {
                 self.should_suspend = true;
             }
             Action::CreateAccount => {
-                // TODO: Implement proper wallet initialization UI with passphrase prompt
-                // For now, use a default passphrase for development
-                const DEV_PASSPHRASE: &str = "dev_passphrase";
+                // Use session passphrase if available, otherwise show error
+                let passphrase = match &self.session_passphrase {
+                    Some(p) => p.clone(),
+                    None => {
+                        // No passphrase - this shouldn't happen in normal flow
+                        // since wallet setup should have been completed
+                        self.status_message = "Error: Wallet not unlocked".to_string();
+                        return Ok(());
+                    }
+                };
 
-                // Initialize wallet if needed
-                let wallet_meta = if let Some(ref mut meta) = self.wallet_meta {
-                    meta
-                } else {
-                    // Create new wallet with mnemonic
-                    let mnemonic = crate::domain::wallet::generate_mnemonic();
-                    let meta = crate::domain::wallet::create_wallet_meta(&mnemonic, DEV_PASSPHRASE)
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                    self.store.save_wallet_meta(&meta)?;
-                    self.wallet_meta = Some(meta);
-                    self.wallet_meta.as_mut().unwrap()
+                // Wallet should already exist at this point
+                let wallet_meta = match &mut self.wallet_meta {
+                    Some(meta) => meta,
+                    None => {
+                        self.status_message = "Error: Wallet not initialized".to_string();
+                        return Ok(());
+                    }
                 };
 
                 let account = self.account_manager.create_account(
@@ -797,7 +856,7 @@ impl App {
                         self.account_manager.list_accounts()?.len() + 1
                     ),
                     wallet_meta,
-                    DEV_PASSPHRASE,
+                    &passphrase,
                 )?;
                 let accounts = self.account_manager.list_accounts()?;
                 let new_index = accounts.len().saturating_sub(1);
@@ -907,6 +966,10 @@ impl App {
                 );
             }
             Action::SendTransaction => {
+                // This action is no longer used directly - we use SendTransactionWithPassphrase
+                // The send component now prompts for passphrase before sending
+            }
+            Action::SendTransactionWithPassphrase(ref passphrase) => {
                 // Get send parameters
                 let recipient = self.send_component.recipient.clone();
                 let amount = self.send_component.parse_amount();
@@ -992,19 +1055,35 @@ impl App {
                         }
                     };
 
-                    // Sign the transaction
-                    // TODO: Prompt for passphrase when signing
-                    const DEV_PASSPHRASE: &str = "dev_passphrase";
-                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
-                        color_eyre::eyre::eyre!("Wallet not initialized")
-                    })?;
-                    let spend_key_bytes = account
-                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                    let spend_key =
-                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
-                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
-                        })?;
+                    // Sign the transaction using provided passphrase
+                    let wallet_meta = match &self.wallet_meta {
+                        Some(meta) => meta,
+                        None => {
+                            self.send_component.error_message =
+                                Some("Wallet not initialized".to_string());
+                            self.status_message = "Send failed: no wallet".to_string();
+                            return Ok(());
+                        }
+                    };
+
+                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Invalid passphrase: {}", e));
+                            return Ok(());
+                        }
+                    };
+
+                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Invalid spend key: {}", e));
+                            self.status_message = "Send failed: key error".to_string();
+                            return Ok(());
+                        }
+                    };
 
                     let signed_tx = match StealthTxBuilder::sign(
                         built_tx.clone(),
@@ -1049,13 +1128,15 @@ impl App {
                                 info!("Failed to remove spent cells: {}", e);
                             }
 
-                            // Clear send form inputs but keep success message visible
+                            // Clear send form and passphrase
                             self.send_component.recipient.clear();
                             self.send_component.amount.clear();
                             self.send_component.focused_field =
                                 crate::components::send::SendField::Recipient;
                             self.send_component.is_editing = false;
                             self.send_component.error_message = None;
+                            self.send_component.mode = SendMode::Form;
+                            self.send_component.passphrase_input.clear();
                             // Note: success_message is kept to show the tx hash to user
                         }
                         Err(e) => {
@@ -1075,6 +1156,15 @@ impl App {
                 self.status_message = format!("Selected token {}", index);
             }
             Action::TransferToken => {
+                // No-op: passphrase flow now handled via TransferTokenWithPassphrase
+            }
+            Action::MintToken => {
+                // No-op: passphrase flow now handled via MintTokenWithPassphrase
+            }
+            Action::CreateToken => {
+                // No-op: passphrase flow now handled via CreateTokenWithPassphrase
+            }
+            Action::TransferTokenWithPassphrase(ref passphrase) => {
                 // Get transfer parameters from tokens component
                 let recipient = self.tokens_component.transfer_recipient.clone();
                 let amount = self.tokens_component.parse_transfer_amount();
@@ -1205,15 +1295,19 @@ impl App {
                         }
                     };
 
-                    // Sign the transaction
-                    // TODO: Prompt for passphrase when signing
-                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    // Sign the transaction using provided passphrase
                     let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
                         color_eyre::eyre::eyre!("Wallet not initialized")
                     })?;
-                    let spend_key_bytes = account
-                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid passphrase: {}", e));
+                            self.status_message = "CT transfer failed: invalid passphrase".to_string();
+                            return Ok(());
+                        }
+                    };
                     let spend_key =
                         secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
                             color_eyre::eyre::eyre!("Invalid spend key: {}", e)
@@ -1248,9 +1342,6 @@ impl App {
                             ));
                             self.status_message = format!("Transferred {} CT tokens", amount_value);
 
-                            // Note: Transaction history is now derived from on-chain data,
-                            // not recorded at send time. History will update after rescan.
-
                             // Remove spent CT cells from store
                             let spent_out_points: Vec<_> =
                                 input_cells.iter().map(|c| c.out_point.clone()).collect();
@@ -1284,8 +1375,12 @@ impl App {
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
 
-                            // Clear transfer form
+                            // Clear transfer form and passphrase
                             self.tokens_component.clear_transfer();
+                            self.tokens_component.passphrase_input.clear();
+                            self.tokens_component.pending_action = None;
+                            self.tokens_component.mode =
+                                crate::components::tokens::TokensMode::List;
                         }
                         Err(e) => {
                             self.tokens_component.error_message =
@@ -1300,7 +1395,7 @@ impl App {
                     self.status_message = "CT transfer failed: missing data".to_string();
                 }
             }
-            Action::MintToken => {
+            Action::MintTokenWithPassphrase(ref passphrase) => {
                 // Get mint parameters from tokens component
                 let recipient = self.tokens_component.mint_recipient.clone();
                 let amount = self.tokens_component.parse_mint_amount();
@@ -1415,15 +1510,19 @@ impl App {
                         }
                     };
 
-                    // Sign the transaction (ct-info cell uses stealth-lock, requires secp256k1 signature)
-                    // TODO: Prompt for passphrase when signing
-                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    // Sign the transaction using provided passphrase
                     let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
                         color_eyre::eyre::eyre!("Wallet not initialized")
                     })?;
-                    let spend_key_bytes = account
-                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid passphrase: {}", e));
+                            self.status_message = "CT mint failed: invalid passphrase".to_string();
+                            return Ok(());
+                        }
+                    };
                     let spend_key =
                         secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
                             color_eyre::eyre::eyre!("Invalid spend key: {}", e)
@@ -1455,9 +1554,6 @@ impl App {
                             ));
                             self.status_message = format!("Minted {} CT tokens", amount_value);
 
-                            // Note: Transaction history is now derived from on-chain data,
-                            // not recorded at send time. History will update after rescan.
-
                             // Remove spent funding cell from store
                             if let Err(e) = self.store.remove_spent_cells(
                                 account.id,
@@ -1466,8 +1562,12 @@ impl App {
                                 info!("Failed to remove spent funding cell: {}", e);
                             }
 
-                            // Clear mint form
+                            // Clear mint form and passphrase
                             self.tokens_component.clear_mint();
+                            self.tokens_component.passphrase_input.clear();
+                            self.tokens_component.pending_action = None;
+                            self.tokens_component.mode =
+                                crate::components::tokens::TokensMode::List;
                         }
                         Err(e) => {
                             // Enhanced error logging for troubleshooting
@@ -1492,7 +1592,7 @@ impl App {
                     self.status_message = "CT mint failed: missing data".to_string();
                 }
             }
-            Action::CreateToken => {
+            Action::CreateTokenWithPassphrase(ref passphrase) => {
                 // Genesis: Create a new CT token
                 if let Some(ref account) = self.tokens_component.account.clone() {
                     // Get supply cap from genesis form
@@ -1572,15 +1672,19 @@ impl App {
                     // Remember the token ID and ct-info lock args for later use
                     let token_id = built_tx.token_id;
 
-                    // Sign the transaction with the funding cell's stealth key
-                    // TODO: Prompt for passphrase when signing
-                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    // Sign the transaction using provided passphrase
                     let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
                         color_eyre::eyre::eyre!("Wallet not initialized")
                     })?;
-                    let spend_key_bytes = account
-                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.tokens_component.error_message =
+                                Some(format!("Invalid passphrase: {}", e));
+                            self.status_message = "Genesis failed: invalid passphrase".to_string();
+                            return Ok(());
+                        }
+                    };
                     let spend_key =
                         secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
                             color_eyre::eyre::eyre!("Invalid spend key: {}", e)
@@ -1617,9 +1721,6 @@ impl App {
                                 &hex::encode(&token_id[28..])
                             );
 
-                            // Note: Transaction history is now derived from on-chain data,
-                            // not recorded at send time. History will update after rescan.
-
                             // Remove spent stealth cell from store
                             if let Err(e) = self.store.remove_spent_cells(
                                 account.id,
@@ -1629,7 +1730,6 @@ impl App {
                             }
 
                             // Trigger a rescan to detect the new ct-info cell
-                            // (The transaction needs to be confirmed first, so we inform user)
                             self.status_message
                                 .push_str(" - Press 'r' to rescan after confirmation");
 
@@ -1646,8 +1746,10 @@ impl App {
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
 
-                            // Clear genesis form and return to list
+                            // Clear genesis form, passphrase, and return to list
                             self.tokens_component.clear_genesis();
+                            self.tokens_component.passphrase_input.clear();
+                            self.tokens_component.pending_action = None;
                             self.tokens_component.mode =
                                 crate::components::tokens::TokensMode::List;
                         }
@@ -1869,6 +1971,50 @@ impl App {
                 }
                 self.status_message = "Dev status refreshed".to_string();
             }
+            Action::ExportWalletBackup => {
+                // This action is no longer used directly - we use ExportWalletBackupWithPassphrase
+                // But keep it for backwards compatibility, it will just show an error
+                self.settings_component.error_message =
+                    Some("Please use passphrase input to export".to_string());
+            }
+            Action::ExportWalletBackupWithPassphrase(ref passphrase) => {
+                // Export wallet backup string with provided passphrase
+                match &self.wallet_meta {
+                    Some(wallet_meta) => {
+                        // Verify the passphrase first by trying to decrypt mnemonic
+                        match crate::domain::wallet::decrypt_mnemonic(wallet_meta, passphrase) {
+                            Ok(mnemonic) => {
+                                // Get account count
+                                let account_count =
+                                    self.account_manager.list_accounts()?.len() as u32;
+                                match crate::domain::wallet::export_wallet(
+                                    &mnemonic,
+                                    account_count,
+                                    passphrase,
+                                ) {
+                                    Ok(backup_string) => {
+                                        self.settings_component.passphrase_input.clear();
+                                        self.settings_component.set_backup_string(backup_string);
+                                        self.settings_component.error_message = None;
+                                    }
+                                    Err(e) => {
+                                        self.settings_component.error_message =
+                                            Some(format!("Export failed: {}", e));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.settings_component.error_message =
+                                    Some(format!("Invalid passphrase: {}", e));
+                            }
+                        }
+                    }
+                    None => {
+                        self.settings_component.error_message =
+                            Some("Wallet not initialized".to_string());
+                    }
+                }
+            }
             Action::SwitchNetwork(ref network) => {
                 // Switch to a different network
                 let new_config = Config::from_network(network);
@@ -1991,20 +2137,174 @@ impl App {
 
                 self.status_message = format!("Switched to {}", self.config.network.name);
             }
+            // Wallet setup actions
+            Action::GenerateMnemonic => {
+                // Generate a new mnemonic and set it in the component
+                let mnemonic = crate::domain::wallet::generate_mnemonic();
+                self.wallet_setup_component.set_mnemonic(mnemonic.phrase());
+                self.wallet_setup_component.mode = SetupMode::ShowMnemonic;
+            }
+            Action::CreateWallet => {
+                // Create wallet from mnemonic and passphrase
+                let mnemonic_str = self.wallet_setup_component.get_mnemonic();
+                let passphrase = self.wallet_setup_component.get_passphrase().to_string();
+
+                // Parse mnemonic first
+                let mnemonic = match crate::domain::wallet::parse_mnemonic(&mnemonic_str) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        self.wallet_setup_component.error_message =
+                            Some(format!("Invalid mnemonic: {}", e));
+                        return Ok(());
+                    }
+                };
+
+                match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                    Ok(meta) => {
+                        // Save to store
+                        if let Err(e) = self.store.save_wallet_meta(&meta) {
+                            self.wallet_setup_component.error_message =
+                                Some(format!("Failed to save wallet: {}", e));
+                            return Ok(());
+                        }
+                        // Update app state
+                        self.wallet_meta = Some(meta);
+                        self.session_passphrase = Some(passphrase);
+                        // Switch to normal mode
+                        self.mode = AppMode::Normal;
+                        self.wallet_setup_component.reset();
+                        self.status_message = "Wallet created successfully!".to_string();
+                    }
+                    Err(e) => {
+                        self.wallet_setup_component.error_message =
+                            Some(format!("Failed to create wallet: {}", e));
+                    }
+                }
+            }
+            Action::RestoreFromMnemonic => {
+                // Restore wallet from mnemonic
+                let mnemonic_str = self.wallet_setup_component.get_mnemonic();
+                let passphrase = self.wallet_setup_component.get_passphrase().to_string();
+
+                // Parse and validate mnemonic first
+                let mnemonic = match crate::domain::wallet::parse_mnemonic(&mnemonic_str) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        self.wallet_setup_component.error_message =
+                            Some(format!("Invalid mnemonic: {}", e));
+                        return Ok(());
+                    }
+                };
+
+                match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                    Ok(meta) => {
+                        // Save to store
+                        if let Err(e) = self.store.save_wallet_meta(&meta) {
+                            self.wallet_setup_component.error_message =
+                                Some(format!("Failed to save wallet: {}", e));
+                            return Ok(());
+                        }
+                        // Update app state
+                        self.wallet_meta = Some(meta);
+                        self.session_passphrase = Some(passphrase);
+                        // Switch to normal mode
+                        self.mode = AppMode::Normal;
+                        self.wallet_setup_component.reset();
+                        self.status_message = "Wallet restored from mnemonic!".to_string();
+                    }
+                    Err(e) => {
+                        self.wallet_setup_component.error_message =
+                            Some(format!("Failed to restore wallet: {}", e));
+                    }
+                }
+            }
+            Action::RestoreFromBackup => {
+                // Restore wallet from backup string
+                let backup_string = self.wallet_setup_component.get_backup_input().to_string();
+                let passphrase = self.wallet_setup_component.get_passphrase().to_string();
+
+                // Import returns (mnemonic, account_count)
+                match crate::domain::wallet::import_wallet(&backup_string, &passphrase) {
+                    Ok((mnemonic, _account_count)) => {
+                        // Create wallet meta from the imported mnemonic
+                        match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                            Ok(meta) => {
+                                // Save to store
+                                if let Err(e) = self.store.save_wallet_meta(&meta) {
+                                    self.wallet_setup_component.error_message =
+                                        Some(format!("Failed to save wallet: {}", e));
+                                    return Ok(());
+                                }
+                                // Update app state
+                                self.wallet_meta = Some(meta);
+                                self.session_passphrase = Some(passphrase);
+                                // Switch to normal mode
+                                self.mode = AppMode::Normal;
+                                self.wallet_setup_component.reset();
+                                self.status_message = "Wallet restored from backup!".to_string();
+                            }
+                            Err(e) => {
+                                self.wallet_setup_component.error_message =
+                                    Some(format!("Failed to create wallet from import: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.wallet_setup_component.error_message =
+                            Some(format!("Failed to restore from backup: {}", e));
+                    }
+                }
+            }
+            Action::WalletSetupComplete => {
+                // Switch to normal mode (in case it's manually triggered)
+                self.mode = AppMode::Normal;
+                self.wallet_setup_component.reset();
+            }
             _ => {}
         }
         Ok(())
     }
 
     fn draw_ui(&mut self) -> Result<()> {
-        // Collect all data needed for drawing before borrowing terminal
+        // Handle wallet setup mode separately - simpler rendering
+        if self.mode == AppMode::WalletSetup {
+            // Extract wallet setup data
+            let setup_mode = self.wallet_setup_component.mode;
+            let setup_selected_menu = self.wallet_setup_component.selected_menu;
+            let setup_passphrase = self.wallet_setup_component.passphrase.clone();
+            let setup_passphrase_confirm = self.wallet_setup_component.passphrase_confirm.clone();
+            let setup_show_passphrase = self.wallet_setup_component.show_passphrase;
+            let setup_mnemonic_words = self.wallet_setup_component.mnemonic_words.clone();
+            let setup_mnemonic_input = self.wallet_setup_component.mnemonic_input.clone();
+            let setup_backup_input = self.wallet_setup_component.backup_input.clone();
+            let setup_error_message = self.wallet_setup_component.error_message.clone();
+            let setup_success_message = self.wallet_setup_component.success_message.clone();
+
+            self.tui.draw(|f| {
+                WalletSetupComponent::draw_static(
+                    f,
+                    f.area(),
+                    setup_mode,
+                    setup_selected_menu,
+                    &setup_passphrase,
+                    &setup_passphrase_confirm,
+                    setup_show_passphrase,
+                    &setup_mnemonic_words,
+                    &setup_mnemonic_input,
+                    &setup_backup_input,
+                    setup_error_message.as_deref(),
+                    setup_success_message.as_deref(),
+                );
+            })?;
+            return Ok(());
+        }
+
+        // Normal mode - collect all data needed for drawing before borrowing terminal
         let config_network_name = self.config.network.name.clone();
         let active_tab = self.active_tab;
         let status_message = self.status_message.clone();
         let accounts = self.accounts_component.accounts.clone();
         let selected_index = self.accounts_component.selected_index;
-        let accounts_focus = self.accounts_component.focus;
-        let accounts_selected_operation = self.accounts_component.selected_operation;
         let tip_block_number = self.tip_block_number;
         // Rotate address on every frame when spinning, but only if visible
         if self.receive_component.is_spinning
@@ -2023,9 +2323,18 @@ impl App {
         let send_is_editing = self.send_component.is_editing;
         let send_error_message = self.send_component.error_message.clone();
         let send_success_message = self.send_component.success_message.clone();
+        let send_mode = self.send_component.mode;
+        let send_passphrase_input = self.send_component.passphrase_input.clone();
         // Settings component data
         let settings_current_network = self.settings_component.current_network.clone();
-        let settings_selected_index = self.settings_component.selected_index;
+        let settings_mode = self.settings_component.mode;
+        let settings_section = self.settings_component.section;
+        let settings_wallet_index = self.settings_component.wallet_index;
+        let settings_network_index = self.settings_component.network_index;
+        let settings_backup_string = self.settings_component.backup_string.clone();
+        let settings_error_message = self.settings_component.error_message.clone();
+        let settings_success_message = self.settings_component.success_message.clone();
+        let settings_passphrase_input = self.settings_component.passphrase_input.clone();
         // Tokens component data
         let tokens_account = self.tokens_component.account.clone();
         let tokens_balances = self.tokens_component.balances.clone();
@@ -2045,6 +2354,8 @@ impl App {
         let tokens_is_editing = self.tokens_component.is_editing;
         let tokens_error_message = self.tokens_component.error_message.clone();
         let tokens_success_message = self.tokens_component.success_message.clone();
+        let tokens_passphrase_input = self.tokens_component.passphrase_input.clone();
+        let tokens_pending_action = self.tokens_component.pending_action;
         // History component data
         let history_transactions = self.history_component.transactions.clone();
         let history_selected_index = self.history_component.selected_index;
@@ -2177,7 +2488,14 @@ impl App {
                         f,
                         chunks[2],
                         &settings_current_network,
-                        settings_selected_index,
+                        settings_mode,
+                        settings_section,
+                        settings_wallet_index,
+                        settings_network_index,
+                        settings_backup_string.as_deref(),
+                        settings_error_message.as_deref(),
+                        settings_success_message.as_deref(),
+                        &settings_passphrase_input,
                     );
                 }
                 Tab::Accounts => {
@@ -2186,8 +2504,6 @@ impl App {
                         chunks[2],
                         &accounts,
                         selected_index,
-                        accounts_focus,
-                        accounts_selected_operation,
                         receive_one_time_address.as_deref(),
                     );
                 }
@@ -2203,6 +2519,8 @@ impl App {
                         send_is_editing,
                         send_error_message.as_deref(),
                         send_success_message.as_deref(),
+                        send_mode,
+                        &send_passphrase_input,
                     );
                 }
                 Tab::Receive => {
@@ -2236,6 +2554,8 @@ impl App {
                         tokens_is_editing,
                         tokens_error_message.as_deref(),
                         tokens_success_message.as_deref(),
+                        &tokens_passphrase_input,
+                        tokens_pending_action,
                     );
                 }
                 Tab::History => {

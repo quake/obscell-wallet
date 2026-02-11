@@ -12,48 +12,11 @@ use crate::{action::Action, domain::account::Account, tui::Frame};
 
 use super::Component;
 
-/// Focus state within Accounts view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccountsFocus {
-    /// Focus on account list.
-    List,
-    /// Focus on operation menu.
-    Operations,
-}
-
-/// Available operations in Accounts view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccountOperation {
-    Create,
-    Import,
-    Export,
-}
-
-impl AccountOperation {
-    fn all() -> &'static [AccountOperation] {
-        &[
-            AccountOperation::Create,
-            AccountOperation::Import,
-            AccountOperation::Export,
-        ]
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            AccountOperation::Create => "Create New Account",
-            AccountOperation::Import => "Import Account",
-            AccountOperation::Export => "Export Private Key",
-        }
-    }
-}
-
 pub struct AccountsComponent {
     action_tx: UnboundedSender<Action>,
     pub accounts: Vec<Account>,
     list_state: ListState,
     pub selected_index: usize,
-    pub focus: AccountsFocus,
-    pub selected_operation: usize,
 }
 
 impl AccountsComponent {
@@ -65,23 +28,12 @@ impl AccountsComponent {
             accounts: Vec::new(),
             list_state,
             selected_index: 0,
-            focus: AccountsFocus::List,
-            selected_operation: 0,
         }
     }
 
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
-        let was_empty = self.accounts.is_empty();
         self.accounts = accounts;
-        if self.accounts.is_empty() {
-            // Auto-focus Operations menu when list is empty
-            self.focus = AccountsFocus::Operations;
-        } else {
-            // Reset focus to List when accounts become available
-            // (e.g., after creating first account)
-            if was_empty {
-                self.focus = AccountsFocus::List;
-            }
+        if !self.accounts.is_empty() {
             if self.selected_index >= self.accounts.len() {
                 self.selected_index = self.accounts.len() - 1;
             }
@@ -135,21 +87,14 @@ impl AccountsComponent {
 
     /// Static draw method that doesn't require mutable self reference.
     /// Used to avoid borrow checker issues with the main app draw loop.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_static(
         f: &mut Frame,
         area: Rect,
         accounts: &[Account],
         selected_index: usize,
-        focus: AccountsFocus,
-        selected_operation: usize,
         one_time_address: Option<&str>,
     ) {
         let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
-
-        // Left side: split into account list and operations menu
-        let left_chunks =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(8)]).split(chunks[0]);
 
         // Helper to truncate string to fit width (accounting for borders)
         let max_width = chunks[1].width.saturating_sub(2) as usize;
@@ -191,18 +136,12 @@ impl AccountsComponent {
         let mut list_state = ListState::default();
         list_state.select(Some(selected_index));
 
-        let list_border_color = if focus == AccountsFocus::List {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
-
         let list = List::new(items)
             .block(
                 Block::default()
                     .title("Accounts")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(list_border_color)),
+                    .border_style(Style::default().fg(Color::Cyan)),
             )
             .highlight_style(
                 Style::default()
@@ -211,51 +150,7 @@ impl AccountsComponent {
             )
             .highlight_symbol("> ");
 
-        f.render_stateful_widget(list, left_chunks[0], &mut list_state);
-
-        // Operations menu
-        let ops = AccountOperation::all();
-        let op_items: Vec<ListItem> = ops
-            .iter()
-            .enumerate()
-            .map(|(i, op)| {
-                let style = if i == selected_operation && focus == AccountsFocus::Operations {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                ListItem::new(Line::from(Span::styled(op.label(), style)))
-            })
-            .collect();
-
-        let mut op_state = ListState::default();
-        if focus == AccountsFocus::Operations {
-            op_state.select(Some(selected_operation));
-        }
-
-        let ops_border_color = if focus == AccountsFocus::Operations {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
-
-        let ops_list = List::new(op_items)
-            .block(
-                Block::default()
-                    .title("Operations")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(ops_border_color)),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("> ");
-
-        f.render_stateful_widget(ops_list, left_chunks[1], &mut op_state);
+        f.render_stateful_widget(list, chunks[0], &mut list_state);
 
         // Right side: Account details with help at bottom
         let right_chunks =
@@ -302,10 +197,15 @@ impl AccountsComponent {
             ]
         } else {
             vec![
-                Line::from("No accounts yet"),
+                Line::from(vec![Span::styled(
+                    "No accounts yet",
+                    Style::default().fg(Color::Yellow),
+                )]),
                 Line::from(""),
-                Line::from("Select 'Create New Account' or"),
-                Line::from("'Import Account' from the menu."),
+                Line::from(vec![Span::styled(
+                    "Go to Settings (G) to create a new account.",
+                    Style::default().fg(Color::DarkGray),
+                )]),
             ]
         };
 
@@ -320,7 +220,7 @@ impl AccountsComponent {
 
         // Help text
         let help_text = Line::from(Span::styled(
-            "Up/Down: Navigate | Enter: Select/Execute",
+            "Up/Down: Navigate | Enter: Select account",
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -336,82 +236,21 @@ impl AccountsComponent {
 
 impl Component for AccountsComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
-        let ops = AccountOperation::all();
-        match self.focus {
-            AccountsFocus::List => match key.code {
-                KeyCode::Down => {
-                    // If at last item or list is empty, move to Operations
-                    if self.accounts.is_empty()
-                        || self.selected_index >= self.accounts.len().saturating_sub(1)
-                    {
-                        self.focus = AccountsFocus::Operations;
-                        self.selected_operation = 0;
-                    } else {
-                        self.next();
-                    }
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.next();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.previous();
+            }
+            KeyCode::Enter => {
+                // Select the current account
+                if !self.accounts.is_empty() {
+                    self.action_tx
+                        .send(Action::SelectAccount(self.selected_index))?;
                 }
-                KeyCode::Up => {
-                    // If at first item, wrap to Operations (bottom)
-                    if self.selected_index == 0 {
-                        self.focus = AccountsFocus::Operations;
-                        self.selected_operation = ops.len() - 1;
-                    } else {
-                        self.previous();
-                    }
-                }
-                KeyCode::Enter => {
-                    // Select the current account
-                    if !self.accounts.is_empty() {
-                        self.action_tx
-                            .send(Action::SelectAccount(self.selected_index))?;
-                    }
-                }
-                _ => {}
-            },
-            AccountsFocus::Operations => match key.code {
-                KeyCode::Down => {
-                    // If at last operation, wrap to List (top)
-                    if self.selected_operation >= ops.len() - 1 {
-                        if !self.accounts.is_empty() {
-                            self.focus = AccountsFocus::List;
-                            self.selected_index = 0;
-                            self.list_state.select(Some(0));
-                        } else {
-                            // Wrap within operations if list is empty
-                            self.selected_operation = 0;
-                        }
-                    } else {
-                        self.selected_operation += 1;
-                    }
-                }
-                KeyCode::Up => {
-                    // If at first operation, move to List (bottom)
-                    if self.selected_operation == 0 {
-                        if !self.accounts.is_empty() {
-                            self.focus = AccountsFocus::List;
-                            self.selected_index = self.accounts.len() - 1;
-                            self.list_state.select(Some(self.selected_index));
-                        } else {
-                            // Wrap within operations if list is empty
-                            self.selected_operation = ops.len() - 1;
-                        }
-                    } else {
-                        self.selected_operation -= 1;
-                    }
-                }
-                KeyCode::Enter => match ops[self.selected_operation] {
-                    AccountOperation::Create => {
-                        self.action_tx.send(Action::CreateAccount)?;
-                    }
-                    AccountOperation::Import => {
-                        self.action_tx.send(Action::ImportAccount)?;
-                    }
-                    AccountOperation::Export => {
-                        self.action_tx.send(Action::ExportAccount)?;
-                    }
-                },
-                _ => {}
-            },
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -422,8 +261,6 @@ impl Component for AccountsComponent {
             area,
             &self.accounts,
             self.selected_index,
-            self.focus,
-            self.selected_operation,
             None, // one_time_address is managed by ReceiveComponent
         );
     }

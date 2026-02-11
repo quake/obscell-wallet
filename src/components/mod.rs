@@ -5,6 +5,7 @@ pub mod receive;
 pub mod send;
 pub mod settings;
 pub mod tokens;
+pub mod wallet_setup;
 
 use color_eyre::eyre::Result;
 use crossterm::event::KeyEvent;
