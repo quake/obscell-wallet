@@ -7,6 +7,10 @@ description = "A TUI wallet for obscell privacy tokens on Nervos CKB"
 license = "MIT"
 repository = "https://github.com/quake/obscell-wallet"
 
+[features]
+default = []
+test-utils = []
+
 [dependencies]
 # TUI
 ratatui = "0.29"
@@ -21,6 +25,11 @@ strum = { version = "0.26", features = ["derive"] }
 
 # Crypto
 secp256k1 = { version = "0.28", features = ["rand-std", "recovery", "global-context"] }
+bip32 = { version = "0.5", features = ["bip39", "secp256k1"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1.7", features = ["derive"] }
+base64 = "0.22"
 # Use the same bulletproofs as the obscell smart contract (from zkcrypto)
 bulletproofs = { git = "https://github.com/zkcrypto/bulletproofs", default-features = false, features = ["std"] }
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
@@ -62,3 +71,4 @@ tempfile = "3"
 [[test]]
 name = "integration"
 path = "tests/integration/mod.rs"
+required-features = ["test-utils"]

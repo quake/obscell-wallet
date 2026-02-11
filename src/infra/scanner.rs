@@ -1920,13 +1920,15 @@ impl Scanner {
                 continue;
             }
 
-            // Extract token_id from type args
+            // Extract token_id from type args (last 32 bytes)
+            // Type args format: ct_info_code_hash (32) || token_id (32)
             let type_args = type_script.args.as_bytes();
             if type_args.len() < 32 {
                 continue;
             }
             let mut token_id = [0u8; 32];
-            token_id.copy_from_slice(&type_args[0..32]);
+            let start = type_args.len() - 32;
+            token_id.copy_from_slice(&type_args[start..]);
 
             // Decrypt the amount from output_data
             if let Some(output_data) = outputs_data.get(i) {
@@ -1990,13 +1992,15 @@ impl Scanner {
                 continue;
             }
 
-            // Extract token_id from type args
+            // Extract token_id from type args (last 32 bytes)
+            // Type args format: ct_info_code_hash (32) || token_id (32)
             let type_args = type_script.args.as_bytes();
             if type_args.len() < 32 {
                 continue;
             }
             let mut token_id = [0u8; 32];
-            token_id.copy_from_slice(&type_args[0..32]);
+            let start = type_args.len() - 32;
+            token_id.copy_from_slice(&type_args[start..]);
 
             // Decrypt the amount from output_data
             if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize) {

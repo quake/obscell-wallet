@@ -8,9 +8,9 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
-use secp256k1::{Message, PublicKey, Secp256k1};
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{
     config::Config,
@@ -411,9 +411,11 @@ impl CtTxBuilder {
     ///
     /// Signs all CT cell inputs with the account's stealth keys.
     /// If a funding cell was used, also signs it with the provided funding_lock_args.
+    /// The `spend_key` must be pre-decrypted using the wallet passphrase.
     pub fn sign(
         built_tx: BuiltCtTransaction,
         account: &Account,
+        spend_key: &SecretKey,
         input_cells: &[CtCell],
         funding_lock_args: Option<&[u8]>,
     ) -> Result<Transaction> {
@@ -434,7 +436,7 @@ impl CtTxBuilder {
             let stealth_secret = derive_stealth_secret(
                 &cell.lock_script_args,
                 &account.view_secret_key(),
-                &account.spend_secret_key(),
+                spend_key,
             )
             .ok_or_else(|| eyre!("Failed to derive stealth secret for input {}", i))?;
 
@@ -461,12 +463,9 @@ impl CtTxBuilder {
 
         // If there's a funding cell, sign it too
         if let Some(funding_args) = funding_lock_args {
-            let funding_secret = derive_stealth_secret(
-                funding_args,
-                &account.view_secret_key(),
-                &account.spend_secret_key(),
-            )
-            .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
+            let funding_secret =
+                derive_stealth_secret(funding_args, &account.view_secret_key(), spend_key)
+                    .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
 
             let funding_sig = secp.sign_ecdsa_recoverable(&message, &funding_secret);
             let (recovery_id, signature_bytes) = funding_sig.serialize_compact();

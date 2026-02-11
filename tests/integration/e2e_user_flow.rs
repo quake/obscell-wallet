@@ -8,8 +8,8 @@
 
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 // Re-export wallet types for testing
 use obscell_wallet::config::{
@@ -34,8 +34,8 @@ fn create_test_config(env: &TestEnv) -> Config {
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(type_id_hash.as_bytes())),
-            ct_token_code_hash: "0x0".repeat(64),
-            ct_info_code_hash: "0x0".repeat(64),
+            ct_token_code_hash: "0x".to_string() + &"0".repeat(64),
+            ct_info_code_hash: "0x".to_string() + &"0".repeat(64),
             ckb_auth_code_hash: format!("0x{}", hex::encode(ckb_auth_data_hash.as_bytes())),
         },
         cell_deps: CellDepsConfig {
@@ -75,8 +75,8 @@ fn test_account_creation_and_stealth_address() {
     let _env = TestEnv::get();
 
     // Create accounts
-    let alice = Account::new(0, "Alice".to_string());
-    let bob = Account::new(1, "Bob".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
+    let bob = Account::new_random(1, "Bob".to_string());
 
     // Verify accounts have valid keys
     let alice_stealth_addr = alice.stealth_address();
@@ -91,7 +91,7 @@ fn test_account_creation_and_stealth_address() {
 
     // Keys should be valid
     assert!(alice.view_secret_key().secret_bytes().len() == 32);
-    assert!(alice.spend_secret_key().secret_bytes().len() == 32);
+    assert!(alice.spend_secret_key_for_test().secret_bytes().len() == 32);
 
     println!("Alice stealth address: {}", &alice_stealth_addr[..32]);
     println!("Bob stealth address: {}", &bob_stealth_addr[..32]);
@@ -104,7 +104,7 @@ fn test_scanner_finds_stealth_cells() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create an account
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
 
     // Fund Alice via stealth transfer
     let stealth_code_hash = env.stealth_lock_code_hash();
@@ -152,8 +152,8 @@ fn test_multi_account_scanning() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create two accounts
-    let alice = Account::new(0, "Alice".to_string());
-    let bob = Account::new(1, "Bob".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
+    let bob = Account::new_random(1, "Bob".to_string());
 
     let stealth_code_hash = env.stealth_lock_code_hash();
 
@@ -229,7 +229,7 @@ fn test_account_receives_multiple_transfers() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create account
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
     let stealth_code_hash = env.stealth_lock_code_hash();
 
     // Send multiple transfers to Alice (each with unique ephemeral key)
@@ -284,7 +284,7 @@ fn test_store_persists_cells() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create account and fund it
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
     let stealth_code_hash = env.stealth_lock_code_hash();
 
     let (eph_pub, stealth_pub) = obscell_wallet::domain::stealth::generate_ephemeral_key(
@@ -337,7 +337,7 @@ fn test_tx_history_recorded_on_receive() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create account
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
     let stealth_code_hash = env.stealth_lock_code_hash();
 
     // Fund Alice
@@ -359,24 +359,27 @@ fn test_tx_history_recorded_on_receive() {
     env.wait_for_indexer_sync()
         .expect("Should sync indexer after transfer");
 
-    // Scan
+    // Scan cells and then history
     let scanner = Scanner::new(config, store.clone());
     scanner
-        .scan_all_accounts(&[alice])
+        .scan_all_accounts(&[alice.clone()])
         .expect("Scan should succeed");
+    scanner
+        .scan_tx_history(&alice)
+        .expect("History scan should succeed");
 
     // Check transaction history
     let history = store.get_tx_history(0).expect("Should load history");
     assert_eq!(history.len(), 1, "Should have 1 tx record");
 
     let record = &history[0];
-    assert_eq!(record.direction(), "Receive");
-    assert_eq!(record.amount_ckb(), Some(123.0));
+    // Verify it's a CKB receive with positive delta (123 CKB = 123_00000000 shannons)
+    assert!(record.delta() > 0, "Should be a receive (positive delta)");
+    assert_eq!(record.delta_ckb(), Some(123.0));
 
     println!(
-        "Transaction history recorded: {} {} CKB",
-        record.direction(),
-        record.amount_ckb().unwrap()
+        "Transaction history recorded: delta {} CKB",
+        record.delta_ckb().unwrap()
     );
 }
 
@@ -387,8 +390,8 @@ fn test_alice_sends_to_bob_full_flow() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create accounts
-    let alice = Account::new(0, "Alice".to_string());
-    let bob = Account::new(1, "Bob".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
+    let bob = Account::new_random(1, "Bob".to_string());
 
     let stealth_code_hash = env.stealth_lock_code_hash();
 
@@ -459,8 +462,13 @@ fn test_alice_sends_to_bob_full_flow() {
     );
 
     // Sign the transaction
-    let signed_tx = StealthTxBuilder::sign(built_tx, &alice, &alice_scan.stealth_cells)
-        .expect("Signing should succeed");
+    let signed_tx = StealthTxBuilder::sign(
+        built_tx,
+        &alice,
+        &alice.spend_secret_key_for_test(),
+        &alice_scan.stealth_cells,
+    )
+    .expect("Signing should succeed");
 
     // Submit the transaction
     use ckb_sdk::CkbRpcClient;

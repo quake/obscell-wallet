@@ -351,7 +351,7 @@ mod tests {
         receive.set_config(config);
 
         // Create a test account
-        let account = crate::domain::account::Account::new(1, "test".to_string());
+        let account = crate::domain::account::Account::new_random(1, "test".to_string());
         receive.set_account(Some(account));
 
         // Verify address was generated

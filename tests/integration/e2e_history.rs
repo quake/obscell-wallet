@@ -14,7 +14,7 @@ use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
 };
 use obscell_wallet::domain::account::Account;
-use obscell_wallet::domain::cell::{TxStatus, TxType};
+use obscell_wallet::domain::cell::{TxRecord, TxType};
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
     build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
@@ -128,8 +128,8 @@ fn test_ckb_transfer_history_both_parties() {
     let (bob_store, _bob_temp) = create_temp_store();
 
     // Create accounts
-    let alice = Account::new(0, "Alice".to_string());
-    let bob = Account::new(1, "Bob".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
+    let bob = Account::new_random(1, "Bob".to_string());
 
     let stealth_code_hash = env.stealth_lock_code_hash();
 
@@ -151,35 +151,32 @@ fn test_ckb_transfer_history_both_parties() {
     env.generate_blocks(10).expect("Should generate blocks");
     env.wait_for_indexer_sync().expect("Should sync");
 
-    // Alice scans to find her cells - use scan_all_accounts which persists and records history
+    // Alice scans to find her cells - use scan_all_accounts for cells, then scan_tx_history for history
     println!("Step 2: Alice scans for cells...");
     let alice_scanner = Scanner::new(config.clone(), alice_store.clone());
     let alice_results = alice_scanner
         .scan_all_accounts(&[alice.clone()])
         .expect("Alice scan should succeed");
+    alice_scanner
+        .scan_tx_history(&alice)
+        .expect("Alice history scan should succeed");
 
     assert_eq!(alice_results.len(), 1, "Should have 1 account result");
     assert_eq!(alice_results[0].cells.len(), 1, "Alice should have 1 cell");
 
-    // Alice's history should show the receive
+    // Alice's history should show the receive (positive delta = received CKB)
     let alice_history = alice_store
         .get_tx_history(alice.id)
         .expect("Should get Alice history");
     assert_eq!(alice_history.len(), 1, "Alice should have 1 history entry");
     assert!(
-        matches!(alice_history[0].tx_type, TxType::StealthReceive { .. }),
-        "Alice should have StealthReceive in history"
-    );
-    assert_eq!(
-        alice_history[0].status,
-        TxStatus::Confirmed,
-        "Receive should be confirmed"
+        matches!(alice_history[0].tx_type, TxType::Ckb { delta } if delta > 0),
+        "Alice should have Ckb receive (positive delta) in history"
     );
 
     println!(
-        "Alice received: {} ({})",
-        alice_history[0].direction(),
-        alice_history[0].amount_ckb().unwrap()
+        "Alice received: {} CKB",
+        alice_history[0].delta_ckb().unwrap()
     );
 
     // Get cells from store for building tx
@@ -202,8 +199,13 @@ fn test_ckb_transfer_history_both_parties() {
         .add_output(bob_stealth_address.clone(), send_amount);
 
     let built_tx = builder.build(&alice).expect("Building tx should succeed");
-    let signed_tx = StealthTxBuilder::sign(built_tx.clone(), &alice, &alice_cells)
-        .expect("Signing should succeed");
+    let signed_tx = StealthTxBuilder::sign(
+        built_tx.clone(),
+        &alice,
+        &alice.spend_secret_key_for_test(),
+        &alice_cells,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let tx_hash = client
@@ -213,10 +215,12 @@ fn test_ckb_transfer_history_both_parties() {
     println!("Transaction sent: 0x{}", hex::encode(tx_hash.as_bytes()));
 
     // Record send in Alice's history (simulating what app.rs does)
-    let send_record = obscell_wallet::domain::cell::TxRecord::stealth_send(
+    // Use negative delta to indicate sent CKB
+    let send_record = TxRecord::ckb(
         built_tx.tx_hash.0,
-        hex::encode(&bob_stealth_address),
-        send_amount,
+        -(send_amount as i64),
+        0, // timestamp (not used in test)
+        0, // block_number (not used in test)
     );
     alice_store
         .save_tx_record(alice.id, &send_record)
@@ -231,6 +235,9 @@ fn test_ckb_transfer_history_both_parties() {
     let bob_results = bob_scanner
         .scan_all_accounts(&[bob.clone()])
         .expect("Bob scan should succeed");
+    bob_scanner
+        .scan_tx_history(&bob)
+        .expect("Bob history scan should succeed");
 
     assert_eq!(bob_results[0].cells.len(), 1, "Bob should have 1 cell");
     assert_eq!(
@@ -244,20 +251,19 @@ fn test_ckb_transfer_history_both_parties() {
         .expect("Should get Bob history");
     assert_eq!(bob_history.len(), 1, "Bob should have 1 history entry");
 
-    if let TxType::StealthReceive { amount } = &bob_history[0].tx_type {
-        assert_eq!(*amount, send_amount, "Bob receive amount should match");
+    if let TxType::Ckb { delta } = &bob_history[0].tx_type {
+        assert_eq!(
+            *delta, send_amount as i64,
+            "Bob receive amount should match (positive delta)"
+        );
     } else {
         panic!(
-            "Bob should have StealthReceive, got: {:?}",
+            "Bob should have Ckb type, got: {:?}",
             bob_history[0].tx_type
         );
     }
 
-    println!(
-        "Bob received: {} ({})",
-        bob_history[0].direction(),
-        bob_history[0].amount_ckb().unwrap()
-    );
+    println!("Bob received: {} CKB", bob_history[0].delta_ckb().unwrap());
 
     // Verify Alice's history now has both receive and send
     let alice_history_final = alice_store
@@ -269,14 +275,21 @@ fn test_ckb_transfer_history_both_parties() {
         "Alice should have 2 history entries"
     );
 
-    // Find the send entry
+    // Find the send entry (negative delta)
     let send_entry = alice_history_final
         .iter()
-        .find(|h| matches!(h.tx_type, TxType::StealthSend { .. }));
-    assert!(send_entry.is_some(), "Alice should have StealthSend entry");
+        .find(|h| matches!(h.tx_type, TxType::Ckb { delta } if delta < 0));
+    assert!(
+        send_entry.is_some(),
+        "Alice should have Ckb send entry (negative delta)"
+    );
 
-    if let TxType::StealthSend { amount, .. } = &send_entry.unwrap().tx_type {
-        assert_eq!(*amount, send_amount, "Send amount should match");
+    if let TxType::Ckb { delta } = &send_entry.unwrap().tx_type {
+        assert_eq!(
+            *delta,
+            -(send_amount as i64),
+            "Send amount should match (negative)"
+        );
     }
 
     println!("\nCKB transfer history test passed!");
@@ -293,9 +306,9 @@ fn test_ct_transfer_history_both_parties() {
     let (bob_store, _bob_temp) = create_temp_store();
 
     // Create accounts
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
-    let bob = Account::new(2, "Bob".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
+    let bob = Account::new_random(2, "Bob".to_string());
 
     println!("Step 1: Create CT token and mint to Alice...");
 
@@ -321,9 +334,13 @@ fn test_ct_transfer_history_both_parties() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
-            .expect("Signing genesis should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -368,6 +385,7 @@ fn test_ct_transfer_history_both_parties() {
     let signed_mint = sign_mint_transaction(
         built_mint,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding.lock_script_args,
     )
@@ -382,12 +400,15 @@ fn test_ct_transfer_history_both_parties() {
 
     println!("Token minted: ID=0x{}", hex::encode(&token_id[..8]));
 
-    // Alice scans for CT cells using scan_ct_cells which persists and records history
+    // Alice scans for CT cells using scan_ct_cells for cells, then scan_tx_history for history
     println!("Step 2: Alice scans for CT cells...");
     let alice_scanner = Scanner::new(config.clone(), alice_store.clone());
     let alice_results = alice_scanner
         .scan_ct_cells(&[alice.clone()])
         .expect("Alice CT scan should succeed");
+    alice_scanner
+        .scan_tx_history(&alice)
+        .expect("Alice history scan should succeed");
 
     assert_eq!(
         alice_results[0].cells.len(),
@@ -395,26 +416,29 @@ fn test_ct_transfer_history_both_parties() {
         "Alice should have 1 CT cell"
     );
 
-    // Alice's history should show CT receive
+    // Alice's history should show CT receive (positive delta)
     let alice_history = alice_store
         .get_tx_history(alice.id)
         .expect("Should get Alice history");
     assert_eq!(alice_history.len(), 1, "Alice should have 1 history entry");
 
-    if let TxType::CtReceive { token, amount } = &alice_history[0].tx_type {
-        assert_eq!(*amount, mint_amount, "Receive amount should match");
+    if let TxType::Ct { token, delta } = &alice_history[0].tx_type {
+        assert_eq!(
+            *delta, mint_amount as i64,
+            "Receive amount should match (positive delta)"
+        );
         assert_eq!(*token, token_id, "Token ID should match");
     } else {
         panic!(
-            "Alice should have CtReceive, got: {:?}",
+            "Alice should have Ct type, got: {:?}",
             alice_history[0].tx_type
         );
     }
 
     println!(
-        "Alice received CT: {} tokens ({})",
+        "Alice received CT: {} tokens (delta: {})",
         mint_amount,
-        alice_history[0].direction()
+        alice_history[0].delta()
     );
 
     // Get cells from store for building tx
@@ -448,6 +472,7 @@ fn test_ct_transfer_history_both_parties() {
     let signed_transfer = CtTxBuilder::sign(
         built_transfer.clone(),
         &alice,
+        &alice.spend_secret_key_for_test(),
         &[alice_ct_cell.clone()],
         Some(&transfer_funding.lock_script_args),
     )
@@ -460,10 +485,13 @@ fn test_ct_transfer_history_both_parties() {
     println!("Transfer sent: 0x{}", hex::encode(transfer_hash.as_bytes()));
 
     // Record send in Alice's history (simulating what app.rs does)
-    let send_record = obscell_wallet::domain::cell::TxRecord::ct_transfer(
+    // Use negative delta to indicate sent tokens
+    let send_record = TxRecord::ct(
         built_transfer.tx_hash.0,
         token_id,
-        transfer_amount,
+        -(transfer_amount as i64),
+        0, // timestamp
+        0, // block_number
     );
     alice_store
         .save_tx_record(alice.id, &send_record)
@@ -478,6 +506,9 @@ fn test_ct_transfer_history_both_parties() {
     let bob_results = bob_scanner
         .scan_ct_cells(&[bob.clone()])
         .expect("Bob CT scan should succeed");
+    bob_scanner
+        .scan_tx_history(&bob)
+        .expect("Bob history scan should succeed");
 
     assert_eq!(bob_results[0].cells.len(), 1, "Bob should have 1 CT cell");
     assert_eq!(
@@ -491,20 +522,20 @@ fn test_ct_transfer_history_both_parties() {
         .expect("Should get Bob history");
     assert_eq!(bob_history.len(), 1, "Bob should have 1 history entry");
 
-    if let TxType::CtReceive { token, amount } = &bob_history[0].tx_type {
-        assert_eq!(*amount, transfer_amount, "Bob receive amount should match");
+    if let TxType::Ct { token, delta } = &bob_history[0].tx_type {
+        assert_eq!(
+            *delta, transfer_amount as i64,
+            "Bob receive amount should match (positive delta)"
+        );
         assert_eq!(*token, token_id, "Token ID should match");
     } else {
-        panic!(
-            "Bob should have CtReceive, got: {:?}",
-            bob_history[0].tx_type
-        );
+        panic!("Bob should have Ct type, got: {:?}", bob_history[0].tx_type);
     }
 
     println!(
-        "Bob received CT: {} tokens ({})",
+        "Bob received CT: {} tokens (delta: {})",
         transfer_amount,
-        bob_history[0].direction()
+        bob_history[0].delta()
     );
 
     // Verify Alice's history now has both receive and transfer
@@ -520,17 +551,21 @@ fn test_ct_transfer_history_both_parties() {
         alice_history_final.len()
     );
 
-    // Find the transfer entry
+    // Find the transfer entry (negative delta)
     let transfer_entry = alice_history_final
         .iter()
-        .find(|h| matches!(h.tx_type, TxType::CtTransfer { .. }));
+        .find(|h| matches!(h.tx_type, TxType::Ct { delta, .. } if delta < 0));
     assert!(
         transfer_entry.is_some(),
-        "Alice should have CtTransfer entry"
+        "Alice should have Ct send entry (negative delta)"
     );
 
-    if let TxType::CtTransfer { token, amount } = &transfer_entry.unwrap().tx_type {
-        assert_eq!(*amount, transfer_amount, "Transfer amount should match");
+    if let TxType::Ct { token, delta } = &transfer_entry.unwrap().tx_type {
+        assert_eq!(
+            *delta,
+            -(transfer_amount as i64),
+            "Transfer amount should match (negative)"
+        );
         assert_eq!(*token, token_id, "Token ID should match");
     }
 
@@ -548,7 +583,7 @@ fn test_history_status_tracking() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create account
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
     let stealth_code_hash = env.stealth_lock_code_hash();
 
     // Fund Alice
@@ -567,21 +602,25 @@ fn test_history_status_tracking() {
     env.generate_blocks(10).expect("Should generate blocks");
     env.wait_for_indexer_sync().expect("Should sync");
 
-    // Scan using scan_all_accounts which persists and records history
+    // Scan using scan_all_accounts which persists cells, then scan_tx_history for history
     let scanner = Scanner::new(config, store.clone());
     scanner
         .scan_all_accounts(&[alice.clone()])
         .expect("Scan should succeed");
+    scanner
+        .scan_tx_history(&alice)
+        .expect("History scan should succeed");
 
     // Check history
     let history = store.get_tx_history(alice.id).expect("Should load history");
     assert_eq!(history.len(), 1, "Should have 1 tx record");
 
     let record = &history[0];
-    assert_eq!(
-        record.status,
-        TxStatus::Confirmed,
-        "Receive should be confirmed"
+    // TxRecord no longer has a status field - all scanned transactions are confirmed by definition
+    // Verify it's a CKB receive (positive delta)
+    assert!(
+        matches!(record.tx_type, TxType::Ckb { delta } if delta > 0),
+        "Should be a CKB receive with positive delta"
     );
 
     // Verify the tx_hash is correct (first 32 bytes of out_point)
@@ -596,6 +635,6 @@ fn test_history_status_tracking() {
     );
 
     println!("History status tracking test passed!");
-    println!("  Status: {:?}", record.status);
+    println!("  Tx type: {:?}", record.tx_type);
     println!("  Tx hash: {}", record.short_hash());
 }

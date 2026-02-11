@@ -28,6 +28,7 @@ use crate::{
         },
         ct_tx_builder::CtTxBuilder,
         tx_builder::{StealthTxBuilder, parse_stealth_address},
+        wallet::WalletMeta,
     },
     infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::{Store, SELECTED_NETWORK_KEY}},
     tui::{Event, Frame, Tui},
@@ -116,6 +117,7 @@ pub struct App {
     pub store: Store,
     pub scanner: Scanner,
     pub account_manager: AccountManager,
+    pub wallet_meta: Option<WalletMeta>,
     pub settings_component: SettingsComponent,
     pub accounts_component: AccountsComponent,
     pub receive_component: ReceiveComponent,
@@ -195,6 +197,9 @@ impl App {
             (None, None, None)
         };
 
+        // Load existing wallet meta or initialize as None
+        let wallet_meta = store.load_wallet_meta().ok().flatten();
+
         Ok(Self {
             should_quit: false,
             should_suspend: false,
@@ -207,6 +212,7 @@ impl App {
             store,
             scanner,
             account_manager,
+            wallet_meta,
             settings_component,
             accounts_component,
             receive_component,
@@ -768,10 +774,31 @@ impl App {
                 self.should_suspend = true;
             }
             Action::CreateAccount => {
-                let account = self.account_manager.create_account(format!(
-                    "Account {}",
-                    self.account_manager.list_accounts()?.len() + 1
-                ))?;
+                // TODO: Implement proper wallet initialization UI with passphrase prompt
+                // For now, use a default passphrase for development
+                const DEV_PASSPHRASE: &str = "dev_passphrase";
+
+                // Initialize wallet if needed
+                let wallet_meta = if let Some(ref mut meta) = self.wallet_meta {
+                    meta
+                } else {
+                    // Create new wallet with mnemonic
+                    let mnemonic = crate::domain::wallet::generate_mnemonic();
+                    let meta = crate::domain::wallet::create_wallet_meta(&mnemonic, DEV_PASSPHRASE)
+                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    self.store.save_wallet_meta(&meta)?;
+                    self.wallet_meta = Some(meta);
+                    self.wallet_meta.as_mut().unwrap()
+                };
+
+                let account = self.account_manager.create_account(
+                    format!(
+                        "Account {}",
+                        self.account_manager.list_accounts()?.len() + 1
+                    ),
+                    wallet_meta,
+                    DEV_PASSPHRASE,
+                )?;
                 let accounts = self.account_manager.list_accounts()?;
                 let new_index = accounts.len().saturating_sub(1);
 
@@ -966,16 +993,33 @@ impl App {
                     };
 
                     // Sign the transaction
-                    let signed_tx =
-                        match StealthTxBuilder::sign(built_tx.clone(), account, &input_cells) {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                self.send_component.error_message =
-                                    Some(format!("Signing failed: {}", e));
-                                self.status_message = "Send failed: signing error".to_string();
-                                return Ok(());
-                            }
-                        };
+                    // TODO: Prompt for passphrase when signing
+                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Wallet not initialized")
+                    })?;
+                    let spend_key_bytes = account
+                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
+                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key =
+                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
+                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
+                        })?;
+
+                    let signed_tx = match StealthTxBuilder::sign(
+                        built_tx.clone(),
+                        account,
+                        &spend_key,
+                        &input_cells,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            self.send_component.error_message =
+                                Some(format!("Signing failed: {}", e));
+                            self.status_message = "Send failed: signing error".to_string();
+                            return Ok(());
+                        }
+                    };
 
                     // Submit the transaction
                     match self.scanner.rpc().send_transaction(signed_tx) {
@@ -1162,12 +1206,26 @@ impl App {
                     };
 
                     // Sign the transaction
+                    // TODO: Prompt for passphrase when signing
+                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Wallet not initialized")
+                    })?;
+                    let spend_key_bytes = account
+                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
+                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key =
+                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
+                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
+                        })?;
+
                     let funding_lock_args = funding_input
                         .as_ref()
                         .map(|f| f.lock_script_args.as_slice());
                     let signed_tx = match CtTxBuilder::sign(
                         built_tx.clone(),
                         account,
+                        &spend_key,
                         &input_cells,
                         funding_lock_args,
                     ) {
@@ -1358,9 +1416,23 @@ impl App {
                     };
 
                     // Sign the transaction (ct-info cell uses stealth-lock, requires secp256k1 signature)
+                    // TODO: Prompt for passphrase when signing
+                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Wallet not initialized")
+                    })?;
+                    let spend_key_bytes = account
+                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
+                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key =
+                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
+                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
+                        })?;
+
                     let signed_tx = match sign_mint_transaction(
                         built_tx,
                         account,
+                        &spend_key,
                         &ct_info_cell.lock_script_args,
                         &funding_input.lock_script_args,
                     ) {
@@ -1501,9 +1573,23 @@ impl App {
                     let token_id = built_tx.token_id;
 
                     // Sign the transaction with the funding cell's stealth key
+                    // TODO: Prompt for passphrase when signing
+                    const DEV_PASSPHRASE: &str = "dev_passphrase";
+                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Wallet not initialized")
+                    })?;
+                    let spend_key_bytes = account
+                        .decrypt_spend_key(wallet_meta, DEV_PASSPHRASE)
+                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                    let spend_key =
+                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
+                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
+                        })?;
+
                     let signed_tx = match sign_genesis_transaction(
                         built_tx,
                         account,
+                        &spend_key,
                         &funding_cell.stealth_script_args,
                     ) {
                         Ok(tx) => tx,

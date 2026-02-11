@@ -79,8 +79,8 @@ fn test_faucet_scan_send_flow() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create accounts
-    let alice = Account::new(0, "Alice".to_string());
-    let bob = Account::new(1, "Bob".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
+    let bob = Account::new_random(1, "Bob".to_string());
 
     let stealth_code_hash = env.stealth_lock_code_hash();
 
@@ -220,7 +220,7 @@ fn test_faucet_scan_send_flow() {
 
     // Sign the transaction
     let signed_tx =
-        StealthTxBuilder::sign(built_tx, &alice, &stored_cells).expect("Signing should succeed");
+        StealthTxBuilder::sign(built_tx, &alice, &alice.spend_secret_key_for_test(), &stored_cells).expect("Signing should succeed");
 
     // Submit the transaction
     use ckb_sdk::CkbRpcClient;
@@ -268,7 +268,7 @@ fn test_scan_stores_valid_outpoints() {
     let config = create_test_config(env);
     let (store, _temp_dir) = create_temp_store();
 
-    let alice = Account::new(0, "Alice".to_string());
+    let alice = Account::new_random(0, "Alice".to_string());
     let stealth_code_hash = env.stealth_lock_code_hash();
 
     // Fund Alice

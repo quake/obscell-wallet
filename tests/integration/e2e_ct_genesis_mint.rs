@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
-    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
+    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -126,7 +126,7 @@ fn test_ct_genesis_creates_token() {
     let (_store, _temp_dir) = create_temp_store();
 
     // Create issuer account
-    let issuer = Account::new(0, "Issuer".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
     println!(
         "Issuer stealth address: {}",
         &issuer.stealth_address()[..32]
@@ -170,7 +170,7 @@ fn test_ct_genesis_creates_token() {
     // Sign the transaction
     println!("Step 3: Signing genesis transaction...");
     let signed_tx =
-        sign_genesis_transaction(built_tx.clone(), &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(built_tx.clone(), &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     // Submit the transaction
@@ -246,8 +246,8 @@ fn test_ct_mint_to_stealth_address() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create issuer and recipient accounts
-    let issuer = Account::new(0, "Issuer".to_string());
-    let recipient = Account::new(1, "Recipient".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let recipient = Account::new_random(1, "Recipient".to_string());
 
     println!("Issuer: {}", &issuer.stealth_address()[..32]);
     println!("Recipient: {}", &recipient.stealth_address()[..32]);
@@ -277,7 +277,7 @@ fn test_ct_mint_to_stealth_address() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -348,6 +348,7 @@ fn test_ct_mint_to_stealth_address() {
     let signed_mint = sign_mint_transaction(
         built_mint,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding_cell.lock_script_args,
     )
@@ -412,9 +413,9 @@ fn test_ct_transfer_between_accounts() {
     let (bob_store, _bob_temp) = create_temp_store();
 
     // Create accounts
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
-    let bob = Account::new(2, "Bob".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
+    let bob = Account::new_random(2, "Bob".to_string());
 
     println!("Issuer: {}", &issuer.stealth_address()[..32]);
     println!("Alice: {}", &alice.stealth_address()[..32]);
@@ -445,7 +446,7 @@ fn test_ct_transfer_between_accounts() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -491,6 +492,7 @@ fn test_ct_transfer_between_accounts() {
     let signed_mint = sign_mint_transaction(
         built_mint,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding_cell.lock_script_args,
     )
@@ -563,6 +565,7 @@ fn test_ct_transfer_between_accounts() {
     let signed_transfer = CtTxBuilder::sign(
         built_transfer,
         &alice,
+        &alice.spend_secret_key_for_test(),
         &[alice_ct_cell.clone()],
         Some(&transfer_funding_cell.lock_script_args),
     )
@@ -651,9 +654,9 @@ fn test_scanner_finds_ct_cells_multi_account() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create issuer and two recipients
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
-    let bob = Account::new(2, "Bob".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
+    let bob = Account::new_random(2, "Bob".to_string());
 
     println!("Setting up multi-account CT scan test...");
 
@@ -682,7 +685,7 @@ fn test_scanner_finds_ct_cells_multi_account() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -731,6 +734,7 @@ fn test_scanner_finds_ct_cells_multi_account() {
     let signed_mint1 = sign_mint_transaction(
         mint1,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint1_funding.lock_script_args,
     )
@@ -785,6 +789,7 @@ fn test_scanner_finds_ct_cells_multi_account() {
     let signed_mint2 = sign_mint_transaction(
         mint2,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint2_funding.lock_script_args,
     )
@@ -840,7 +845,7 @@ fn test_scanner_finds_ct_info_cells() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create issuer
-    let issuer = Account::new(0, "Issuer".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
 
     println!("Setting up ct-info cell scan test...");
 
@@ -868,7 +873,7 @@ fn test_scanner_finds_ct_info_cells() {
     let token_id = genesis_tx.token_id;
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -918,8 +923,8 @@ fn test_ct_cells_persisted_to_store() {
     let (store, _temp_dir) = create_temp_store();
 
     // Create issuer and recipient
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
 
     println!("Setting up CT cell persistence test...");
 
@@ -948,7 +953,7 @@ fn test_ct_cells_persisted_to_store() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -996,6 +1001,7 @@ fn test_ct_cells_persisted_to_store() {
     let signed_mint = sign_mint_transaction(
         mint_tx,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding.lock_script_args,
     )
@@ -1059,9 +1065,9 @@ fn test_ct_transfer_with_change_verification() {
     let (alice_store, _alice_temp) = create_temp_store();
     let (bob_store, _bob_temp) = create_temp_store();
 
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
-    let bob = Account::new(2, "Bob".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
+    let bob = Account::new_random(2, "Bob".to_string());
 
     println!("Setting up CT transfer with change test...");
 
@@ -1090,7 +1096,7 @@ fn test_ct_transfer_with_change_verification() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -1138,6 +1144,7 @@ fn test_ct_transfer_with_change_verification() {
     let signed_mint = sign_mint_transaction(
         mint_tx,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding.lock_script_args,
     )
@@ -1195,6 +1202,7 @@ fn test_ct_transfer_with_change_verification() {
     let signed_transfer = CtTxBuilder::sign(
         transfer_tx,
         &alice,
+        &alice.spend_secret_key_for_test(),
         &[alice_ct_cell.clone()],
         Some(&transfer_funding.lock_script_args),
     )
@@ -1249,8 +1257,8 @@ fn test_ct_mint_exceeds_supply_cap_fails() {
     let env = TestEnv::get();
     let config = create_test_config(env);
 
-    let issuer = Account::new(0, "Issuer".to_string());
-    let recipient = Account::new(1, "Recipient".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let recipient = Account::new_random(1, "Recipient".to_string());
 
     println!("Setting up supply cap test...");
 
@@ -1281,7 +1289,7 @@ fn test_ct_mint_exceeds_supply_cap_fails() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -1355,8 +1363,8 @@ fn test_ct_balance_aggregation_multiple_cells() {
     let config = create_test_config(env);
     let (store, _temp_dir) = create_temp_store();
 
-    let issuer = Account::new(0, "Issuer".to_string());
-    let alice = Account::new(1, "Alice".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
 
     println!("Setting up balance aggregation test...");
 
@@ -1385,7 +1393,7 @@ fn test_ct_balance_aggregation_multiple_cells() {
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -1440,8 +1448,9 @@ fn test_ct_balance_aggregation_multiple_cells() {
         .expect("Mint should succeed");
 
         let signed_mint = sign_mint_transaction(
-            mint_tx,
-            &issuer,
+        mint_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
             &ct_info_lock_args,
             &mint_funding.lock_script_args,
         )
@@ -1515,8 +1524,8 @@ fn test_ct_mint_unlimited_supply() {
     let (_store, _temp_dir) = create_temp_store();
 
     // Create issuer and recipient accounts
-    let issuer = Account::new(0, "Issuer".to_string());
-    let recipient = Account::new(1, "Recipient".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let recipient = Account::new_random(1, "Recipient".to_string());
 
     println!("=== Testing UNLIMITED supply CT token mint ===");
     println!("Issuer: {}", &issuer.stealth_address()[..32]);
@@ -1552,7 +1561,7 @@ fn test_ct_mint_unlimited_supply() {
     );
 
     let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &funding_cell.lock_script_args)
+        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
             .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -1651,6 +1660,7 @@ fn test_ct_mint_unlimited_supply() {
     let signed_mint = sign_mint_transaction(
         built_mint,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding_cell.lock_script_args,
     )
@@ -1724,7 +1734,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
     println!("\n=== Testing consecutive mints with funding cell cleanup ===\n");
 
     // Create issuer account
-    let issuer = Account::new(0, "Issuer".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
     println!("Issuer created: {}", &issuer.stealth_address()[..32]);
 
     // Fund issuer for genesis
@@ -1751,7 +1761,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
     let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(built_genesis, &issuer, &genesis_funding.lock_script_args)
+        sign_genesis_transaction(built_genesis, &issuer, &issuer.spend_secret_key_for_test(), &genesis_funding.lock_script_args)
             .expect("Genesis signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -1818,6 +1828,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
     let signed_mint_1 = sign_mint_transaction(
         built_mint_1,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding_1.lock_script_args,
     )
@@ -1871,6 +1882,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
     let signed_mint_2 = sign_mint_transaction(
         built_mint_2,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding_2.lock_script_args,
     )
@@ -1946,8 +1958,8 @@ fn test_mint_then_transfer_uses_separate_funding() {
     println!("\n=== Testing mint-then-transfer with separate funding cells ===\n");
 
     // Create accounts
-    let issuer = Account::new(0, "Issuer".to_string());
-    let recipient = Account::new(1, "Recipient".to_string());
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let recipient = Account::new_random(1, "Recipient".to_string());
 
     // Fund issuer for genesis
     let genesis_funding = fund_account_with_stealth(env, &issuer, 350_00000000u64)
@@ -1972,7 +1984,7 @@ fn test_mint_then_transfer_uses_separate_funding() {
     let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
 
     let signed_genesis =
-        sign_genesis_transaction(built_genesis, &issuer, &genesis_funding.lock_script_args)
+        sign_genesis_transaction(built_genesis, &issuer, &issuer.spend_secret_key_for_test(), &genesis_funding.lock_script_args)
             .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
@@ -2025,6 +2037,7 @@ fn test_mint_then_transfer_uses_separate_funding() {
     let signed_mint = sign_mint_transaction(
         built_mint,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &ct_info_lock_args,
         &mint_funding.lock_script_args,
     )
@@ -2088,6 +2101,7 @@ fn test_mint_then_transfer_uses_separate_funding() {
     let signed_transfer = CtTxBuilder::sign(
         built_transfer,
         &issuer,
+        &issuer.spend_secret_key_for_test(),
         &[ct_cell],
         Some(&transfer_funding.lock_script_args),
     )

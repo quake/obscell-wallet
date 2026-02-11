@@ -9,11 +9,15 @@ use crate::{
     domain::{
         account::Account,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
+        wallet::WalletMeta,
     },
 };
 
 /// Key for storing the selected network preference in global store.
 pub const SELECTED_NETWORK_KEY: &str = "selected_network";
+
+/// Key for storing wallet metadata.
+const WALLET_META_KEY: &str = "wallet_meta";
 
 /// Wrapper around LMDB database for persistent storage.
 #[derive(Clone)]
@@ -91,6 +95,28 @@ impl Store {
         db.delete(&mut wtxn, &id)?;
         wtxn.commit()?;
         Ok(())
+    }
+
+    // ==================== Wallet Metadata ====================
+
+    /// Save wallet metadata.
+    pub fn save_wallet_meta(&self, meta: &WalletMeta) -> Result<()> {
+        self.save_metadata(WALLET_META_KEY, meta)
+    }
+
+    /// Load wallet metadata.
+    pub fn load_wallet_meta(&self) -> Result<Option<WalletMeta>> {
+        self.load_metadata(WALLET_META_KEY)
+    }
+
+    /// Check if wallet exists (has metadata).
+    pub fn wallet_exists(&self) -> Result<bool> {
+        Ok(self.load_wallet_meta()?.is_some())
+    }
+
+    /// Delete wallet metadata (for reset/migration).
+    pub fn delete_wallet_meta(&self) -> Result<()> {
+        self.delete_metadata(WALLET_META_KEY)
     }
 
     /// Save metadata (e.g., scan cursor).

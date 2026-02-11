@@ -13,7 +13,7 @@ use ckb_jsonrpc_types::{
 use ckb_sdk::Address;
 use ckb_types::H256;
 use color_eyre::eyre::{eyre, Result};
-use secp256k1::{Message, PublicKey, Secp256k1};
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{
     config::Config,
@@ -291,9 +291,12 @@ impl StealthTxBuilder {
     }
 
     /// Sign the built transaction with the account's keys.
+    ///
+    /// The `spend_key` must be pre-decrypted using the wallet passphrase.
     pub fn sign(
         built_tx: BuiltTransaction,
         account: &Account,
+        spend_key: &SecretKey,
         input_cells: &[StealthCell],
     ) -> Result<Transaction> {
         let secp = Secp256k1::new();
@@ -306,7 +309,7 @@ impl StealthTxBuilder {
             let stealth_secret = derive_stealth_secret(
                 &cell.stealth_script_args,
                 &account.view_secret_key(),
-                &account.spend_secret_key(),
+                spend_key,
             )
             .ok_or_else(|| eyre!("Failed to derive stealth secret for input {}", i))?;
 

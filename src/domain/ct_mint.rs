@@ -11,9 +11,9 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
-use secp256k1::{Message, PublicKey, Secp256k1};
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{
     config::Config,
@@ -410,9 +410,11 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
 ///
 /// Both the ct-info cell and funding cell are locked with stealth-locks,
 /// so we need to derive the stealth secret keys and sign the transaction.
+/// The `spend_key` must be pre-decrypted using the wallet passphrase.
 pub fn sign_mint_transaction(
     built_tx: BuiltMintTransaction,
     account: &Account,
+    spend_key: &SecretKey,
     ct_info_lock_args: &[u8],
     funding_lock_args: &[u8],
 ) -> Result<Transaction> {
@@ -420,20 +422,14 @@ pub fn sign_mint_transaction(
     let message = Message::from_digest(built_tx.tx_hash.0);
 
     // Derive the stealth secret key for the ct-info cell (input 0)
-    let ct_info_secret = derive_stealth_secret(
-        ct_info_lock_args,
-        &account.view_secret_key(),
-        &account.spend_secret_key(),
-    )
-    .ok_or_else(|| eyre!("Failed to derive stealth secret for ct-info cell"))?;
+    let ct_info_secret =
+        derive_stealth_secret(ct_info_lock_args, &account.view_secret_key(), spend_key)
+            .ok_or_else(|| eyre!("Failed to derive stealth secret for ct-info cell"))?;
 
     // Derive the stealth secret key for the funding cell (input 1)
-    let funding_secret = derive_stealth_secret(
-        funding_lock_args,
-        &account.view_secret_key(),
-        &account.spend_secret_key(),
-    )
-    .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
+    let funding_secret =
+        derive_stealth_secret(funding_lock_args, &account.view_secret_key(), spend_key)
+            .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
 
     // Sign ct-info cell with recoverable signature
     let ct_info_sig = secp.sign_ecdsa_recoverable(&message, &ct_info_secret);
@@ -984,21 +980,20 @@ pub fn build_genesis_transaction(
 }
 
 /// Sign the genesis transaction with the funding cell's stealth key.
+/// The `spend_key` must be pre-decrypted using the wallet passphrase.
 pub fn sign_genesis_transaction(
     built_tx: BuiltGenesisTransaction,
     account: &Account,
+    spend_key: &SecretKey,
     funding_lock_args: &[u8],
 ) -> Result<Transaction> {
     let secp = Secp256k1::new();
     let message = Message::from_digest(built_tx.tx_hash.0);
 
     // Derive the stealth secret key for the funding cell
-    let stealth_secret = derive_stealth_secret(
-        funding_lock_args,
-        &account.view_secret_key(),
-        &account.spend_secret_key(),
-    )
-    .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
+    let stealth_secret =
+        derive_stealth_secret(funding_lock_args, &account.view_secret_key(), spend_key)
+            .ok_or_else(|| eyre!("Failed to derive stealth secret for funding cell"))?;
 
     // Sign with recoverable signature
     let sig = secp.sign_ecdsa_recoverable(&message, &stealth_secret);
