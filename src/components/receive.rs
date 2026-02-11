@@ -1,5 +1,9 @@
 //! Receive component for displaying stealth addresses and generating fresh addresses.
 
+use ckb_sdk::{AddressPayload, NetworkType};
+use ckb_types::core::ScriptHashType;
+use ckb_types::packed::Byte32;
+use ckb_types::prelude::*;
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -10,7 +14,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{action::Action, domain::account::Account, tui::Frame};
+use crate::{action::Action, config::Config, domain::account::Account, tui::Frame};
 
 use super::Component;
 
@@ -18,10 +22,10 @@ use super::Component;
 pub struct ReceiveComponent {
     action_tx: UnboundedSender<Action>,
     pub account: Option<Account>,
-    /// One-time address that is regenerated on demand
+    /// One-time CKB address (ckb1.../ckt1...)
     pub one_time_address: Option<String>,
-    /// Stealth script args for the one-time address
-    pub script_args: Option<String>,
+    /// Config for network and contract info
+    config: Option<Config>,
 }
 
 impl ReceiveComponent {
@@ -30,8 +34,14 @@ impl ReceiveComponent {
             action_tx,
             account: None,
             one_time_address: None,
-            script_args: None,
+            config: None,
         }
+    }
+
+    /// Set the config for network and contract info.
+    pub fn set_config(&mut self, config: Config) {
+        self.config = Some(config);
+        self.regenerate_address();
     }
 
     /// Set the current account to show receive info for.
@@ -40,26 +50,50 @@ impl ReceiveComponent {
         self.regenerate_address();
     }
 
-    /// Generate a fresh one-time address.
+    /// Generate a fresh one-time address in proper CKB format.
     pub fn regenerate_address(&mut self) {
-        if let Some(ref account) = self.account {
-            // Generate ephemeral key and stealth pubkey
-            let view_pub = account.view_public_key();
-            let spend_pub = account.spend_public_key();
-
-            let (eph_pub, stealth_pub) =
-                crate::domain::stealth::generate_ephemeral_key(&view_pub, &spend_pub);
-
-            // Build script args: ephemeral_pubkey (33B) || pubkey_hash (20B)
-            let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
-            let script_args = [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
-
-            self.script_args = Some(hex::encode(&script_args));
-            self.one_time_address = Some(format!("0x{}", hex::encode(&script_args)));
-        } else {
+        let Some(ref account) = self.account else {
             self.one_time_address = None;
-            self.script_args = None;
-        }
+            return;
+        };
+        let Some(ref config) = self.config else {
+            self.one_time_address = None;
+            return;
+        };
+
+        // Generate ephemeral key and stealth pubkey
+        let view_pub = account.view_public_key();
+        let spend_pub = account.spend_public_key();
+
+        let (eph_pub, stealth_pub) =
+            crate::domain::stealth::generate_ephemeral_key(&view_pub, &spend_pub);
+
+        // Build script args: ephemeral_pubkey (33B) || pubkey_hash (20B)
+        let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
+        let script_args = [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
+
+        // Get stealth lock code hash from config
+        let code_hash_hex = config
+            .contracts
+            .stealth_lock_code_hash
+            .strip_prefix("0x")
+            .unwrap_or(&config.contracts.stealth_lock_code_hash);
+        let code_hash_bytes =
+            hex::decode(code_hash_hex).expect("Invalid stealth_lock_code_hash in config");
+        let code_hash = Byte32::from_slice(&code_hash_bytes).expect("Invalid code hash length");
+
+        // Build AddressPayload for full address format (custom script)
+        let payload = AddressPayload::new_full(ScriptHashType::Type, code_hash, script_args.into());
+
+        // Determine network type from config
+        let network = match config.network.name.as_str() {
+            "mainnet" | "lina" => NetworkType::Mainnet,
+            _ => NetworkType::Testnet, // testnet, devnet, etc. all use ckt prefix
+        };
+
+        // Generate the address string (ckb1... or ckt1...)
+        let address = payload.display_with_network(network, true);
+        self.one_time_address = Some(address);
     }
 
     /// Static draw method for use in the main app draw loop.
@@ -68,7 +102,6 @@ impl ReceiveComponent {
         area: Rect,
         account: Option<&Account>,
         one_time_address: Option<&str>,
-        script_args: Option<&str>,
     ) {
         let chunks = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(area);
 
@@ -125,65 +158,42 @@ impl ReceiveComponent {
         // One-time address info
         let one_time_info = if account.is_some() {
             let addr_display = one_time_address.unwrap_or("Press [g] to generate");
-            let args_display = script_args.unwrap_or("");
 
-            vec![
+            // Split long address into multiple lines for display
+            let addr_lines: Vec<Line> = if addr_display.len() > 60 {
+                let mut lines = vec![Line::from(vec![Span::styled(
+                    format!("  {}", &addr_display[..60]),
+                    Style::default().fg(Color::Magenta),
+                )])];
+                let remaining = &addr_display[60..];
+                // Split remaining into chunks of 60 chars
+                for chunk in remaining.as_bytes().chunks(60) {
+                    let s = std::str::from_utf8(chunk).unwrap_or("");
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {}", s),
+                        Style::default().fg(Color::Magenta),
+                    )]));
+                }
+                lines
+            } else {
+                vec![Line::from(vec![Span::styled(
+                    format!("  {}", addr_display),
+                    Style::default().fg(Color::Magenta),
+                )])]
+            };
+
+            let mut info = vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "One-Time Address (for direct CKB sends):",
+                    "One-Time CKB Address (for direct CKB sends):",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(""),
-                Line::from(vec![Span::styled(
-                    "Script Args:",
-                    Style::default().fg(Color::DarkGray),
-                )]),
-                Line::from(vec![Span::styled(
-                    format!(
-                        "  {}",
-                        if args_display.len() > 60 {
-                            &args_display[..60]
-                        } else {
-                            args_display
-                        }
-                    ),
-                    Style::default().fg(Color::Green),
-                )]),
-                if args_display.len() > 60 {
-                    Line::from(vec![Span::styled(
-                        format!("  {}", &args_display[60..]),
-                        Style::default().fg(Color::Green),
-                    )])
-                } else {
-                    Line::from("")
-                },
-                Line::from(""),
-                Line::from(vec![Span::styled(
-                    "Full One-Time Address:",
-                    Style::default().fg(Color::DarkGray),
-                )]),
-                Line::from(vec![Span::styled(
-                    format!(
-                        "  {}",
-                        if addr_display.len() > 70 {
-                            &addr_display[..70]
-                        } else {
-                            addr_display
-                        }
-                    ),
-                    Style::default().fg(Color::Magenta),
-                )]),
-                if addr_display.len() > 70 {
-                    Line::from(vec![Span::styled(
-                        format!("  {}", &addr_display[70..]),
-                        Style::default().fg(Color::Magenta),
-                    )])
-                } else {
-                    Line::from("")
-                },
-                Line::from(""),
+            ];
+            info.extend(addr_lines);
+            info.extend(vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "[g] Generate new one-time address",
@@ -193,7 +203,8 @@ impl ReceiveComponent {
                     "Each one-time address should only be used once for privacy.",
                     Style::default().fg(Color::DarkGray),
                 )]),
-            ]
+            ]);
+            info
         } else {
             vec![]
         };
@@ -223,7 +234,6 @@ impl Component for ReceiveComponent {
             area,
             self.account.as_ref(),
             self.one_time_address.as_deref(),
-            self.script_args.as_deref(),
         );
     }
 }

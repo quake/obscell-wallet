@@ -157,7 +157,8 @@ impl App {
         let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
         let mut accounts_component = AccountsComponent::new(action_tx.clone());
         accounts_component.set_is_mainnet(config.network.name == "mainnet");
-        let receive_component = ReceiveComponent::new(action_tx.clone());
+        let mut receive_component = ReceiveComponent::new(action_tx.clone());
+        receive_component.set_config(config.clone());
         let send_component = SendComponent::new(action_tx.clone());
         let history_component = HistoryComponent::new();
         let tokens_component = TokensComponent::new(action_tx.clone());
@@ -1887,7 +1888,6 @@ impl App {
         let tip_block_number = self.tip_block_number;
         let receive_account = self.receive_component.account.clone();
         let receive_one_time_address = self.receive_component.one_time_address.clone();
-        let receive_script_args = self.receive_component.script_args.clone();
         let send_account = self.send_component.account.clone();
         let send_recipient = self.send_component.recipient.clone();
         let send_amount = self.send_component.amount.clone();
@@ -2069,7 +2069,6 @@ impl App {
                         chunks[2],
                         receive_account.as_ref(),
                         receive_one_time_address.as_deref(),
-                        receive_script_args.as_deref(),
                     );
                 }
                 Tab::Tokens => {
