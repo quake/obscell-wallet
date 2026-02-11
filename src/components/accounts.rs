@@ -80,11 +80,17 @@ impl AccountsComponent {
     }
 
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
+        let was_empty = self.accounts.is_empty();
         self.accounts = accounts;
         if self.accounts.is_empty() {
             // Auto-focus Operations menu when list is empty
             self.focus = AccountsFocus::Operations;
         } else {
+            // Reset focus to List when accounts become available
+            // (e.g., after creating first account)
+            if was_empty {
+                self.focus = AccountsFocus::List;
+            }
             if self.selected_index >= self.accounts.len() {
                 self.selected_index = self.accounts.len() - 1;
             }
