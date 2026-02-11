@@ -1412,11 +1412,6 @@ impl Scanner {
             return Ok(0);
         }
 
-        info!(
-            "Full transaction history scan for {} accounts",
-            accounts.len()
-        );
-
         let stealth_code_hash = self.stealth_lock_code_hash()?;
 
         // Prepare per-account data
@@ -1460,7 +1455,7 @@ impl Scanner {
         let mut block_timestamps: HashMap<u64, i64> = HashMap::new();
 
         if cursor.is_some() {
-            info!(
+            debug!(
                 "Scanning stealth-lock transactions (incremental, resuming from saved cursor)..."
             );
         } else {
