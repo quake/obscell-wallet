@@ -18,15 +18,22 @@ use crate::{action::Action, config::Config, domain::account::Account, tui::Frame
 
 use super::Component;
 
+/// Number of pre-generated addresses to rotate through
+const ADDRESS_POOL_SIZE: usize = 10;
+
 /// Component for receiving funds via stealth addresses.
 pub struct ReceiveComponent {
     action_tx: UnboundedSender<Action>,
     pub account: Option<Account>,
-    /// One-time CKB address (ckb1.../ckt1...)
+    /// Pool of pre-generated one-time CKB addresses
+    address_pool: Vec<String>,
+    /// Current index in the address pool for display rotation
+    current_index: usize,
+    /// Currently displayed one-time address
     pub one_time_address: Option<String>,
     /// Config for network and contract info
     config: Option<Config>,
-    /// Whether address is spinning (auto-refreshing)
+    /// Whether address is spinning (rotating through pool)
     pub is_spinning: bool,
 }
 
@@ -35,6 +42,8 @@ impl ReceiveComponent {
         Self {
             action_tx,
             account: None,
+            address_pool: Vec::new(),
+            current_index: 0,
             one_time_address: None,
             config: None,
             is_spinning: true,
@@ -44,18 +53,21 @@ impl ReceiveComponent {
     /// Set the config for network and contract info.
     pub fn set_config(&mut self, config: Config) {
         self.config = Some(config);
-        self.regenerate_address();
+        self.regenerate_pool();
     }
 
     /// Set the current account to show receive info for.
     pub fn set_account(&mut self, account: Option<Account>) {
         self.account = account;
-        self.is_spinning = true; // Reset to spinning when account changes
-        self.regenerate_address();
+        self.is_spinning = true;
+        self.regenerate_pool();
     }
 
-    /// Generate a fresh one-time address in proper CKB format.
-    pub fn regenerate_address(&mut self) {
+    /// Generate a pool of one-time addresses.
+    fn regenerate_pool(&mut self) {
+        self.address_pool.clear();
+        self.current_index = 0;
+
         let Some(ref account) = self.account else {
             self.one_time_address = None;
             return;
@@ -65,16 +77,8 @@ impl ReceiveComponent {
             return;
         };
 
-        // Generate ephemeral key and stealth pubkey
         let view_pub = account.view_public_key();
         let spend_pub = account.spend_public_key();
-
-        let (eph_pub, stealth_pub) =
-            crate::domain::stealth::generate_ephemeral_key(&view_pub, &spend_pub);
-
-        // Build script args: ephemeral_pubkey (33B) || pubkey_hash (20B)
-        let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
-        let script_args = [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
 
         // Get stealth lock code hash from config
         let code_hash_hex = config
@@ -86,18 +90,42 @@ impl ReceiveComponent {
             hex::decode(code_hash_hex).expect("Invalid stealth_lock_code_hash in config");
         let code_hash = Byte32::from_slice(&code_hash_bytes).expect("Invalid code hash length");
 
-        // Build AddressPayload for full address format (custom script)
-        let payload = AddressPayload::new_full(ScriptHashType::Type, code_hash, script_args.into());
-
         // Determine network type from config
         let network = match config.network.name.as_str() {
             "mainnet" | "lina" => NetworkType::Mainnet,
-            _ => NetworkType::Testnet, // testnet, devnet, etc. all use ckt prefix
+            _ => NetworkType::Testnet,
         };
 
-        // Generate the address string (ckb1... or ckt1...)
-        let address = payload.display_with_network(network, true);
-        self.one_time_address = Some(address);
+        // Generate ADDRESS_POOL_SIZE addresses
+        for _ in 0..ADDRESS_POOL_SIZE {
+            let (eph_pub, stealth_pub) =
+                crate::domain::stealth::generate_ephemeral_key(&view_pub, &spend_pub);
+
+            let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
+            let script_args = [eph_pub.serialize().as_slice(), &pubkey_hash[0..20]].concat();
+
+            let payload = AddressPayload::new_full(
+                ScriptHashType::Type,
+                code_hash.clone(),
+                script_args.into(),
+            );
+            let address = payload.display_with_network(network, true);
+            self.address_pool.push(address);
+        }
+
+        // Set initial address
+        if !self.address_pool.is_empty() {
+            self.one_time_address = Some(self.address_pool[0].clone());
+        }
+    }
+
+    /// Rotate to the next address in the pool (called on each frame when spinning).
+    pub fn rotate_address(&mut self) {
+        if self.address_pool.is_empty() {
+            return;
+        }
+        self.current_index = (self.current_index + 1) % self.address_pool.len();
+        self.one_time_address = Some(self.address_pool[self.current_index].clone());
     }
 
     /// Static draw method for use in the main app draw loop.
@@ -163,7 +191,7 @@ impl ReceiveComponent {
             // Status and action based on spinning state
             let (status_text, status_style, action_text) = if is_spinning {
                 (
-                    "Generating addresses... Press Enter to select",
+                    "Rotating addresses... Press Enter to select",
                     Style::default().fg(Color::Yellow),
                     "",
                 )
@@ -171,7 +199,7 @@ impl ReceiveComponent {
                 (
                     "Address selected! Copy the address above.",
                     Style::default().fg(Color::Green),
-                    "Press Enter to start generating again",
+                    "Press Enter to generate new addresses",
                 )
             };
 
@@ -230,8 +258,14 @@ impl ReceiveComponent {
 impl Component for ReceiveComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         if key.code == KeyCode::Enter {
-            // Toggle spinning state
-            self.is_spinning = !self.is_spinning;
+            if self.is_spinning {
+                // Stop spinning, keep current address
+                self.is_spinning = false;
+            } else {
+                // Regenerate pool and start spinning again
+                self.regenerate_pool();
+                self.is_spinning = true;
+            }
         }
         Ok(())
     }

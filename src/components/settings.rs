@@ -84,8 +84,7 @@ impl SettingsComponent {
 
     /// Static draw method for use in App's draw_ui
     pub fn draw_static(f: &mut Frame, area: Rect, current_network: &str, selected_index: usize) {
-        let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         // Network list with hotkey hints
         let items: Vec<ListItem> = NETWORKS

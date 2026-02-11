@@ -166,8 +166,7 @@ impl HistoryComponent {
         selected_index: usize,
         account: Option<&Account>,
     ) {
-        let chunks = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         // Transaction list
         let items: Vec<ListItem> = transactions
@@ -241,10 +240,14 @@ impl HistoryComponent {
                     Span::styled("Confirmed", Style::default().fg(Color::Green)),
                 ]),
                 Line::from(""),
-                Line::from(vec![
-                    Span::styled("TX Hash: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(tx.short_hash(), Style::default().fg(Color::Cyan)),
-                ]),
+                Line::from(vec![Span::styled(
+                    "TX Hash:",
+                    Style::default().fg(Color::DarkGray),
+                )]),
+                Line::from(vec![Span::styled(
+                    tx.full_hash(),
+                    Style::default().fg(Color::Cyan),
+                )]),
                 Line::from(""),
             ];
 

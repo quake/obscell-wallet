@@ -595,8 +595,7 @@ impl TokensComponent {
         selected_operation: usize,
         error_message: Option<&str>,
     ) {
-        let chunks = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         // Left side: split into token list and operations menu
         let left_chunks =

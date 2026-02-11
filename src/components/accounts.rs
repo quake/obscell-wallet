@@ -24,7 +24,6 @@ pub enum AccountsFocus {
 /// Available operations in Accounts view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountOperation {
-    Select,
     Create,
     Import,
     Export,
@@ -33,7 +32,6 @@ pub enum AccountOperation {
 impl AccountOperation {
     fn all() -> &'static [AccountOperation] {
         &[
-            AccountOperation::Select,
             AccountOperation::Create,
             AccountOperation::Import,
             AccountOperation::Export,
@@ -42,7 +40,6 @@ impl AccountOperation {
 
     fn label(&self) -> &'static str {
         match self {
-            AccountOperation::Select => "Select Account",
             AccountOperation::Create => "Create New Account",
             AccountOperation::Import => "Import Account",
             AccountOperation::Export => "Export Private Key",
@@ -57,7 +54,6 @@ pub struct AccountsComponent {
     pub selected_index: usize,
     pub focus: AccountsFocus,
     pub selected_operation: usize,
-    is_mainnet: bool,
 }
 
 impl AccountsComponent {
@@ -71,12 +67,7 @@ impl AccountsComponent {
             selected_index: 0,
             focus: AccountsFocus::List,
             selected_operation: 0,
-            is_mainnet: false,
         }
-    }
-
-    pub fn set_is_mainnet(&mut self, is_mainnet: bool) {
-        self.is_mainnet = is_mainnet;
     }
 
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -152,9 +143,9 @@ impl AccountsComponent {
         selected_index: usize,
         focus: AccountsFocus,
         selected_operation: usize,
-        is_mainnet: bool,
+        one_time_address: Option<&str>,
     ) {
-        let chunks = Layout::horizontal([Constraint::Length(35), Constraint::Min(0)]).split(area);
+        let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         // Left side: split into account list and operations menu
         let left_chunks =
@@ -273,7 +264,9 @@ impl AccountsComponent {
         // Account details
         let details = if let Some(acc) = accounts.get(selected_index) {
             let stealth_addr = truncate(&acc.stealth_address());
-            let ckb_addr = truncate(&acc.one_time_ckb_address(is_mainnet));
+            let ckb_addr = one_time_address
+                .map(|a| truncate(a))
+                .unwrap_or_else(|| "(generating...)".to_string());
 
             vec![
                 Line::from(vec![
@@ -407,12 +400,6 @@ impl Component for AccountsComponent {
                     }
                 }
                 KeyCode::Enter => match ops[self.selected_operation] {
-                    AccountOperation::Select => {
-                        if !self.accounts.is_empty() {
-                            self.action_tx
-                                .send(Action::SelectAccount(self.selected_index))?;
-                        }
-                    }
                     AccountOperation::Create => {
                         self.action_tx.send(Action::CreateAccount)?;
                     }
@@ -437,7 +424,7 @@ impl Component for AccountsComponent {
             self.selected_index,
             self.focus,
             self.selected_operation,
-            self.is_mainnet,
+            None, // one_time_address is managed by ReceiveComponent
         );
     }
 }

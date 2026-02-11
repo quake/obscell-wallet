@@ -97,6 +97,11 @@ impl TxRecord {
         )
     }
 
+    /// Get full tx hash as hex string with 0x prefix.
+    pub fn full_hash(&self) -> String {
+        format!("0x{}", hex::encode(&self.tx_hash))
+    }
+
     /// Get the delta value (net change).
     pub fn delta(&self) -> i64 {
         match &self.tx_type {

@@ -64,22 +64,14 @@ impl Tab {
         let underline = Style::default().add_modifier(Modifier::UNDERLINED);
         match self {
             Tab::Settings => Line::from(vec![
-                Span::raw("Se"),
-                Span::styled("t", underline),
-                Span::raw("tings"),
+                Span::raw("Settin"),
+                Span::styled("g", underline),
+                Span::raw("s"),
             ]),
             Tab::Accounts => Line::from(vec![Span::styled("A", underline), Span::raw("ccounts")]),
-            Tab::Tokens => Line::from(vec![
-                Span::raw("T"),
-                Span::styled("o", underline),
-                Span::raw("kens"),
-            ]),
+            Tab::Tokens => Line::from(vec![Span::styled("T", underline), Span::raw("okens")]),
             Tab::Send => Line::from(vec![Span::styled("S", underline), Span::raw("end")]),
-            Tab::Receive => Line::from(vec![
-                Span::raw("Recei"),
-                Span::styled("v", underline),
-                Span::raw("e"),
-            ]),
+            Tab::Receive => Line::from(vec![Span::styled("R", underline), Span::raw("eceive")]),
             Tab::History => Line::from(vec![Span::styled("H", underline), Span::raw("istory")]),
             Tab::Dev => Line::from(vec![Span::styled("D", underline), Span::raw("ev")]),
         }
@@ -171,8 +163,7 @@ impl App {
         let scanner = Scanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
         let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
-        let mut accounts_component = AccountsComponent::new(action_tx.clone());
-        accounts_component.set_is_mainnet(config.network.name == "mainnet");
+        let accounts_component = AccountsComponent::new(action_tx.clone());
         let mut receive_component = ReceiveComponent::new(action_tx.clone());
         receive_component.set_config(config.clone());
         let send_component = SendComponent::new(action_tx.clone());
@@ -563,7 +554,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') if key.modifiers.is_empty() => {
+            KeyCode::Char('q' | 'Q') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::Quit)?;
             }
             KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -583,30 +574,30 @@ impl App {
                 };
                 self.switch_tab(Tab::from_index(prev_index, self.dev_mode));
             }
-            // Tab hotkeys for quick navigation
-            KeyCode::Char('t') if key.modifiers.is_empty() => {
+            // Tab hotkeys for quick navigation (case-insensitive)
+            KeyCode::Char('g' | 'G') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Settings);
             }
-            KeyCode::Char('a') if key.modifiers.is_empty() => {
+            KeyCode::Char('a' | 'A') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Accounts);
             }
-            KeyCode::Char('s') if key.modifiers.is_empty() => {
+            KeyCode::Char('s' | 'S') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Send);
             }
-            KeyCode::Char('v') if key.modifiers.is_empty() => {
+            KeyCode::Char('r' | 'R') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Receive);
             }
-            KeyCode::Char('o') if key.modifiers.is_empty() => {
+            KeyCode::Char('t' | 'T') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Tokens);
             }
-            KeyCode::Char('h') if key.modifiers.is_empty() => {
+            KeyCode::Char('h' | 'H') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::History);
             }
-            KeyCode::Char('d') if key.modifiers.is_empty() && self.dev_mode => {
+            KeyCode::Char('d' | 'D') if key.modifiers.is_empty() && self.dev_mode => {
                 self.switch_tab(Tab::Dev);
             }
-            // Global hotkey: r for Full Rescan
-            KeyCode::Char('r') if key.modifiers.is_empty() => {
+            // Global hotkey: F for Full Rescan (case-insensitive)
+            KeyCode::Char('f' | 'F') if key.modifiers.is_empty() => {
                 self.action_tx.send(Action::FullRescan)?;
             }
             _ => match self.active_tab {
@@ -832,7 +823,7 @@ impl App {
                         self.tokens_component.set_balances(balances);
                     }
                 }
-                self.status_message = format!("Selected account {}", index);
+                self.status_message = format!("Selected Account {}", index + 1);
             }
             Action::Rescan => {
                 if self.is_scanning {
@@ -1814,8 +1805,6 @@ impl App {
                 self.accounts_component.set_accounts(accounts.clone());
                 self.settings_component
                     .set_network(&self.config.network.name);
-                self.accounts_component
-                    .set_is_mainnet(self.config.network.name == "mainnet");
 
                 // Reset UI components with the first account (if any)
                 // First update receive component's config for the new network
@@ -1924,7 +1913,6 @@ impl App {
     fn draw_ui(&mut self) -> Result<()> {
         // Collect all data needed for drawing before borrowing terminal
         let config_network_name = self.config.network.name.clone();
-        let is_mainnet = config_network_name == "mainnet";
         let active_tab = self.active_tab;
         let status_message = self.status_message.clone();
         let accounts = self.accounts_component.accounts.clone();
@@ -1932,9 +1920,11 @@ impl App {
         let accounts_focus = self.accounts_component.focus;
         let accounts_selected_operation = self.accounts_component.selected_operation;
         let tip_block_number = self.tip_block_number;
-        // Regenerate address on every frame when spinning
-        if self.receive_component.is_spinning {
-            self.receive_component.regenerate_address();
+        // Rotate address on every frame when spinning, but only if visible
+        if self.receive_component.is_spinning
+            && matches!(self.active_tab, Tab::Accounts | Tab::Receive)
+        {
+            self.receive_component.rotate_address();
         }
         let receive_account = self.receive_component.account.clone();
         let receive_one_time_address = self.receive_component.one_time_address.clone();
@@ -2112,7 +2102,7 @@ impl App {
                         selected_index,
                         accounts_focus,
                         accounts_selected_operation,
-                        is_mainnet,
+                        receive_one_time_address.as_deref(),
                     );
                 }
                 Tab::Send => {
@@ -2193,16 +2183,18 @@ impl App {
             let tip_str = tip_block_number
                 .map(|n| format!("Block: {}", n))
                 .unwrap_or_else(|| "Block: -".to_string());
+            let underline = Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+            let dim = Style::default().fg(Color::DarkGray);
             let status = Paragraph::new(vec![Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&status_message, Style::default().fg(Color::Green)),
                 Span::raw("  |  "),
                 Span::styled(&tip_str, Style::default().fg(Color::Yellow)),
                 Span::raw("  |  "),
-                Span::styled(
-                    "[r]Full Rescan [q]Quit",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled("F", underline),
+                Span::styled("ull Rescan ", dim),
+                Span::styled("Q", underline),
+                Span::styled("uit", dim),
             ])])
             .block(
                 Block::default()
@@ -2317,14 +2309,14 @@ impl App {
     }
 
     fn draw_status(&self, f: &mut Frame, area: Rect) {
+        let underline = Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+        let dim = Style::default().fg(Color::DarkGray);
         let status = Paragraph::new(vec![Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Status: ", dim),
             Span::styled(&self.status_message, Style::default().fg(Color::Green)),
             Span::raw("  |  "),
-            Span::styled(
-                "[q]Quit [?]Help [Tab]Switch",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled("Q", underline),
+            Span::styled("uit [?]Help [Tab]Switch", dim),
         ])])
         .block(
             Block::default()
