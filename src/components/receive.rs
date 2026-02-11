@@ -159,30 +159,7 @@ impl ReceiveComponent {
         let one_time_info = if account.is_some() {
             let addr_display = one_time_address.unwrap_or("Press [g] to generate");
 
-            // Split long address into multiple lines for display
-            let addr_lines: Vec<Line> = if addr_display.len() > 60 {
-                let mut lines = vec![Line::from(vec![Span::styled(
-                    format!("  {}", &addr_display[..60]),
-                    Style::default().fg(Color::Magenta),
-                )])];
-                let remaining = &addr_display[60..];
-                // Split remaining into chunks of 60 chars
-                for chunk in remaining.as_bytes().chunks(60) {
-                    let s = std::str::from_utf8(chunk).unwrap_or("");
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  {}", s),
-                        Style::default().fg(Color::Magenta),
-                    )]));
-                }
-                lines
-            } else {
-                vec![Line::from(vec![Span::styled(
-                    format!("  {}", addr_display),
-                    Style::default().fg(Color::Magenta),
-                )])]
-            };
-
-            let mut info = vec![
+            vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "One-Time CKB Address (for direct CKB sends):",
@@ -191,9 +168,11 @@ impl ReceiveComponent {
                         .add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(""),
-            ];
-            info.extend(addr_lines);
-            info.extend(vec![
+                // Display address on single line for easy copying
+                Line::from(vec![Span::styled(
+                    addr_display,
+                    Style::default().fg(Color::Magenta),
+                )]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "[g] Generate new one-time address",
@@ -203,8 +182,7 @@ impl ReceiveComponent {
                     "Each one-time address should only be used once for privacy.",
                     Style::default().fg(Color::DarkGray),
                 )]),
-            ]);
-            info
+            ]
         } else {
             vec![]
         };
@@ -234,6 +212,48 @@ impl Component for ReceiveComponent {
             area,
             self.account.as_ref(),
             self.one_time_address.as_deref(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that CKB address is generated in correct bech32m format.
+    /// Format should be: ckb1... (mainnet) or ckt1... (testnet)
+    /// where "1" is the bech32 separator.
+    #[test]
+    fn test_ckb_address_format() {
+        // Use the RFC example to verify our address generation
+        let code_hash_hex = "9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8";
+        let code_hash_bytes = hex::decode(code_hash_hex).unwrap();
+        let code_hash = Byte32::from_slice(&code_hash_bytes).unwrap();
+
+        let args_hex = "b39bbc0b3673c7d36450bc14cfcdad2d559c6c64";
+        let args = hex::decode(args_hex).unwrap();
+
+        let payload = AddressPayload::new_full(ScriptHashType::Type, code_hash, args.into());
+
+        // Test mainnet address
+        let mainnet_addr = payload.display_with_network(NetworkType::Mainnet, true);
+        assert!(
+            mainnet_addr.starts_with("ckb1"),
+            "Mainnet address should start with 'ckb1', got: {}",
+            mainnet_addr
+        );
+        // Verify against RFC example
+        assert_eq!(
+            mainnet_addr,
+            "ckb1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqdnnw7qkdnnclfkg59uzn8umtfd2kwxceqxwquc4"
+        );
+
+        // Test testnet address
+        let testnet_addr = payload.display_with_network(NetworkType::Testnet, true);
+        assert!(
+            testnet_addr.starts_with("ckt1"),
+            "Testnet address should start with 'ckt1', got: {}",
+            testnet_addr
         );
     }
 }
