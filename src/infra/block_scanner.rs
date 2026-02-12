@@ -641,10 +641,8 @@ impl BlockScanner {
 
             blocks_processed += 1;
 
-            // Send progress update periodically
-            if let Some(tx) = update_tx
-                && (blocks_processed % 100 == 0 || current == tip)
-            {
+            // Send progress update for every block
+            if let Some(tx) = update_tx {
                 let _ = tx.send(BlockScanUpdate::Progress {
                     current_block: current,
                     tip_block: tip,
