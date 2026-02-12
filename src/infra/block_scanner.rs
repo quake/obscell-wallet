@@ -3,10 +3,9 @@
 //! Polls blocks via get_block() RPC instead of using indexer.
 //! This eliminates the need for rich-indexer and simplifies deployment.
 
-use ckb_jsonrpc_types::{BlockView, TransactionView};
+use ckb_jsonrpc_types::BlockView;
 use color_eyre::eyre::{eyre, Result};
-use secp256k1::{PublicKey, SecretKey};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,10 +13,9 @@ use crate::{
     config::Config,
     domain::{
         account::Account,
-        cell::{aggregate_ct_balances, CtBalance, CtCell, CtInfoCell, StealthCell, TxRecord},
+        cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
         ct,
         ct_info::CtInfoData,
-        scan_state::ScanState,
         stealth::{derive_shared_secret, matches_key},
     },
     infra::{rpc::RpcClient, store::Store},
@@ -440,6 +438,211 @@ impl BlockScanner {
         commitment.copy_from_slice(&data[0..32]);
         encrypted_amount.copy_from_slice(&data[32..64]);
         Some((commitment, encrypted_amount))
+    }
+
+    /// Scan blocks from last position up to tip.
+    ///
+    /// Handles reorg detection by checking parent_hash against stored recent_blocks.
+    /// Returns the number of blocks processed.
+    pub fn scan_blocks(
+        &self,
+        accounts: &[Account],
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+    ) -> Result<usize> {
+        if accounts.is_empty() {
+            return Ok(0);
+        }
+
+        let tip = self.get_tip_block_number()?;
+        let mut state = self.store.load_scan_state()?;
+        let start_block = self.config.network.scan_start_block;
+
+        let mut current = state.next_block_to_scan(start_block);
+        let mut blocks_processed = 0;
+        let mut total_cells_found: u64 = 0;
+
+        info!(
+            "Starting block scan from {} to {} (tip)",
+            current, tip
+        );
+
+        while current <= tip {
+            // Fetch the block
+            let block = match self.rpc.get_block(current)? {
+                Some(b) => b,
+                None => {
+                    warn!("Block {} not found, waiting...", current);
+                    break;
+                }
+            };
+
+            let block_hash: [u8; 32] = block.header.hash.as_bytes().try_into()
+                .map_err(|_| eyre!("Invalid block hash length"))?;
+            let parent_hash: [u8; 32] = block.header.inner.parent_hash.as_bytes().try_into()
+                .map_err(|_| eyre!("Invalid parent hash length"))?;
+
+            // Check for reorg
+            if let Some(expected_parent) = state.expected_parent_hash() {
+                if parent_hash != expected_parent {
+                    // Reorg detected!
+                    info!(
+                        "Reorg detected at block {}! Expected parent {:?}, got {:?}",
+                        current,
+                        hex::encode(&expected_parent[..8]),
+                        hex::encode(&parent_hash[..8])
+                    );
+
+                    // Find fork point
+                    if let Some(fork_block) = state.find_fork_point(&parent_hash) {
+                        info!("Fork point found at block {}", fork_block);
+
+                        // Rollback state
+                        state.rollback_to(fork_block);
+                        self.store.save_scan_state(&state)?;
+
+                        // We need to rollback cell data too
+                        // For simplicity, we'll do a full rescan from fork point
+                        // A more sophisticated implementation would track per-block changes
+                        for account in accounts {
+                            self.store.clear_all_cells_for_account(account.id)?;
+                        }
+                        state.clear();
+                        self.store.save_scan_state(&state)?;
+
+                        // Notify about reorg
+                        if let Some(tx) = update_tx {
+                            let _ = tx.send(BlockScanUpdate::ReorgDetected {
+                                fork_block,
+                                new_tip: tip,
+                            });
+                        }
+
+                        // Restart from fork point
+                        current = fork_block + 1;
+                        continue;
+                    } else {
+                        // Can't find fork point in recent blocks - need full rescan
+                        warn!("Fork point not found in recent blocks, initiating full rescan");
+                        for account in accounts {
+                            self.store.clear_all_cells_for_account(account.id)?;
+                        }
+                        state.clear();
+                        self.store.save_scan_state(&state)?;
+                        current = start_block;
+                        continue;
+                    }
+                }
+            }
+
+            // Process the block
+            let result = self.process_block(&block, accounts)?;
+
+            // Apply results to store
+            for (account_id, cells) in &result.new_stealth_cells {
+                if !cells.is_empty() {
+                    self.store.add_stealth_cells(*account_id, cells)?;
+                    total_cells_found += cells.len() as u64;
+                }
+            }
+            for (account_id, cells) in &result.new_ct_cells {
+                if !cells.is_empty() {
+                    self.store.add_ct_cells(*account_id, cells)?;
+                    total_cells_found += cells.len() as u64;
+                }
+            }
+            for (account_id, cells) in &result.new_ct_info_cells {
+                if !cells.is_empty() {
+                    self.store.add_ct_info_cells(*account_id, cells)?;
+                }
+            }
+            for (account_id, out_points) in &result.spent_out_points {
+                if !out_points.is_empty() {
+                    self.store.remove_spent_cells(*account_id, out_points)?;
+                    self.store.remove_spent_ct_cells(*account_id, out_points)?;
+                    self.store.remove_spent_ct_info_cells(*account_id, out_points)?;
+                }
+            }
+            for (account_id, records) in &result.tx_records {
+                for record in records {
+                    self.store.save_tx_record(*account_id, record)?;
+                }
+            }
+
+            // Update scan state
+            state.add_block(current, block_hash);
+            self.store.save_scan_state(&state)?;
+
+            blocks_processed += 1;
+
+            // Send progress update periodically
+            if let Some(tx) = update_tx {
+                if blocks_processed % 100 == 0 || current == tip {
+                    let _ = tx.send(BlockScanUpdate::Progress {
+                        current_block: current,
+                        tip_block: tip,
+                        cells_found: total_cells_found,
+                    });
+                }
+            }
+
+            current += 1;
+        }
+
+        info!(
+            "Block scan complete: {} blocks processed, {} cells found",
+            blocks_processed, total_cells_found
+        );
+
+        Ok(blocks_processed)
+    }
+
+    /// Perform a full rescan from the start block.
+    pub fn full_rescan(
+        &self,
+        accounts: &[Account],
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+    ) -> Result<usize> {
+        info!("Starting full rescan...");
+
+        // Clear all data
+        let account_ids: Vec<u64> = accounts.iter().map(|a| a.id).collect();
+        self.store.clear_all_for_rescan(&account_ids)?;
+
+        // Notify
+        if let Some(tx) = update_tx {
+            let _ = tx.send(BlockScanUpdate::Started { is_full_rescan: true });
+        }
+
+        // Run scan
+        self.scan_blocks(accounts, update_tx)
+    }
+
+    /// Spawn a background scan task.
+    pub fn spawn_background_scan(
+        config: Config,
+        store: Store,
+        accounts: Vec<Account>,
+        is_full_rescan: bool,
+        update_tx: tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>,
+    ) {
+        tokio::spawn(async move {
+            let update_tx_clone = update_tx.clone();
+
+            let _ = update_tx.send(BlockScanUpdate::Started { is_full_rescan });
+
+            let _result = tokio::task::spawn_blocking(move || {
+                let scanner = BlockScanner::new(config, store);
+                if is_full_rescan {
+                    scanner.full_rescan(&accounts, Some(&update_tx_clone))
+                } else {
+                    scanner.scan_blocks(&accounts, Some(&update_tx_clone))
+                }
+            })
+            .await;
+
+            // Note: We can't easily get final counts here without re-querying store
+            // The Complete update would need to be sent from within scan_blocks
+        });
     }
 }
 
