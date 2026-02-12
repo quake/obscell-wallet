@@ -2544,8 +2544,8 @@ impl App {
             ])
             .split(f.area());
 
-            // Draw header with dev mode indicator
-            let mut header_spans = vec![
+            // Draw header with network indicator
+            let header_spans = vec![
                 Span::styled(
                     "Obscell Wallet",
                     Style::default()
@@ -2558,15 +2558,6 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 ),
             ];
-            if dev_mode {
-                header_spans.push(Span::raw("  "));
-                header_spans.push(Span::styled(
-                    "[DEV]",
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
             let title = Paragraph::new(vec![Line::from(header_spans)]).block(
                 Block::default()
                     .borders(Borders::ALL)
