@@ -13,6 +13,7 @@ pub mod e2e_ct_flow;
 pub mod e2e_ct_genesis_mint;
 pub mod e2e_faucet_send_flow;
 pub mod e2e_history;
+pub mod e2e_incremental_scan;
 pub mod e2e_user_flow;
 pub mod faucet;
 

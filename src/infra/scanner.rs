@@ -730,6 +730,9 @@ impl Scanner {
     ///
     /// Only fetches cells added since the previous scan.
     /// New cells are appended to the store via `add_*` methods.
+    ///
+    /// Note: This requires rich-indexer which orders cells chronologically.
+    /// Standard CKB indexer orders by OutPoint hash, which would miss new cells.
     pub fn incremental_scan(&self, accounts: &[Account]) -> Result<ScanAllResult> {
         let cursor = self.load_cursor()?;
         info!(
