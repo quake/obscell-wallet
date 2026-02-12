@@ -6,7 +6,7 @@
 use ckb_jsonrpc_types::BlockView;
 use color_eyre::eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use std::collections::{HashMap, HashSet};
 
@@ -505,10 +505,15 @@ impl BlockScanner {
         let mut blocks_processed = 0;
         let mut total_cells_found: u64 = 0;
 
-        info!(
-            "Starting block scan from {} to {} (tip)",
-            current, tip
-        );
+        // Only log if there are blocks to scan
+        if current <= tip {
+            info!(
+                "Starting block scan from {} to {} (tip)",
+                current, tip
+            );
+        } else {
+            debug!("Already synced to tip {}, no new blocks to scan", tip);
+        }
 
         while current <= tip {
             // Fetch the block with retry on transient errors
