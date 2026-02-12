@@ -747,8 +747,8 @@ impl App {
                     self.handle_scan_update(update)?;
                 }
 
-                // Auto-scan for new cells every 5 seconds (if not already scanning)
-                let auto_scan_interval = 5u64;
+                // Auto-scan for new cells every 10 seconds (if not already scanning)
+                let auto_scan_interval = 10u64;
                 let should_auto_scan = !self.is_scanning
                     && self
                         .last_auto_scan
