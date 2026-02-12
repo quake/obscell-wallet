@@ -166,6 +166,12 @@ impl RpcClient {
         Ok(result)
     }
 
+    /// Get a block by block number.
+    pub fn get_block(&self, block_number: u64) -> Result<Option<ckb_jsonrpc_types::BlockView>> {
+        let result = self.client.get_block_by_number(block_number.into())?;
+        Ok(result)
+    }
+
     /// Get the config.
     pub fn config(&self) -> &Config {
         &self.config
