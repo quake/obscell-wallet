@@ -55,7 +55,9 @@ pub enum SettingsMode {
     /// Normal menu navigation
     Menu,
     /// Entering passphrase for export
-    EnteringPassphrase,
+    EnteringPassphraseForExport,
+    /// Entering passphrase for creating account
+    EnteringPassphraseForCreate,
     /// Showing backup string
     ShowingBackup,
 }
@@ -112,10 +114,16 @@ impl SettingsComponent {
         self.mode = SettingsMode::ShowingBackup;
     }
 
-    pub fn start_passphrase_input(&mut self) {
+    pub fn start_passphrase_input_for_export(&mut self) {
         self.passphrase_input.clear();
         self.error_message = None;
-        self.mode = SettingsMode::EnteringPassphrase;
+        self.mode = SettingsMode::EnteringPassphraseForExport;
+    }
+
+    pub fn start_passphrase_input_for_create(&mut self) {
+        self.passphrase_input.clear();
+        self.error_message = None;
+        self.mode = SettingsMode::EnteringPassphraseForCreate;
     }
 
     pub fn get_passphrase(&self) -> &str {
@@ -175,11 +183,12 @@ impl SettingsComponent {
                 let ops = WalletOperation::all();
                 match ops[self.wallet_index] {
                     WalletOperation::CreateAccount => {
-                        self.action_tx.send(Action::CreateAccount)?;
+                        // Start passphrase input mode for creating account
+                        self.start_passphrase_input_for_create();
                     }
                     WalletOperation::ExportBackup => {
-                        // Start passphrase input mode
-                        self.start_passphrase_input();
+                        // Start passphrase input mode for export
+                        self.start_passphrase_input_for_export();
                     }
                 }
             }
@@ -220,9 +229,27 @@ impl SettingsComponent {
             return;
         }
 
-        // Show passphrase input overlay if in EnteringPassphrase mode
-        if mode == SettingsMode::EnteringPassphrase {
-            Self::draw_passphrase_overlay(f, area, passphrase_input, error_message);
+        // Show passphrase input overlay if in EnteringPassphraseForExport mode
+        if mode == SettingsMode::EnteringPassphraseForExport {
+            Self::draw_passphrase_overlay(
+                f,
+                area,
+                passphrase_input,
+                error_message,
+                "Enter your wallet passphrase to export the backup:",
+            );
+            return;
+        }
+
+        // Show passphrase input overlay if in EnteringPassphraseForCreate mode
+        if mode == SettingsMode::EnteringPassphraseForCreate {
+            Self::draw_passphrase_overlay(
+                f,
+                area,
+                passphrase_input,
+                error_message,
+                "Enter your wallet passphrase to create a new account:",
+            );
             return;
         }
 
@@ -568,6 +595,7 @@ impl SettingsComponent {
         area: Rect,
         passphrase_input: &str,
         error_message: Option<&str>,
+        instruction_text: &str,
     ) {
         let block = Block::default()
             .title("Enter Passphrase")
@@ -587,7 +615,7 @@ impl SettingsComponent {
 
         // Instructions
         let instructions = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "Enter your wallet passphrase to export the backup:",
+            instruction_text,
             Style::default().fg(Color::Gray),
         )])]);
         f.render_widget(instructions, chunks[0]);
@@ -635,8 +663,8 @@ impl Component for SettingsComponent {
             return Ok(());
         }
 
-        // Handle passphrase input mode
-        if self.mode == SettingsMode::EnteringPassphrase {
+        // Handle passphrase input mode for export
+        if self.mode == SettingsMode::EnteringPassphraseForExport {
             match key.code {
                 KeyCode::Esc => {
                     self.mode = SettingsMode::Menu;
@@ -650,6 +678,33 @@ impl Component for SettingsComponent {
                             .send(Action::ExportWalletBackupWithPassphrase(
                                 self.passphrase_input.clone(),
                             ))?;
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.passphrase_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.passphrase_input.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Handle passphrase input mode for creating account
+        if self.mode == SettingsMode::EnteringPassphraseForCreate {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = SettingsMode::Menu;
+                    self.passphrase_input.clear();
+                    self.error_message = None;
+                }
+                KeyCode::Enter => {
+                    if !self.passphrase_input.is_empty() {
+                        // Send action to create account with the entered passphrase
+                        self.action_tx.send(Action::CreateAccountWithPassphrase(
+                            self.passphrase_input.clone(),
+                        ))?;
                     }
                 }
                 KeyCode::Backspace => {

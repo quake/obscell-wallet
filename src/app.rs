@@ -69,12 +69,12 @@ pub enum Tab {
 impl Tab {
     pub fn all(dev_mode: bool) -> Vec<Tab> {
         let mut tabs = vec![
-            Tab::Settings,
             Tab::Accounts,
             Tab::Tokens,
             Tab::Send,
             Tab::Receive,
             Tab::History,
+            Tab::Settings,
         ];
         if dev_mode {
             tabs.push(Tab::Dev);
@@ -101,12 +101,12 @@ impl Tab {
 
     pub fn index(&self, dev_mode: bool) -> usize {
         match self {
-            Tab::Settings => 0,
-            Tab::Accounts => 1,
-            Tab::Tokens => 2,
-            Tab::Send => 3,
-            Tab::Receive => 4,
-            Tab::History => 5,
+            Tab::Accounts => 0,
+            Tab::Tokens => 1,
+            Tab::Send => 2,
+            Tab::Receive => 3,
+            Tab::History => 4,
+            Tab::Settings => 5,
             Tab::Dev if dev_mode => 6,
             Tab::Dev => 5, // Fallback if somehow Dev tab is accessed without dev_mode
         }
@@ -114,14 +114,14 @@ impl Tab {
 
     pub fn from_index(index: usize, dev_mode: bool) -> Tab {
         match index {
-            0 => Tab::Settings,
-            1 => Tab::Accounts,
-            2 => Tab::Tokens,
-            3 => Tab::Send,
-            4 => Tab::Receive,
-            5 => Tab::History,
+            0 => Tab::Accounts,
+            1 => Tab::Tokens,
+            2 => Tab::Send,
+            3 => Tab::Receive,
+            4 => Tab::History,
+            5 => Tab::Settings,
             6 if dev_mode => Tab::Dev,
-            _ => Tab::Settings,
+            _ => Tab::Accounts,
         }
     }
 }
@@ -140,8 +140,6 @@ pub struct App {
     pub scanner: Scanner,
     pub account_manager: AccountManager,
     pub wallet_meta: Option<WalletMeta>,
-    /// Session passphrase - kept in memory after wallet setup/unlock
-    pub session_passphrase: Option<String>,
     pub wallet_setup_component: WalletSetupComponent,
     pub settings_component: SettingsComponent,
     pub accounts_component: AccountsComponent,
@@ -241,7 +239,7 @@ impl App {
             should_suspend: false,
             config,
             mode: initial_mode,
-            active_tab: Tab::Settings,
+            active_tab: Tab::Accounts,
             last_tick_key_events: Vec::new(),
             action_tx,
             action_rx,
@@ -250,7 +248,6 @@ impl App {
             scanner,
             account_manager,
             wallet_meta,
-            session_passphrase: None,
             wallet_setup_component,
             settings_component,
             accounts_component,
@@ -568,7 +565,10 @@ impl App {
                 self.send_component.is_editing
                     || self.send_component.mode == SendMode::EnteringPassphrase
             }
-            Tab::Settings => self.settings_component.mode == SettingsMode::EnteringPassphrase,
+            Tab::Settings => {
+                self.settings_component.mode == SettingsMode::EnteringPassphraseForExport
+                    || self.settings_component.mode == SettingsMode::EnteringPassphraseForCreate
+            }
             Tab::Tokens => self.tokens_component.is_editing(),
             Tab::Dev => self
                 .dev_component
@@ -830,34 +830,42 @@ impl App {
                 self.should_suspend = true;
             }
             Action::CreateAccount => {
-                // Use session passphrase if available, otherwise show error
-                let passphrase = match &self.session_passphrase {
-                    Some(p) => p.clone(),
-                    None => {
-                        // No passphrase - this shouldn't happen in normal flow
-                        // since wallet setup should have been completed
-                        self.status_message = "Error: Wallet not unlocked".to_string();
-                        return Ok(());
-                    }
-                };
-
+                // This action is no longer used directly - we use CreateAccountWithPassphrase
+                // The settings component now prompts for passphrase before creating account
+            }
+            Action::CreateAccountWithPassphrase(ref passphrase) => {
                 // Wallet should already exist at this point
                 let wallet_meta = match &mut self.wallet_meta {
                     Some(meta) => meta,
                     None => {
+                        self.settings_component.error_message =
+                            Some("Wallet not initialized".to_string());
                         self.status_message = "Error: Wallet not initialized".to_string();
                         return Ok(());
                     }
                 };
 
-                let account = self.account_manager.create_account(
+                let account = match self.account_manager.create_account(
                     format!(
                         "Account {}",
                         self.account_manager.list_accounts()?.len() + 1
                     ),
                     wallet_meta,
-                    &passphrase,
-                )?;
+                    passphrase,
+                ) {
+                    Ok(acc) => acc,
+                    Err(e) => {
+                        self.settings_component.error_message =
+                            Some(format!("Invalid passphrase: {}", e));
+                        return Ok(());
+                    }
+                };
+
+                // Clear passphrase input and return to menu mode
+                self.settings_component.passphrase_input.clear();
+                self.settings_component.mode =
+                    crate::components::settings::SettingsMode::Menu;
+
                 let accounts = self.account_manager.list_accounts()?;
                 let new_index = accounts.len().saturating_sub(1);
 
@@ -2160,20 +2168,58 @@ impl App {
                 };
 
                 match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                    Ok(meta) => {
+                    Ok(mut meta) => {
                         // Save to store
                         if let Err(e) = self.store.save_wallet_meta(&meta) {
                             self.wallet_setup_component.error_message =
                                 Some(format!("Failed to save wallet: {}", e));
                             return Ok(());
                         }
+
+                        // Automatically create the first account
+                        let account = match self.account_manager.create_account(
+                            "Account 1".to_string(),
+                            &mut meta,
+                            &passphrase,
+                        ) {
+                            Ok(acc) => acc,
+                            Err(e) => {
+                                self.wallet_setup_component.error_message =
+                                    Some(format!("Failed to create account: {}", e));
+                                return Ok(());
+                            }
+                        };
+
+                        // Update wallet meta after account creation (next_account_index changed)
+                        if let Err(e) = self.store.save_wallet_meta(&meta) {
+                            self.wallet_setup_component.error_message =
+                                Some(format!("Failed to save wallet: {}", e));
+                            return Ok(());
+                        }
+
                         // Update app state
                         self.wallet_meta = Some(meta);
-                        self.session_passphrase = Some(passphrase);
-                        // Switch to normal mode
+
+                        // Update accounts list
+                        let accounts = self.account_manager.list_accounts().unwrap_or_default();
+                        self.accounts_component.set_accounts(accounts);
+                        self.accounts_component.select(0);
+                        self.account_manager.set_active_account(0).ok();
+
+                        // Update all components with the new account
+                        self.receive_component.set_account(Some(account.clone()));
+                        self.send_component.set_account(Some(account.clone()));
+                        self.history_component.set_account(Some(account.clone()));
+                        self.tokens_component.set_account(Some(account.clone()));
+                        if let Some(ref mut dev) = self.dev_component {
+                            dev.set_account(Some(account));
+                        }
+
+                        // Switch to normal mode and show Accounts tab
                         self.mode = AppMode::Normal;
+                        self.switch_tab(Tab::Accounts);
                         self.wallet_setup_component.reset();
-                        self.status_message = "Wallet created successfully!".to_string();
+                        self.status_message = "Wallet created with Account 1!".to_string();
                     }
                     Err(e) => {
                         self.wallet_setup_component.error_message =
@@ -2197,20 +2243,58 @@ impl App {
                 };
 
                 match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                    Ok(meta) => {
+                    Ok(mut meta) => {
                         // Save to store
                         if let Err(e) = self.store.save_wallet_meta(&meta) {
                             self.wallet_setup_component.error_message =
                                 Some(format!("Failed to save wallet: {}", e));
                             return Ok(());
                         }
+
+                        // Automatically create the first account
+                        let account = match self.account_manager.create_account(
+                            "Account 1".to_string(),
+                            &mut meta,
+                            &passphrase,
+                        ) {
+                            Ok(acc) => acc,
+                            Err(e) => {
+                                self.wallet_setup_component.error_message =
+                                    Some(format!("Failed to create account: {}", e));
+                                return Ok(());
+                            }
+                        };
+
+                        // Update wallet meta after account creation (next_account_index changed)
+                        if let Err(e) = self.store.save_wallet_meta(&meta) {
+                            self.wallet_setup_component.error_message =
+                                Some(format!("Failed to save wallet: {}", e));
+                            return Ok(());
+                        }
+
                         // Update app state
                         self.wallet_meta = Some(meta);
-                        self.session_passphrase = Some(passphrase);
-                        // Switch to normal mode
+
+                        // Update accounts list
+                        let accounts = self.account_manager.list_accounts().unwrap_or_default();
+                        self.accounts_component.set_accounts(accounts);
+                        self.accounts_component.select(0);
+                        self.account_manager.set_active_account(0).ok();
+
+                        // Update all components with the new account
+                        self.receive_component.set_account(Some(account.clone()));
+                        self.send_component.set_account(Some(account.clone()));
+                        self.history_component.set_account(Some(account.clone()));
+                        self.tokens_component.set_account(Some(account.clone()));
+                        if let Some(ref mut dev) = self.dev_component {
+                            dev.set_account(Some(account));
+                        }
+
+                        // Switch to normal mode and show Accounts tab
                         self.mode = AppMode::Normal;
+                        self.switch_tab(Tab::Accounts);
                         self.wallet_setup_component.reset();
-                        self.status_message = "Wallet restored from mnemonic!".to_string();
+                        self.status_message = "Wallet restored with Account 1!".to_string();
                     }
                     Err(e) => {
                         self.wallet_setup_component.error_message =
@@ -2228,20 +2312,60 @@ impl App {
                     Ok((mnemonic, _account_count)) => {
                         // Create wallet meta from the imported mnemonic
                         match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                            Ok(meta) => {
+                            Ok(mut meta) => {
                                 // Save to store
                                 if let Err(e) = self.store.save_wallet_meta(&meta) {
                                     self.wallet_setup_component.error_message =
                                         Some(format!("Failed to save wallet: {}", e));
                                     return Ok(());
                                 }
+
+                                // Automatically create the first account
+                                let account = match self.account_manager.create_account(
+                                    "Account 1".to_string(),
+                                    &mut meta,
+                                    &passphrase,
+                                ) {
+                                    Ok(acc) => acc,
+                                    Err(e) => {
+                                        self.wallet_setup_component.error_message =
+                                            Some(format!("Failed to create account: {}", e));
+                                        return Ok(());
+                                    }
+                                };
+
+                                // Update wallet meta after account creation (next_account_index changed)
+                                if let Err(e) = self.store.save_wallet_meta(&meta) {
+                                    self.wallet_setup_component.error_message =
+                                        Some(format!("Failed to save wallet: {}", e));
+                                    return Ok(());
+                                }
+
                                 // Update app state
                                 self.wallet_meta = Some(meta);
-                                self.session_passphrase = Some(passphrase);
-                                // Switch to normal mode
+
+                                // Update accounts list
+                                let accounts =
+                                    self.account_manager.list_accounts().unwrap_or_default();
+                                self.accounts_component.set_accounts(accounts);
+                                self.accounts_component.select(0);
+                                self.account_manager.set_active_account(0).ok();
+
+                                // Update all components with the new account
+                                self.receive_component.set_account(Some(account.clone()));
+                                self.send_component.set_account(Some(account.clone()));
+                                self.history_component.set_account(Some(account.clone()));
+                                self.tokens_component.set_account(Some(account.clone()));
+                                if let Some(ref mut dev) = self.dev_component {
+                                    dev.set_account(Some(account));
+                                }
+
+                                // Switch to normal mode and show Accounts tab
                                 self.mode = AppMode::Normal;
+                                self.switch_tab(Tab::Accounts);
                                 self.wallet_setup_component.reset();
-                                self.status_message = "Wallet restored from backup!".to_string();
+                                self.status_message =
+                                    "Wallet restored from backup with Account 1!".to_string();
                             }
                             Err(e) => {
                                 self.wallet_setup_component.error_message =

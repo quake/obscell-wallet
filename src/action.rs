@@ -38,6 +38,7 @@ pub enum Action {
 
     // Account actions
     CreateAccount,
+    CreateAccountWithPassphrase(String),
     ImportAccount,
     ExportAccount,
     SelectAccount(usize),

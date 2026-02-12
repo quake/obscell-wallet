@@ -12,40 +12,42 @@ cargo build                    # Debug build
 cargo build --release          # Release build
 cargo run -- --network testnet # Run with args
 
-cargo test                     # All tests
+# Unit tests
+cargo test                     # All unit tests
 cargo test test_commitment     # Single test by name
 cargo test domain::ct::tests   # Tests in module
 cargo test stealth             # Pattern match
 cargo test -- --nocapture      # With output
 
+# Integration tests (require devnet)
+cargo test --features test-utils --test integration  # All integration tests
+cargo test --features test-utils --test integration e2e_basic_flow  # Single integration test
+
 cargo fmt                      # Format code
 cargo fmt -- --check           # Check formatting
 cargo clippy                   # Lint
-cargo clippy -- -D warnings    # Strict lint
+cargo clippy -- -D warnings    # Strict lint (CI mode)
 ```
 
 ## Project Structure
 
 ```
 src/
-├── main.rs           # Entry point
+├── main.rs           # Entry point, #[tokio::main]
 ├── app.rs            # App state and UI orchestration
+├── action.rs         # Action enum for UI events
 ├── cli.rs            # CLI parsing (clap)
 ├── config.rs         # TOML config loading
 ├── errors.rs         # Panic/error hooks
 ├── logging.rs        # Tracing setup
 ├── tui.rs            # Terminal abstraction
-├── action.rs         # Action enum for events
 ├── components/       # UI components (Component trait)
-├── domain/           # Business logic
-│   ├── account.rs    # Account management
-│   ├── cell.rs       # Cell (UTXO) structures
-│   ├── ct.rs         # Confidential token primitives
-│   └── stealth.rs    # Stealth address crypto
-└── infra/            # Infrastructure
-    ├── rpc.rs        # CKB RPC client
-    ├── scanner.rs    # Blockchain scanner
-    └── store.rs      # LMDB storage
+├── domain/           # Business logic (pure, testable)
+│   ├── account.rs, cell.rs, ct.rs, stealth.rs, wallet.rs, tx_builder.rs
+└── infra/            # Infrastructure (I/O, external)
+    ├── rpc.rs, scanner.rs, store.rs
+
+tests/integration/    # Integration tests (require --features test-utils)
 ```
 
 ## Code Style
@@ -73,28 +75,18 @@ use crate::{config::Config, domain::account::Account};
 | Enum variants | PascalCase       | `Action::CreateAccount`          |
 
 ### Error Handling
-- Use `color_eyre::eyre::Result` as standard Result type
+- Use `color_eyre::eyre::Result` as standard Result type for application code
 - Propagate with `?`, create errors with `eyre!("message")`
-- For pure library code: `Result<T, &'static str>`
+- For pure library/domain code: `Result<T, &'static str>` (no dependencies)
 
 ```rust
-use color_eyre::eyre::Result;
-
-pub fn do_something() -> Result<()> {
+pub fn do_something() -> color_eyre::eyre::Result<()> {
     let value = fallible_op()?;
     if value.is_invalid() {
         return Err(color_eyre::eyre::eyre!("Invalid: {}", value));
     }
     Ok(())
 }
-```
-
-### Documentation
-```rust
-//! Module-level docs
-
-/// Function/struct docs
-pub fn my_function() {}
 ```
 
 ### Struct Definitions
@@ -109,7 +101,6 @@ pub struct MyStruct { pub field: String }
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_feature() {
         let input = prepare();           // Arrange
@@ -122,6 +113,7 @@ mod tests {
 ### Async
 - Runtime: `tokio` with `#[tokio::main]` or `#[tokio::test]`
 - Channels: `tokio::sync::mpsc`
+- Let-chain syntax allowed: `if let Ok(x) = y && condition { ... }`
 
 ### Component Pattern
 ```rust
@@ -137,16 +129,30 @@ pub trait Component {
 |----------------|--------------------------------------|
 | ratatui        | Terminal UI framework                |
 | tokio          | Async runtime                        |
-| clap           | CLI argument parsing                 |
 | secp256k1      | ECDSA/ECDH cryptography              |
 | bulletproofs   | Range proofs for confidential tx     |
+| curve25519-dalek | Ristretto points, scalars          |
 | ckb-sdk        | Nervos CKB blockchain interaction    |
 | heed           | LMDB database wrapper                |
 | color-eyre     | Error handling with context          |
-| tracing        | Structured logging                   |
 
 ## Adding New Code
 
-**New Component:** Create in `src/components/`, implement `Component`, export in mod.rs, wire in app.rs
+**New Component:** Create in `src/components/`, implement `Component` trait, export in mod.rs, wire in app.rs
 
-**New Domain Entity:** Create in `src/domain/`, add Serialize/Deserialize, add store methods in `infra/store.rs`
+**New Domain Entity:** Create in `src/domain/`, add Serialize/Deserialize derives, add store methods in `infra/store.rs`
+
+**New Action:** Add variant to `Action` enum in `action.rs`, handle in relevant component's `handle_key_event`
+
+## Cryptographic Patterns
+
+```rust
+// Stealth addresses: generate ephemeral key pair for each transaction
+let (eph_pub, stealth_pub) = generate_ephemeral_key(&view_pub, &spend_pub);
+
+// CT commitments: Pedersen commitment C = v*G + r*H
+let commitment = commit(amount, &blinding);
+
+// Range proofs: prove values are in [0, 2^32)
+let (proof, commitments) = prove_range(&[amount], &[blinding])?;
+```
