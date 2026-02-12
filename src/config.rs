@@ -35,6 +35,10 @@ pub fn get_config_dir() -> PathBuf {
 pub struct NetworkConfig {
     pub name: String,
     pub rpc_url: String,
+    /// Block number to start scanning from (default: 0).
+    /// Set this to the stealth-lock deployment height to skip scanning old blocks.
+    #[serde(default)]
+    pub scan_start_block: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +97,7 @@ impl Config {
             network: NetworkConfig {
                 name: "testnet".to_string(),
                 rpc_url: "https://testnet.ckb.dev".to_string(),
+                scan_start_block: 0, // Will be updated when stealth-lock is deployed
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
@@ -138,6 +143,7 @@ impl Config {
             network: NetworkConfig {
                 name: "mainnet".to_string(),
                 rpc_url: "https://mainnet.ckb.dev".to_string(),
+                scan_start_block: 0, // Will be updated when stealth-lock is deployed
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
@@ -186,6 +192,7 @@ impl Config {
             network: NetworkConfig {
                 name: "devnet".to_string(),
                 rpc_url: "http://127.0.0.1:8114".to_string(),
+                scan_start_block: 0, // Devnet starts fresh
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
