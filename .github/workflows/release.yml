@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: obscell-wallet
+            asset_name: obscell-wallet-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: obscell-wallet
+            asset_name: obscell-wallet-macos-aarch64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: obscell-wallet
+            asset_name: obscell-wallet-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: obscell-wallet.exe
+            asset_name: obscell-wallet-windows-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action/setup@master
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create release package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p release-package
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release-package/
+          cp config/testnet.toml release-package/
+          cd release-package
+          zip -r ../${{ matrix.asset_name }}.zip .
+
+      - name: Create release package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-package
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release-package/
+          Copy-Item config/testnet.toml release-package/
+          Compress-Archive -Path release-package/* -DestinationPath ${{ matrix.asset_name }}.zip
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
