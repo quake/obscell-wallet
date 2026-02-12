@@ -149,6 +149,7 @@ pub struct App {
     pub tokens_component: TokensComponent,
     pub status_message: String,
     pub tip_block_number: Option<u64>,
+    pub scanned_block_number: Option<u64>,
     pub is_scanning: bool,
     pub last_auto_scan: Option<u64>,
     /// Saved tab bar area for mouse click detection.
@@ -256,6 +257,7 @@ impl App {
             tokens_component,
             status_message: "Ready".to_string(),
             tip_block_number: None,
+            scanned_block_number: None,
             is_scanning: false,
             last_auto_scan: None,
             tab_area: Rect::default(),
@@ -307,17 +309,11 @@ impl App {
             BlockScanUpdate::Progress {
                 current_block,
                 tip_block,
-                cells_found,
+                cells_found: _,
             } => {
-                let progress_pct = if tip_block > 0 {
-                    (current_block as f64 / tip_block as f64 * 100.0) as u32
-                } else {
-                    0
-                };
-                self.status_message = format!(
-                    "Scanning: block {}/{} ({}%), {} cells found",
-                    current_block, tip_block, progress_pct, cells_found
-                );
+                self.scanned_block_number = Some(current_block);
+                self.tip_block_number = Some(tip_block);
+                self.status_message = "Scanning...".to_string();
             }
             BlockScanUpdate::ReorgDetected { fork_block, new_tip } => {
                 self.status_message = format!(
@@ -327,33 +323,28 @@ impl App {
             }
             BlockScanUpdate::Complete {
                 last_block,
-                total_stealth_cells,
-                total_ct_cells,
-                total_tx_records,
+                total_stealth_cells: _,
+                total_ct_cells: _,
+                total_tx_records: _,
             } => {
                 self.is_scanning = false;
                 self.scan_update_rx = None;
+                self.scanned_block_number = Some(last_block);
 
                 // Refresh all UI components
                 self.refresh_after_scan()?;
 
                 // Calculate total capacity from stealth cells
                 let accounts = self.account_manager.list_accounts()?;
-                let mut total_capacity = 0u64;
                 for account in &accounts {
                     if let Ok(cells) = self.store.get_stealth_cells(account.id) {
                         let capacity: u64 = cells.iter().map(|c| c.capacity).sum();
-                        total_capacity += capacity;
                         // Update account balance
                         let _ = self.account_manager.update_balance(account.id, capacity);
                     }
                 }
 
-                let ckb_amount = total_capacity as f64 / 100_000_000.0;
-                self.status_message = format!(
-                    "Scan complete (block {}): {} stealth, {} CT cells, {} tx, {:.4} CKB",
-                    last_block, total_stealth_cells, total_ct_cells, total_tx_records, ckb_amount
-                );
+                self.status_message = "Ready".to_string();
 
                 // Refresh accounts display with updated balances
                 self.accounts_component
@@ -467,7 +458,7 @@ impl App {
             }
         }
 
-        // Fetch tip block number
+        // Fetch tip block number and scanned block from scan state
         match self.scanner.get_tip_block_number() {
             Ok(tip) => {
                 self.tip_block_number = Some(tip);
@@ -476,6 +467,9 @@ impl App {
             Err(e) => {
                 info!("Failed to fetch tip block: {}", e);
             }
+        }
+        if let Ok(scan_state) = self.store.load_scan_state() {
+            self.scanned_block_number = scan_state.last_scanned_block;
         }
 
         loop {
@@ -2430,6 +2424,7 @@ impl App {
         let accounts = self.accounts_component.accounts.clone();
         let selected_index = self.accounts_component.selected_index;
         let tip_block_number = self.tip_block_number;
+        let scanned_block_number = self.scanned_block_number;
         // Rotate address on every frame when spinning, but only if visible
         if self.receive_component.is_spinning
             && matches!(self.active_tab, Tab::Accounts | Tab::Receive)
@@ -2545,7 +2540,7 @@ impl App {
             .split(f.area());
 
             // Draw header with network indicator
-            let header_spans = vec![
+            let mut header_spans = vec![
                 Span::styled(
                     "Obscell Wallet",
                     Style::default()
@@ -2558,6 +2553,18 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 ),
             ];
+
+            // Add scan status to header (scanned / tip)
+            if let (Some(scanned), Some(tip)) = (scanned_block_number, tip_block_number) {
+                header_spans.push(Span::raw("  "));
+                let (status_text, status_color) = if scanned >= tip {
+                    (format!("{} / {}", scanned, tip), Color::Green)
+                } else {
+                    (format!("{} / {}", scanned, tip), Color::Yellow)
+                };
+                header_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+            }
+
             let title = Paragraph::new(vec![Line::from(header_spans)]).block(
                 Block::default()
                     .borders(Borders::ALL)
