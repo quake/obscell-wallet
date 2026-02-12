@@ -1,27 +1,32 @@
-# Obscell Wallet - Testnet Configuration
-
 [network]
 name = "testnet"
-rpc_url = "https://testnet.ckb.dev"
-indexer_url = "https://testnet.ckb.dev/indexer"
+rpc_url = "https://testnet-rich-indexer.ckbapp.dev"
 
 [contracts]
-# Stealth lock script code hash (type hash)
 stealth_lock_code_hash = "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6"
-# CT token type script code hash
-ct_token_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
-# CT info type script code hash
-ct_info_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
-# CKB auth code hash (for signature verification)
-ckb_auth_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+ct_token_code_hash = "0x708185bddbd4b22b456449235c230f74e85a26aaa720ec3eb1299843300ff34a"
+ct_info_code_hash = "0x150fdb31620455e6b2a1c2bdb44fa3b97474aedf0480c3acf8558d90e9ae156b"
+ckb_auth_code_hash = "0x0915983bb31584df4566e0946fd00ef1e9a75ad37a39ce70fec9b5cbf3b87021"
 
-[cell_deps]
-# CKB auth cell dep
 [cell_deps.ckb_auth]
-tx_hash = "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
+tx_hash = "0xa0e99b29fd154385815142b76668d5f4ecf30ae85bc2942bd21e9e51b9066f97"
 index = 0
+data_hash = "0x24cbc0576afd0bb1e73871363d4724d5a09f428c16090a0f2cb71de6a4221372"
 
-# Stealth lock cell dep
 [cell_deps.stealth_lock]
-tx_hash = "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
+tx_hash = "0xa0e99b29fd154385815142b76668d5f4ecf30ae85bc2942bd21e9e51b9066f97"
 index = 1
+data_hash = "0x4ecdb3dc99af952b3b3174df5e308c59eb8a00ef5f0a2afc1bfea1cec24f58ff"
+type_id_hash = "0x0dc965b5bfb6db2759275ad7d92ee502e10955cca789d001af03e3576cfe3f1c"
+
+[cell_deps.ct_info]
+tx_hash = "0xa0e99b29fd154385815142b76668d5f4ecf30ae85bc2942bd21e9e51b9066f97"
+index = 2
+data_hash = "0x45bc17c89c9f30ced1a26943c63049ae5d82a5850c0865651323414cdbfdd1cc"
+type_id_hash = "0x150fdb31620455e6b2a1c2bdb44fa3b97474aedf0480c3acf8558d90e9ae156b"
+
+[cell_deps.ct_token]
+tx_hash = "0xa0e99b29fd154385815142b76668d5f4ecf30ae85bc2942bd21e9e51b9066f97"
+index = 3
+data_hash = "0x15b753dac7a7e71ce3ebb8e2e7a3f8e0da9b31dcb9ede0057d18cfd3f93330ec"
+type_id_hash = "0x708185bddbd4b22b456449235c230f74e85a26aaa720ec3eb1299843300ff34a"

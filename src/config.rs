@@ -35,7 +35,6 @@ pub fn get_config_dir() -> PathBuf {
 pub struct NetworkConfig {
     pub name: String,
     pub rpc_url: String,
-    pub indexer_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,10 +84,6 @@ impl Config {
         let mut config = Self::from_network(network);
         if let Some(url) = rpc_url {
             config.network.rpc_url = url.to_string();
-            // Also update indexer URL if it's the default pattern
-            if config.network.indexer_url.ends_with("/indexer") {
-                config.network.indexer_url = format!("{}/indexer", url);
-            }
         }
         config
     }
@@ -98,7 +93,6 @@ impl Config {
             network: NetworkConfig {
                 name: "testnet".to_string(),
                 rpc_url: "https://testnet.ckb.dev".to_string(),
-                indexer_url: "https://testnet.ckb.dev/indexer".to_string(),
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
@@ -144,7 +138,6 @@ impl Config {
             network: NetworkConfig {
                 name: "mainnet".to_string(),
                 rpc_url: "https://mainnet.ckb.dev".to_string(),
-                indexer_url: "https://mainnet.ckb.dev/indexer".to_string(),
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:
@@ -193,7 +186,6 @@ impl Config {
             network: NetworkConfig {
                 name: "devnet".to_string(),
                 rpc_url: "http://127.0.0.1:8114".to_string(),
-                indexer_url: "http://127.0.0.1:8114/indexer".to_string(),
             },
             contracts: ContractConfig {
                 stealth_lock_code_hash:

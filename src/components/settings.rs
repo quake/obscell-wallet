@@ -185,6 +185,12 @@ impl SettingsComponent {
             }
             SettingsSection::Network => {
                 let (name, _, _) = NETWORKS[self.network_index];
+                if name == "mainnet" {
+                    self.error_message = Some(
+                        "mainnet contracts not audited/deployed; switching disabled".to_string(),
+                    );
+                    return Ok(());
+                }
                 if name != self.current_network {
                     self.action_tx
                         .send(Action::SwitchNetwork(name.to_string()))?;
@@ -282,18 +288,27 @@ impl SettingsComponent {
             .map(|(i, (name, display_name, _url))| {
                 let is_current = *name == current_network;
                 let is_selected = section == SettingsSection::Network && i == network_index;
+                let is_mainnet_disabled = *name == "mainnet";
 
                 let style = if is_selected {
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
+                } else if is_mainnet_disabled {
+                    Style::default().fg(Color::DarkGray)
                 } else if is_current {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::White)
                 };
 
-                let marker = if is_current { " [active]" } else { "" };
+                let marker = if is_current {
+                    " [active]"
+                } else if is_mainnet_disabled {
+                    " [disabled]"
+                } else {
+                    ""
+                };
                 ListItem::new(Line::from(Span::styled(
                     format!("{}{}", display_name, marker),
                     style,
@@ -398,6 +413,7 @@ impl SettingsComponent {
                 let (name, display_name, url) = NETWORKS[network_index];
                 let is_current = name == current_network;
                 let is_devnet = name == "devnet";
+                let is_mainnet_disabled = name == "mainnet";
 
                 details.push(Line::from(vec![
                     Span::styled("Network: ", Style::default().fg(Color::DarkGray)),
@@ -431,11 +447,15 @@ impl SettingsComponent {
                     )]));
                 } else if name == "mainnet" {
                     details.push(Line::from(vec![Span::styled(
-                        "WARNING: Real funds!",
+                        "MAINNET DISABLED",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     )]));
                     details.push(Line::from(vec![Span::styled(
-                        "Transactions cannot be reversed.",
+                        "mainnet contracts not audited/deployed",
+                        Style::default().fg(Color::Red),
+                    )]));
+                    details.push(Line::from(vec![Span::styled(
+                        "switching is disabled",
                         Style::default().fg(Color::Red),
                     )]));
                 } else {
@@ -452,6 +472,8 @@ impl SettingsComponent {
                 details.push(Line::from(""));
                 let action_hint = if is_current {
                     "[Currently active]"
+                } else if is_mainnet_disabled {
+                    "[Switching disabled]"
                 } else {
                     "[Enter] Switch to this network"
                 };

@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::devnet::DevNet;
 use super::TestEnv;
+use super::devnet::DevNet;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
-    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
+    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
+    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -41,7 +41,6 @@ fn create_test_config(env: &TestEnv) -> Config {
         network: NetworkConfig {
             name: "devnet".to_string(),
             rpc_url: DevNet::RPC_URL.to_string(),
-            indexer_url: DevNet::RPC_URL.to_string(),
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(stealth_type_id_hash.as_bytes())),
@@ -169,9 +168,13 @@ fn test_ct_genesis_creates_token() {
 
     // Sign the transaction
     println!("Step 3: Signing genesis transaction...");
-    let signed_tx =
-        sign_genesis_transaction(built_tx.clone(), &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_tx = sign_genesis_transaction(
+        built_tx.clone(),
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     // Submit the transaction
     println!("Step 4: Submitting genesis transaction...");
@@ -276,9 +279,13 @@ fn test_ct_mint_to_stealth_address() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing genesis should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -445,9 +452,13 @@ fn test_ct_transfer_between_accounts() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing genesis should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -684,9 +695,13 @@ fn test_scanner_finds_ct_cells_multi_account() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -872,9 +887,13 @@ fn test_scanner_finds_ct_info_cells() {
 
     let token_id = genesis_tx.token_id;
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     client
@@ -952,9 +971,13 @@ fn test_ct_cells_persisted_to_store() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1095,9 +1118,13 @@ fn test_ct_transfer_with_change_verification() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1288,9 +1315,13 @@ fn test_ct_mint_exceeds_supply_cap_fails() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1392,9 +1423,13 @@ fn test_ct_balance_aggregation_multiple_cells() {
     let token_id = genesis_tx.token_id;
     let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1448,9 +1483,9 @@ fn test_ct_balance_aggregation_multiple_cells() {
         .expect("Mint should succeed");
 
         let signed_mint = sign_mint_transaction(
-        mint_tx,
-        &issuer,
-        &issuer.spend_secret_key_for_test(),
+            mint_tx,
+            &issuer,
+            &issuer.spend_secret_key_for_test(),
             &ct_info_lock_args,
             &mint_funding.lock_script_args,
         )
@@ -1560,9 +1595,13 @@ fn test_ct_mint_unlimited_supply() {
         hex::encode(&token_id[..8])
     );
 
-    let signed_genesis =
-        sign_genesis_transaction(genesis_tx, &issuer, &issuer.spend_secret_key_for_test(), &funding_cell.lock_script_args)
-            .expect("Signing genesis should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing genesis should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1760,9 +1799,13 @@ fn test_consecutive_mints_use_different_funding_cells() {
     let token_id = built_genesis.token_id;
     let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(built_genesis, &issuer, &issuer.spend_secret_key_for_test(), &genesis_funding.lock_script_args)
-            .expect("Genesis signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        built_genesis,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &genesis_funding.lock_script_args,
+    )
+    .expect("Genesis signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client
@@ -1983,9 +2026,13 @@ fn test_mint_then_transfer_uses_separate_funding() {
     let token_id = built_genesis.token_id;
     let ct_info_lock_args = built_genesis.ct_info_lock_args.clone();
 
-    let signed_genesis =
-        sign_genesis_transaction(built_genesis, &issuer, &issuer.spend_secret_key_for_test(), &genesis_funding.lock_script_args)
-            .expect("Signing should succeed");
+    let signed_genesis = sign_genesis_transaction(
+        built_genesis,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &genesis_funding.lock_script_args,
+    )
+    .expect("Signing should succeed");
 
     let client = CkbRpcClient::new(DevNet::RPC_URL);
     let genesis_hash = client

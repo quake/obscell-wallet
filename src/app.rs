@@ -13,11 +13,16 @@ use crate::{
     action::Action,
     cli::Args,
     components::{
-        Component, accounts::AccountsComponent, dev::DevComponent, history::HistoryComponent,
-        receive::ReceiveComponent, send::{AddressType, SendComponent, SendMode},
+        Component,
+        accounts::AccountsComponent,
+        dev::DevComponent,
+        history::HistoryComponent,
+        receive::ReceiveComponent,
+        send::{AddressType, SendComponent, SendMode},
         settings::SettingsComponent,
         settings::SettingsMode,
-        tokens::TokensComponent, wallet_setup::{SetupMode, WalletSetupComponent},
+        tokens::TokensComponent,
+        wallet_setup::{SetupMode, WalletSetupComponent},
     },
     config::Config,
     domain::{
@@ -32,7 +37,12 @@ use crate::{
         tx_builder::{StealthTxBuilder, parse_stealth_address},
         wallet::WalletMeta,
     },
-    infra::{devnet::DevNet, faucet::Faucet, scanner::Scanner, store::{Store, SELECTED_NETWORK_KEY}},
+    infra::{
+        devnet::DevNet,
+        faucet::Faucet,
+        scanner::Scanner,
+        store::{SELECTED_NETWORK_KEY, Store},
+    },
     tui::{Event, Frame, Tui},
 };
 
@@ -155,7 +165,8 @@ pub struct App {
     pub indexer_synced: bool,
     pub checkpoint_block: Option<u64>,
     // Background scan channel
-    pub scan_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::scanner::ScanUpdate>>,
+    pub scan_update_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::scanner::ScanUpdate>>,
 }
 
 impl App {
@@ -287,10 +298,7 @@ impl App {
     }
 
     /// Handle background scan progress updates.
-    fn handle_scan_update(
-        &mut self,
-        update: crate::infra::scanner::ScanUpdate,
-    ) -> Result<()> {
+    fn handle_scan_update(&mut self, update: crate::infra::scanner::ScanUpdate) -> Result<()> {
         use crate::infra::scanner::ScanUpdate;
 
         match update {
@@ -380,24 +388,19 @@ impl App {
     fn refresh_after_scan(&mut self) -> Result<()> {
         // Refresh accounts list
         let updated_accounts = self.account_manager.list_accounts()?;
-        self.accounts_component.set_accounts(updated_accounts.clone());
+        self.accounts_component
+            .set_accounts(updated_accounts.clone());
 
         // Refresh send component's account balance
         if let Some(ref current_account) = self.send_component.account {
-            if let Some(updated) = updated_accounts
-                .iter()
-                .find(|a| a.id == current_account.id)
-            {
+            if let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
                 self.send_component.set_account(Some(updated.clone()));
             }
         }
 
         // Refresh receive component's account
         if let Some(ref current_account) = self.receive_component.account {
-            if let Some(updated) = updated_accounts
-                .iter()
-                .find(|a| a.id == current_account.id)
-            {
+            if let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
                 self.receive_component.set_account(Some(updated.clone()));
             }
         }
@@ -417,10 +420,7 @@ impl App {
         // Refresh tokens display for current account
         if let Some(ref current_account) = self.tokens_component.account.clone() {
             // Update tokens component's account
-            if let Some(updated) = updated_accounts
-                .iter()
-                .find(|a| a.id == current_account.id)
-            {
+            if let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
                 self.tokens_component.set_account(Some(updated.clone()));
             }
 
@@ -875,6 +875,7 @@ impl App {
                     dev.set_account(Some(account.clone()));
                 }
 
+                self.switch_tab(Tab::Accounts);
                 self.status_message = format!("Created account: {}", account.name);
             }
             Action::SelectAccount(index) => {
@@ -1006,7 +1007,8 @@ impl App {
                                 Err(e) => {
                                     self.send_component.error_message =
                                         Some(format!("Invalid stealth address: {}", e));
-                                    self.status_message = "Send failed: invalid address".to_string();
+                                    self.status_message =
+                                        "Send failed: invalid address".to_string();
                                     return Ok(());
                                 }
                             };
@@ -1019,7 +1021,8 @@ impl App {
                                 Err(e) => {
                                     self.send_component.error_message =
                                         Some(format!("Invalid CKB address: {}", e));
-                                    self.status_message = "Send failed: invalid address".to_string();
+                                    self.status_message =
+                                        "Send failed: invalid address".to_string();
                                     return Ok(());
                                 }
                             }
@@ -1105,10 +1108,8 @@ impl App {
                         Ok(tx_hash) => {
                             let amount_ckb = amount_shannon as f64 / 100_000_000.0;
                             let tx_hash_hex = hex::encode(&tx_hash.0);
-                            self.send_component.success_message = Some(format!(
-                                "Sent {:.8} CKB! Tx: 0x{}",
-                                amount_ckb, tx_hash_hex
-                            ));
+                            self.send_component.success_message =
+                                Some(format!("Sent {:.8} CKB! Tx: 0x{}", amount_ckb, tx_hash_hex));
                             self.status_message = format!(
                                 "Sent {:.8} CKB (tx: 0x{}...{})",
                                 amount_ckb,
@@ -1296,22 +1297,22 @@ impl App {
                     };
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
-                        color_eyre::eyre::eyre!("Wallet not initialized")
-                    })?;
+                    let wallet_meta = self
+                        .wallet_meta
+                        .as_ref()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.tokens_component.error_message =
                                 Some(format!("Invalid passphrase: {}", e));
-                            self.status_message = "CT transfer failed: invalid passphrase".to_string();
+                            self.status_message =
+                                "CT transfer failed: invalid passphrase".to_string();
                             return Ok(());
                         }
                     };
-                    let spend_key =
-                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
-                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
-                        })?;
+                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
+                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
 
                     let funding_lock_args = funding_input
                         .as_ref()
@@ -1511,9 +1512,10 @@ impl App {
                     };
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
-                        color_eyre::eyre::eyre!("Wallet not initialized")
-                    })?;
+                    let wallet_meta = self
+                        .wallet_meta
+                        .as_ref()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
@@ -1523,10 +1525,8 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key =
-                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
-                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
-                        })?;
+                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
+                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
 
                     let signed_tx = match sign_mint_transaction(
                         built_tx,
@@ -1673,9 +1673,10 @@ impl App {
                     let token_id = built_tx.token_id;
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self.wallet_meta.as_ref().ok_or_else(|| {
-                        color_eyre::eyre::eyre!("Wallet not initialized")
-                    })?;
+                    let wallet_meta = self
+                        .wallet_meta
+                        .as_ref()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
@@ -1685,10 +1686,8 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key =
-                        secp256k1::SecretKey::from_slice(&*spend_key_bytes).map_err(|e| {
-                            color_eyre::eyre::eyre!("Invalid spend key: {}", e)
-                        })?;
+                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
+                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
 
                     let signed_tx = match sign_genesis_transaction(
                         built_tx,
@@ -2122,7 +2121,8 @@ impl App {
 
                 // Save network preference to global store
                 if let Ok(global_store) = Store::global() {
-                    let _ = global_store.save_metadata(SELECTED_NETWORK_KEY, &self.config.network.name);
+                    let _ =
+                        global_store.save_metadata(SELECTED_NETWORK_KEY, &self.config.network.name);
                 }
 
                 // Refresh tip block for new network
@@ -2589,7 +2589,9 @@ impl App {
             let tip_str = tip_block_number
                 .map(|n| format!("Block: {}", n))
                 .unwrap_or_else(|| "Block: -".to_string());
-            let underline = Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+            let underline = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::UNDERLINED);
             let dim = Style::default().fg(Color::DarkGray);
             let status = Paragraph::new(vec![Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
@@ -2715,7 +2717,9 @@ impl App {
     }
 
     fn draw_status(&self, f: &mut Frame, area: Rect) {
-        let underline = Style::default().fg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+        let underline = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::UNDERLINED);
         let dim = Style::default().fg(Color::DarkGray);
         let status = Paragraph::new(vec![Line::from(vec![
             Span::styled("Status: ", dim),

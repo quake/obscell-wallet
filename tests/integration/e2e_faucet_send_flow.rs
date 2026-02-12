@@ -27,7 +27,6 @@ fn create_test_config(env: &TestEnv) -> Config {
         network: NetworkConfig {
             name: "devnet".to_string(),
             rpc_url: DevNet::RPC_URL.to_string(),
-            indexer_url: DevNet::RPC_URL.to_string(),
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(type_id_hash.as_bytes())),
@@ -219,8 +218,13 @@ fn test_faucet_scan_send_flow() {
     );
 
     // Sign the transaction
-    let signed_tx =
-        StealthTxBuilder::sign(built_tx, &alice, &alice.spend_secret_key_for_test(), &stored_cells).expect("Signing should succeed");
+    let signed_tx = StealthTxBuilder::sign(
+        built_tx,
+        &alice,
+        &alice.spend_secret_key_for_test(),
+        &stored_cells,
+    )
+    .expect("Signing should succeed");
 
     // Submit the transaction
     use ckb_sdk::CkbRpcClient;

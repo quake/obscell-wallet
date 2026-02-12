@@ -1,9 +1,12 @@
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_sdk::{
-    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
     CkbRpcClient,
+    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
 };
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
+use tracing::{debug, warn};
+
+use std::time::Instant;
 
 use crate::config::Config;
 
@@ -32,6 +35,13 @@ impl RpcClient {
         limit: u32,
         after_cursor: Option<JsonBytes>,
     ) -> Result<ckb_sdk::rpc::ckb_indexer::Pagination<ckb_sdk::rpc::ckb_indexer::Cell>> {
+        let start = Instant::now();
+        debug!(
+            "indexer.get_cells start (url={}, limit={}, has_cursor={})",
+            self.config.network.rpc_url,
+            limit,
+            after_cursor.is_some()
+        );
         let script = ckb_jsonrpc_types::Script {
             code_hash: ckb_types::H256::from_slice(code_hash)?,
             hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
@@ -49,9 +59,27 @@ impl RpcClient {
 
         let result = self
             .client
-            .get_cells(search_key, Order::Asc, limit.into(), after_cursor)?;
+            .get_cells(search_key, Order::Asc, limit.into(), after_cursor);
 
-        Ok(result)
+        match result {
+            Ok(result) => {
+                debug!(
+                    "indexer.get_cells ok in {:?} (url={})",
+                    start.elapsed(),
+                    self.config.network.rpc_url
+                );
+                Ok(result)
+            }
+            Err(e) => {
+                warn!(
+                    "indexer.get_cells failed after {:?} (url={}): {}",
+                    start.elapsed(),
+                    self.config.network.rpc_url,
+                    e
+                );
+                Err(eyre!("indexer.get_cells failed: {}", e))
+            }
+        }
     }
 
     /// Search for transactions with a given lock script (using prefix search).
@@ -62,6 +90,13 @@ impl RpcClient {
         limit: u32,
         after_cursor: Option<JsonBytes>,
     ) -> Result<ckb_sdk::rpc::ckb_indexer::Pagination<Tx>> {
+        let start = Instant::now();
+        debug!(
+            "indexer.get_transactions start (url={}, limit={}, has_cursor={})",
+            self.config.network.rpc_url,
+            limit,
+            after_cursor.is_some()
+        );
         let script = ckb_jsonrpc_types::Script {
             code_hash: ckb_types::H256::from_slice(code_hash)?,
             hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
@@ -79,9 +114,27 @@ impl RpcClient {
 
         let result =
             self.client
-                .get_transactions(search_key, Order::Desc, limit.into(), after_cursor)?;
+                .get_transactions(search_key, Order::Desc, limit.into(), after_cursor);
 
-        Ok(result)
+        match result {
+            Ok(result) => {
+                debug!(
+                    "indexer.get_transactions ok in {:?} (url={})",
+                    start.elapsed(),
+                    self.config.network.rpc_url
+                );
+                Ok(result)
+            }
+            Err(e) => {
+                warn!(
+                    "indexer.get_transactions failed after {:?} (url={}): {}",
+                    start.elapsed(),
+                    self.config.network.rpc_url,
+                    e
+                );
+                Err(eyre!("indexer.get_transactions failed: {}", e))
+            }
+        }
     }
 
     /// Get transaction by hash.
