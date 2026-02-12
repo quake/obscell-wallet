@@ -160,7 +160,6 @@ pub struct App {
     pub faucet: Option<Faucet>,
     pub auto_mining_enabled: bool,
     pub auto_mining_interval: u64,
-    pub indexer_synced: bool,
     pub checkpoint_block: Option<u64>,
     // Background scan channel
     pub scan_update_rx:
@@ -267,7 +266,6 @@ impl App {
             faucet,
             auto_mining_enabled: false,
             auto_mining_interval: 3,
-            indexer_synced: false,
             checkpoint_block: None,
             // Background scan
             scan_update_rx: None,
@@ -807,12 +805,6 @@ impl App {
                     }
                 }
 
-                // Periodically refresh indexer sync status in dev mode
-                if self.dev_mode
-                    && let Some(ref devnet) = self.devnet
-                {
-                    self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
-                }
             }
             Action::ScanProgress(update) => {
                 self.handle_scan_update(update)?;
@@ -1956,12 +1948,9 @@ impl App {
                 }
             }
             Action::RefreshDevStatus if self.dev_mode => {
-                // Refresh tip block and indexer status
+                // Refresh tip block
                 if let Ok(tip) = self.scanner.get_tip_block_number() {
                     self.tip_block_number = Some(tip);
-                }
-                if let Some(ref devnet) = self.devnet {
-                    self.indexer_synced = devnet.is_indexer_synced().unwrap_or(false);
                 }
                 // Refresh miner balance
                 if let Some(ref faucet) = self.faucet
@@ -2128,7 +2117,6 @@ impl App {
                     self.devnet = None;
                     self.faucet = None;
                     self.auto_mining_enabled = false;
-                    self.indexer_synced = false;
                     self.checkpoint_block = None;
 
                     // If currently on Dev tab, switch to Settings
@@ -2498,7 +2486,6 @@ impl App {
         let history_account = self.history_component.account.clone();
         // Dev mode data
         let dev_mode = self.dev_mode;
-        let indexer_synced = self.indexer_synced;
         let dev_account = self.dev_component.as_ref().and_then(|d| d.account.clone());
         let dev_checkpoint = self.dev_component.as_ref().and_then(|d| d.checkpoint);
         let dev_auto_mining = self
@@ -2578,22 +2565,6 @@ impl App {
                     Style::default()
                         .fg(Color::Magenta)
                         .add_modifier(Modifier::BOLD),
-                ));
-                // Show indexer sync status
-                let sync_status = if indexer_synced {
-                    "Synced"
-                } else {
-                    "Syncing..."
-                };
-                let sync_color = if indexer_synced {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                };
-                header_spans.push(Span::raw("  "));
-                header_spans.push(Span::styled(
-                    format!("Indexer: {}", sync_status),
-                    Style::default().fg(sync_color),
                 ));
             }
             let title = Paragraph::new(vec![Line::from(header_spans)]).block(
