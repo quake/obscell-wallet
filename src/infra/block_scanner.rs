@@ -665,4 +665,121 @@ mod tests {
             _ => panic!("Expected Progress variant"),
         }
     }
+
+    #[test]
+    fn test_parse_ct_cell_data_valid() {
+        let mut data = vec![0u8; 64];
+        data[0..32].copy_from_slice(&[1u8; 32]);
+        data[32..64].copy_from_slice(&[2u8; 32]);
+
+        let result = BlockScanner::parse_ct_cell_data(&data);
+        assert!(result.is_some());
+
+        let (commitment, encrypted) = result.unwrap();
+        assert_eq!(commitment, [1u8; 32]);
+        assert_eq!(encrypted, [2u8; 32]);
+    }
+
+    #[test]
+    fn test_parse_ct_cell_data_too_short() {
+        let data = vec![0u8; 32]; // Only 32 bytes
+        let result = BlockScanner::parse_ct_cell_data(&data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_ct_cell_data_empty() {
+        let data = vec![];
+        let result = BlockScanner::parse_ct_cell_data(&data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_ct_cell_data_extra_bytes() {
+        // Extra bytes beyond 64 should be ignored
+        let mut data = vec![0u8; 128];
+        data[0..32].copy_from_slice(&[0xaa; 32]);
+        data[32..64].copy_from_slice(&[0xbb; 32]);
+        data[64..128].copy_from_slice(&[0xff; 64]); // extra bytes
+
+        let result = BlockScanner::parse_ct_cell_data(&data);
+        assert!(result.is_some());
+
+        let (commitment, encrypted) = result.unwrap();
+        assert_eq!(commitment, [0xaa; 32]);
+        assert_eq!(encrypted, [0xbb; 32]);
+    }
+
+    #[test]
+    fn test_block_process_result_default() {
+        let result = BlockProcessResult::default();
+        assert!(result.new_stealth_cells.is_empty());
+        assert!(result.new_ct_cells.is_empty());
+        assert!(result.new_ct_info_cells.is_empty());
+        assert!(result.spent_out_points.is_empty());
+        assert!(result.tx_records.is_empty());
+    }
+
+    #[test]
+    fn test_block_scan_update_started() {
+        let update = BlockScanUpdate::Started {
+            is_full_rescan: true,
+        };
+        match update {
+            BlockScanUpdate::Started { is_full_rescan } => {
+                assert!(is_full_rescan);
+            }
+            _ => panic!("Expected Started variant"),
+        }
+    }
+
+    #[test]
+    fn test_block_scan_update_reorg_detected() {
+        let update = BlockScanUpdate::ReorgDetected {
+            fork_block: 500,
+            new_tip: 600,
+        };
+        match update {
+            BlockScanUpdate::ReorgDetected { fork_block, new_tip } => {
+                assert_eq!(fork_block, 500);
+                assert_eq!(new_tip, 600);
+            }
+            _ => panic!("Expected ReorgDetected variant"),
+        }
+    }
+
+    #[test]
+    fn test_block_scan_update_complete() {
+        let update = BlockScanUpdate::Complete {
+            last_block: 1000,
+            total_stealth_cells: 10,
+            total_ct_cells: 5,
+            total_tx_records: 15,
+        };
+        match update {
+            BlockScanUpdate::Complete {
+                last_block,
+                total_stealth_cells,
+                total_ct_cells,
+                total_tx_records,
+            } => {
+                assert_eq!(last_block, 1000);
+                assert_eq!(total_stealth_cells, 10);
+                assert_eq!(total_ct_cells, 5);
+                assert_eq!(total_tx_records, 15);
+            }
+            _ => panic!("Expected Complete variant"),
+        }
+    }
+
+    #[test]
+    fn test_block_scan_update_error() {
+        let update = BlockScanUpdate::Error("Test error".to_string());
+        match update {
+            BlockScanUpdate::Error(msg) => {
+                assert_eq!(msg, "Test error");
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
 }
