@@ -2556,7 +2556,7 @@ impl App {
 
             // Add scan status to header (scanned / tip)
             if let (Some(scanned), Some(tip)) = (scanned_block_number, tip_block_number) {
-                header_spans.push(Span::raw("  "));
+                header_spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
                 let (status_text, status_color) = if scanned >= tip {
                     (format!("{} / {} (TIP)", scanned, tip), Color::Green)
                 } else {
