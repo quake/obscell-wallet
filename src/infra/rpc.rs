@@ -1,9 +1,9 @@
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_sdk::{
-    CkbRpcClient,
     rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
+    CkbRpcClient,
 };
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use tracing::{debug, warn};
 
 use std::time::Instant;
@@ -109,7 +109,7 @@ impl RpcClient {
             script_search_mode: Some(SearchMode::Prefix),
             filter: None,
             with_data: Some(false),
-            group_by_transaction: Some(true), // Group by transaction to get TxWithCells
+            group_by_transaction: Some(false), // Ungrouped for better performance
         };
 
         let result =

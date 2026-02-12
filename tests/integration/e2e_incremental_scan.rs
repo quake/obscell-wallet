@@ -230,6 +230,7 @@ fn test_auto_scan_detects_faucet_cells() {
     println!("User uses faucet twice...");
     let _ = fund_account(env, &alice, 100_00000000u64);
     env.generate_blocks(5).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync indexer"); // Wait before second faucet
 
     let _ = fund_account(env, &alice, 100_00000000u64);
     env.generate_blocks(5).expect("Should generate blocks");

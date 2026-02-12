@@ -1473,7 +1473,11 @@ impl Scanner {
                 HashMap::new();
             let mut batch_has_new_records = false;
 
+            // Deduplicate tx_hashes within this batch (ungrouped mode returns duplicates)
+            let mut batch_seen_tx_hashes: HashSet<[u8; 32]> = HashSet::new();
+
             for tx_obj in &txs_result.objects {
+                // With group_by_transaction: false, we only get Ungrouped variant
                 let tx_hash_h256 = match tx_obj {
                     ckb_sdk::rpc::ckb_indexer::Tx::Ungrouped(tx) => tx.tx_hash.clone(),
                     ckb_sdk::rpc::ckb_indexer::Tx::Grouped(grouped) => grouped.tx_hash.clone(),
@@ -1481,6 +1485,11 @@ impl Scanner {
 
                 let mut tx_hash_bytes = [0u8; 32];
                 tx_hash_bytes.copy_from_slice(tx_hash_h256.as_bytes());
+
+                // Skip if we've already seen this tx_hash in this batch
+                if !batch_seen_tx_hashes.insert(tx_hash_bytes) {
+                    continue;
+                }
 
                 txs_scanned += 1;
 

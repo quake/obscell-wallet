@@ -7,13 +7,13 @@
 //! 4. Verify cells can be found via scanning
 
 use ckb_hash::blake2b_256;
-use ckb_sdk::CkbRpcClient;
 use ckb_sdk::rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode};
+use ckb_sdk::CkbRpcClient;
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use super::devnet::DevNet;
-use super::{TestEnv, contract_deployer::SIGHASH_ALL_CODE_HASH};
+use super::{contract_deployer::SIGHASH_ALL_CODE_HASH, TestEnv};
 
 /// Generate stealth script args for a one-time address.
 ///
@@ -490,7 +490,7 @@ fn test_multiple_stealth_cells_same_account() {
     };
 
     let result = client
-        .get_cells(search_key, Order::Asc, 100.into(), None)
+        .get_cells(search_key, Order::Desc, 100.into(), None)
         .expect("Should get cells");
 
     let mut total_found = 0u64;
