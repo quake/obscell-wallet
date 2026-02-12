@@ -6,12 +6,12 @@
 //!   - For each account, derive view_key and spend_key from child keys.
 
 use bip32::{Language, Mnemonic, XPrv};
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::domain::crypto::{
-    decrypt, decrypt_secret_key, encrypt, encrypt_secret_key, generate_salt, SALT_SIZE,
+    SALT_SIZE, decrypt, decrypt_secret_key, encrypt, encrypt_secret_key, generate_salt,
 };
 
 /// CKB coin type for BIP44 derivation.

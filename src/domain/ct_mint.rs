@@ -11,7 +11,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 

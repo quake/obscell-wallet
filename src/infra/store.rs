@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
+use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{

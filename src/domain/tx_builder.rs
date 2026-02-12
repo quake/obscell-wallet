@@ -12,7 +12,7 @@ use ckb_jsonrpc_types::{
 };
 use ckb_sdk::Address;
 use ckb_types::H256;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{

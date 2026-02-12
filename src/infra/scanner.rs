@@ -45,10 +45,7 @@ pub enum ScanUpdate {
         ct_cells_found: usize,
     },
     /// Progress update during history scanning (streaming: txs_processed = checked, total_txs = found)
-    HistoryScanProgress {
-        txs_processed: u64,
-        total_txs: u64,
-    },
+    HistoryScanProgress { txs_processed: u64, total_txs: u64 },
     /// Scan fully complete
     Complete {
         total_stealth_cells: usize,
@@ -1469,7 +1466,8 @@ impl Scanner {
                 cursor.clone(),
             )?;
 
-            let mut tx_cache: HashMap<[u8; 32], ckb_jsonrpc_types::TransactionView> = HashMap::new();
+            let mut tx_cache: HashMap<[u8; 32], ckb_jsonrpc_types::TransactionView> =
+                HashMap::new();
             let mut batch_has_new_records = false;
 
             for tx_obj in &txs_result.objects {
@@ -1658,12 +1656,18 @@ impl Scanner {
                 }
 
                 // Remove from CT cells
-                if let Err(e) = self.store.remove_spent_ct_cells(ad.id, &ad.spent_out_points) {
+                if let Err(e) = self
+                    .store
+                    .remove_spent_ct_cells(ad.id, &ad.spent_out_points)
+                {
                     info!("Failed to remove spent CT cells: {}", e);
                 }
 
                 // Remove from ct-info cells
-                if let Err(e) = self.store.remove_spent_ct_info_cells(ad.id, &ad.spent_out_points) {
+                if let Err(e) = self
+                    .store
+                    .remove_spent_ct_info_cells(ad.id, &ad.spent_out_points)
+                {
                     info!("Failed to remove spent ct-info cells: {}", e);
                 }
             }
@@ -1759,11 +1763,7 @@ impl Scanner {
     }
 
     /// Get block timestamp, using cache to avoid redundant RPC calls.
-    fn get_block_timestamp(
-        &self,
-        block_number: u64,
-        cache: &mut HashMap<u64, i64>,
-    ) -> Result<i64> {
+    fn get_block_timestamp(&self, block_number: u64, cache: &mut HashMap<u64, i64>) -> Result<i64> {
         if let Some(&ts) = cache.get(&block_number) {
             return Ok(ts);
         }
@@ -1927,9 +1927,14 @@ impl Scanner {
 
             // Decrypt the amount from output_data
             if let Some(output_data) = outputs_data.get(i) {
-                if let Some((_, encrypted_amount)) = Self::parse_ct_cell_data(output_data.as_bytes()) {
-                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key) {
-                        if let Some(amount) = crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret) {
+                if let Some((_, encrypted_amount)) =
+                    Self::parse_ct_cell_data(output_data.as_bytes())
+                {
+                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                    {
+                        if let Some(amount) =
+                            crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
+                        {
                             *deltas.entry(token_id).or_insert(0) += amount as i64;
                         }
                     }
@@ -1998,10 +2003,16 @@ impl Scanner {
             token_id.copy_from_slice(&type_args[start..]);
 
             // Decrypt the amount from output_data
-            if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize) {
-                if let Some((_, encrypted_amount)) = Self::parse_ct_cell_data(prev_output_data.as_bytes()) {
-                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key) {
-                        if let Some(amount) = crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret) {
+            if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize)
+            {
+                if let Some((_, encrypted_amount)) =
+                    Self::parse_ct_cell_data(prev_output_data.as_bytes())
+                {
+                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                    {
+                        if let Some(amount) =
+                            crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
+                        {
                             *deltas.entry(token_id).or_insert(0) -= amount as i64;
                         }
                     }
@@ -2111,7 +2122,8 @@ impl Scanner {
                     let _ = update_tx_complete.send(ScanUpdate::Error(e.to_string()));
                 }
                 Err(e) => {
-                    let _ = update_tx_complete.send(ScanUpdate::Error(format!("Task panicked: {}", e)));
+                    let _ =
+                        update_tx_complete.send(ScanUpdate::Error(format!("Task panicked: {}", e)));
                 }
             }
         });

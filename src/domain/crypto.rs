@@ -4,10 +4,10 @@
 
 use argon2::{Argon2, ParamsBuilder};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit},
 };
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use zeroize::Zeroizing;
 
 /// Argon2id parameters for key derivation.
