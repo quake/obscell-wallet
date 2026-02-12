@@ -176,7 +176,12 @@ impl RpcClient {
     ///
     /// This uses get_packed_block_by_number RPC which returns packed bytes,
     /// significantly reducing network transfer compared to JSON.
-    pub fn get_packed_block(&self, block_number: u64) -> Result<Option<ckb_types::packed::Block>> {
+    ///
+    /// Note: Uses BlockV1 format (CKB2023+) which has 5 fields including extension.
+    pub fn get_packed_block(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<ckb_types::packed::BlockV1>> {
         use ckb_types::prelude::*;
 
         let result = self
@@ -186,7 +191,7 @@ impl RpcClient {
         match result {
             Some(json_bytes) => {
                 let bytes = json_bytes.as_bytes();
-                let packed_block = ckb_types::packed::Block::from_slice(bytes)
+                let packed_block = ckb_types::packed::BlockV1::from_slice(bytes)
                     .map_err(|e| eyre!("Failed to parse packed block: {}", e))?;
                 Ok(Some(packed_block))
             }

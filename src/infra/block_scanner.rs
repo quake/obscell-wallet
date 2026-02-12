@@ -137,7 +137,8 @@ impl BlockScanner {
     ///
     /// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms
     /// Uses get_packed_block for more efficient network transfer.
-    fn get_block_with_retry(&self, block_number: u64) -> Result<Option<packed::Block>> {
+    /// Note: Uses BlockV1 format (CKB2023+).
+    fn get_block_with_retry(&self, block_number: u64) -> Result<Option<packed::BlockV1>> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 100;
 
@@ -180,9 +181,10 @@ impl BlockScanner {
     /// Process a single packed block for all accounts.
     ///
     /// Returns cells found and spent cells for each account.
+    /// Note: Uses BlockV1 format (CKB2023+).
     pub fn process_block(
         &self,
-        block: &packed::Block,
+        block: &packed::BlockV1,
         accounts: &[Account],
     ) -> Result<BlockProcessResult> {
         let stealth_code_hash = self.stealth_lock_code_hash()?;
@@ -543,7 +545,7 @@ impl BlockScanner {
                 }
             };
 
-            let block_hash: [u8; 32] = block.calc_header_hash().into();
+            let block_hash: [u8; 32] = block.header().calc_header_hash().into();
             let parent_hash: [u8; 32] = block.header().raw().parent_hash().into();
 
             // Check for reorg
