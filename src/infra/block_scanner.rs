@@ -308,10 +308,12 @@ impl BlockScanner {
                                         .or_default()
                                         .push(ct_cell);
 
-                                    // Track CT delta
+                                    // Track CT delta - use last 32 bytes as token_id
+                                    // (type_script_args = ct_info_code_hash || token_id)
                                     let mut token_id = [0u8; 32];
                                     if type_script_args.len() >= 32 {
-                                        token_id.copy_from_slice(&type_script_args[0..32]);
+                                        let start = type_script_args.len() - 32;
+                                        token_id.copy_from_slice(&type_script_args[start..]);
                                     }
                                     *account_ct_delta
                                         .entry(*account_id)
