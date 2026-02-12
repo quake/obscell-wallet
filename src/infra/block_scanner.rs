@@ -132,6 +132,49 @@ impl BlockScanner {
         &self.rpc
     }
 
+    /// Fetch a block with exponential backoff retry on transient errors.
+    ///
+    /// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms
+    fn get_block_with_retry(&self, block_number: u64) -> Result<Option<BlockView>> {
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 100;
+
+        let mut attempt = 0;
+        loop {
+            match self.rpc.get_block(block_number) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    attempt += 1;
+                    if attempt >= MAX_RETRIES {
+                        return Err(e);
+                    }
+
+                    // Check if this looks like a transient error (rate limit, network, etc.)
+                    let err_str = e.to_string().to_lowercase();
+                    let is_transient = err_str.contains("rate")
+                        || err_str.contains("limit")
+                        || err_str.contains("timeout")
+                        || err_str.contains("connection")
+                        || err_str.contains("temporarily")
+                        || err_str.contains("503")
+                        || err_str.contains("429");
+
+                    if !is_transient {
+                        // Permanent error, don't retry
+                        return Err(e);
+                    }
+
+                    let delay_ms = INITIAL_DELAY_MS * (1 << (attempt - 1)); // exponential backoff
+                    warn!(
+                        "RPC error fetching block {}, attempt {}/{}, retrying in {}ms: {}",
+                        block_number, attempt, MAX_RETRIES, delay_ms, e
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+
     /// Process a single block for all accounts.
     ///
     /// Returns cells found and spent cells for each account.
@@ -468,12 +511,23 @@ impl BlockScanner {
         );
 
         while current <= tip {
-            // Fetch the block
-            let block = match self.rpc.get_block(current)? {
-                Some(b) => b,
-                None => {
+            // Fetch the block with retry on transient errors
+            let block = match self.get_block_with_retry(current) {
+                Ok(Some(b)) => b,
+                Ok(None) => {
                     warn!("Block {} not found, waiting...", current);
                     break;
+                }
+                Err(e) => {
+                    // Permanent error after retries - report and stop
+                    warn!("Failed to fetch block {} after retries: {}", current, e);
+                    if let Some(tx) = update_tx {
+                        let _ = tx.send(BlockScanUpdate::Error(format!(
+                            "RPC error at block {}: {}",
+                            current, e
+                        )));
+                    }
+                    return Err(e);
                 }
             };
 
@@ -628,10 +682,13 @@ impl BlockScanner {
     ) {
         tokio::spawn(async move {
             let update_tx_clone = update_tx.clone();
+            let update_tx_final = update_tx.clone();
+            let store_clone = store.clone();
+            let account_ids: Vec<u64> = accounts.iter().map(|a| a.id).collect();
 
             let _ = update_tx.send(BlockScanUpdate::Started { is_full_rescan });
 
-            let _result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let scanner = BlockScanner::new(config, store);
                 if is_full_rescan {
                     scanner.full_rescan(&accounts, Some(&update_tx_clone))
@@ -641,8 +698,49 @@ impl BlockScanner {
             })
             .await;
 
-            // Note: We can't easily get final counts here without re-querying store
-            // The Complete update would need to be sent from within scan_blocks
+            // Handle result and send final update
+            match result {
+                Ok(Ok(_blocks_processed)) => {
+                    // Count cells from store for the Complete message
+                    let mut total_stealth = 0;
+                    let mut total_ct = 0;
+                    let mut total_tx = 0;
+                    for account_id in &account_ids {
+                        if let Ok(cells) = store_clone.get_stealth_cells(*account_id) {
+                            total_stealth += cells.len();
+                        }
+                        if let Ok(cells) = store_clone.get_ct_cells(*account_id) {
+                            total_ct += cells.len();
+                        }
+                        if let Ok(history) = store_clone.get_tx_history(*account_id) {
+                            total_tx += history.len();
+                        }
+                    }
+                    let last_block = store_clone
+                        .load_scan_state()
+                        .ok()
+                        .and_then(|s| s.last_scanned_block)
+                        .unwrap_or(0);
+
+                    let _ = update_tx_final.send(BlockScanUpdate::Complete {
+                        last_block,
+                        total_stealth_cells: total_stealth,
+                        total_ct_cells: total_ct,
+                        total_tx_records: total_tx,
+                    });
+                }
+                Ok(Err(e)) => {
+                    // Scan returned an error
+                    let _ = update_tx_final.send(BlockScanUpdate::Error(e.to_string()));
+                }
+                Err(e) => {
+                    // Task panicked
+                    let _ = update_tx_final.send(BlockScanUpdate::Error(format!(
+                        "Scan task panicked: {}",
+                        e
+                    )));
+                }
+            }
         });
     }
 }
