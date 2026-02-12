@@ -2022,6 +2022,24 @@ impl App {
                     }
                 }
             }
+            Action::SaveBackupToFile(ref backup_string) => {
+                // Save backup string to a file in the current directory
+                let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                let filename = format!("obscell-encrypted-keystore-{}.txt", timestamp);
+                match std::fs::write(&filename, backup_string) {
+                    Ok(()) => {
+                        self.settings_component.success_message =
+                            Some(format!("Backup saved to: {}", filename));
+                        // Close the backup overlay and return to menu
+                        self.settings_component.mode = SettingsMode::Menu;
+                        self.settings_component.backup_string = None;
+                    }
+                    Err(e) => {
+                        self.settings_component.error_message =
+                            Some(format!("Failed to save backup: {}", e));
+                    }
+                }
+            }
             Action::SwitchNetwork(ref network) => {
                 // Switch to a different network
                 let new_config = Config::from_network(network);

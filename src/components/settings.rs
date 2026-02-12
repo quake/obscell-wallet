@@ -236,7 +236,7 @@ impl SettingsComponent {
                 area,
                 passphrase_input,
                 error_message,
-                "Enter your wallet passphrase to export the backup:",
+                "Enter passphrase to unlock wallet and encrypt backup:",
             );
             return;
         }
@@ -584,7 +584,7 @@ impl SettingsComponent {
 
         // Hint
         let hint = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "[Esc] Close    [Enter] Close",
+            "[s] Save to file    [Esc] Close    [Enter] Close",
             Style::default().fg(Color::DarkGray),
         )])]);
         f.render_widget(hint, chunks[2]);
@@ -657,6 +657,13 @@ impl Component for SettingsComponent {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.mode = SettingsMode::Menu;
                     self.backup_string = None;
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    // Save backup to file
+                    if let Some(ref backup) = self.backup_string {
+                        self.action_tx
+                            .send(Action::SaveBackupToFile(backup.clone()))?;
+                    }
                 }
                 _ => {}
             }

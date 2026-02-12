@@ -35,6 +35,7 @@ pub enum Action {
     SwitchNetwork(String),
     ExportWalletBackup,
     ExportWalletBackupWithPassphrase(String),
+    SaveBackupToFile(String),
 
     // Account actions
     CreateAccount,

@@ -29,10 +29,10 @@ pub enum SetupMode {
     RestoreMnemonicPassphrase,
     /// Restoring from mnemonic - enter the 24 words
     RestoreMnemonicInput,
-    /// Restoring from backup - enter passphrase
-    RestoreBackupPassphrase,
-    /// Restoring from backup - enter the backup string
+    /// Restoring from backup - enter the backup string first
     RestoreBackupInput,
+    /// Restoring from backup - enter passphrase to decrypt
+    RestoreBackupPassphrase,
 }
 
 /// Menu item selection
@@ -256,7 +256,7 @@ impl WalletSetupComponent {
                     self.mode = SetupMode::RestoreMnemonicPassphrase;
                 }
                 MenuItem::RestoreBackup => {
-                    self.mode = SetupMode::RestoreBackupPassphrase;
+                    self.mode = SetupMode::RestoreBackupInput;
                 }
             },
             SetupMode::CreatePassphrase => {
@@ -292,15 +292,15 @@ impl WalletSetupComponent {
                     let _ = self.action_tx.send(Action::RestoreFromMnemonic);
                 }
             }
-            SetupMode::RestoreBackupPassphrase => {
-                if let Some(err) = self.validate_passphrase() {
-                    self.error_message = Some(err);
-                } else {
-                    self.mode = SetupMode::RestoreBackupInput;
-                }
-            }
             SetupMode::RestoreBackupInput => {
                 if let Some(err) = self.validate_backup_input() {
+                    self.error_message = Some(err);
+                } else {
+                    self.mode = SetupMode::RestoreBackupPassphrase;
+                }
+            }
+            SetupMode::RestoreBackupPassphrase => {
+                if let Some(err) = self.validate_passphrase() {
                     self.error_message = Some(err);
                 } else {
                     let _ = self.action_tx.send(Action::RestoreFromBackup);
@@ -317,7 +317,7 @@ impl WalletSetupComponent {
             }
             SetupMode::CreatePassphrase
             | SetupMode::RestoreMnemonicPassphrase
-            | SetupMode::RestoreBackupPassphrase => {
+            | SetupMode::RestoreBackupInput => {
                 self.reset();
             }
             SetupMode::CreateConfirmPassphrase => {
@@ -332,9 +332,9 @@ impl WalletSetupComponent {
                 self.mnemonic_input.clear();
                 self.mode = SetupMode::RestoreMnemonicPassphrase;
             }
-            SetupMode::RestoreBackupInput => {
-                self.backup_input.clear();
-                self.mode = SetupMode::RestoreBackupPassphrase;
+            SetupMode::RestoreBackupPassphrase => {
+                self.passphrase.clear();
+                self.mode = SetupMode::RestoreBackupInput;
             }
         }
         self.error_message = None;
@@ -384,8 +384,8 @@ impl WalletSetupComponent {
             SetupMode::ShowMnemonic => "Create New Wallet - Save Your Mnemonic",
             SetupMode::RestoreMnemonicPassphrase => "Restore from Mnemonic - Set Passphrase",
             SetupMode::RestoreMnemonicInput => "Restore from Mnemonic - Enter 24 Words",
-            SetupMode::RestoreBackupPassphrase => "Restore from Backup - Set Passphrase",
             SetupMode::RestoreBackupInput => "Restore from Backup - Enter Backup String",
+            SetupMode::RestoreBackupPassphrase => "Restore from Backup - Enter Passphrase",
         };
         let title_para = Paragraph::new(title)
             .style(
@@ -401,10 +401,17 @@ impl WalletSetupComponent {
             SetupMode::Menu => {
                 Self::draw_menu(f, chunks[1], selected_menu);
             }
-            SetupMode::CreatePassphrase
-            | SetupMode::RestoreMnemonicPassphrase
-            | SetupMode::RestoreBackupPassphrase => {
-                Self::draw_passphrase_input(f, chunks[1], passphrase, show_passphrase, false);
+            SetupMode::CreatePassphrase | SetupMode::RestoreMnemonicPassphrase => {
+                Self::draw_passphrase_input(f, chunks[1], passphrase, show_passphrase, None);
+            }
+            SetupMode::RestoreBackupPassphrase => {
+                Self::draw_passphrase_input(
+                    f,
+                    chunks[1],
+                    passphrase,
+                    show_passphrase,
+                    Some("Enter passphrase to decrypt backup:"),
+                );
             }
             SetupMode::CreateConfirmPassphrase => {
                 Self::draw_passphrase_input(
@@ -412,7 +419,7 @@ impl WalletSetupComponent {
                     chunks[1],
                     passphrase_confirm,
                     show_passphrase,
-                    true,
+                    Some("Re-enter your passphrase to confirm:"),
                 );
             }
             SetupMode::ShowMnemonic => {
@@ -502,7 +509,7 @@ impl WalletSetupComponent {
         area: Rect,
         passphrase: &str,
         show: bool,
-        is_confirm: bool,
+        custom_instruction: Option<&str>,
     ) {
         let chunks = Layout::vertical([
             Constraint::Length(2),
@@ -513,11 +520,8 @@ impl WalletSetupComponent {
         .split(area);
 
         // Instructions
-        let instructions = if is_confirm {
-            "Re-enter your passphrase to confirm:"
-        } else {
-            "Enter a strong passphrase (min 8 characters):"
-        };
+        let instructions =
+            custom_instruction.unwrap_or("Enter a strong passphrase (min 8 characters):");
         let instr_para = Paragraph::new(instructions).style(Style::default().fg(Color::White));
         f.render_widget(instr_para, chunks[0]);
 
