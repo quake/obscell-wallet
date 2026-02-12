@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
-    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
+    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -41,6 +41,7 @@ fn create_test_config(env: &TestEnv) -> Config {
         network: NetworkConfig {
             name: "devnet".to_string(),
             rpc_url: DevNet::RPC_URL.to_string(),
+            scan_start_block: 0,
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(stealth_type_id_hash.as_bytes())),

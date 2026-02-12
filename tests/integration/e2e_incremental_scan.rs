@@ -26,6 +26,7 @@ fn create_test_config(env: &TestEnv) -> Config {
         network: NetworkConfig {
             name: "devnet".to_string(),
             rpc_url: DevNet::RPC_URL.to_string(),
+            scan_start_block: 0,
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(type_id_hash.as_bytes())),
