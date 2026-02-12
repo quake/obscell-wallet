@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
+use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -9,6 +9,7 @@ use crate::{
     domain::{
         account::Account,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
+        scan_state::ScanState,
         wallet::WalletMeta,
     },
 };
@@ -18,6 +19,9 @@ pub const SELECTED_NETWORK_KEY: &str = "selected_network";
 
 /// Key for storing wallet metadata.
 const WALLET_META_KEY: &str = "wallet_meta";
+
+/// Key for storing scan state.
+const SCAN_STATE_KEY: &str = "scan_state";
 
 /// Wrapper around LMDB database for persistent storage.
 #[derive(Clone)]
@@ -142,6 +146,25 @@ impl Store {
             Some(db) => Ok(db.get(&rtxn, key)?),
             None => Ok(None),
         }
+    }
+
+    // ==================== Scan State Storage ====================
+
+    /// Save scan state.
+    pub fn save_scan_state(&self, state: &ScanState) -> Result<()> {
+        self.save_metadata(SCAN_STATE_KEY, state)
+    }
+
+    /// Load scan state.
+    pub fn load_scan_state(&self) -> Result<ScanState> {
+        Ok(self
+            .load_metadata::<ScanState>(SCAN_STATE_KEY)?
+            .unwrap_or_default())
+    }
+
+    /// Clear scan state (for full rescan).
+    pub fn clear_scan_state(&self) -> Result<()> {
+        self.save_scan_state(&ScanState::new())
     }
 
     // ==================== Stealth Cell Storage ====================
@@ -457,6 +480,15 @@ impl Store {
         self.clear_ct_info_cells(account_id)?;
         self.clear_tx_history_index(account_id)?;
         self.save_tx_history(account_id, &[])?;
+        Ok(())
+    }
+
+    /// Clear all data for a full rescan (scan state + all account cells).
+    pub fn clear_all_for_rescan(&self, account_ids: &[u64]) -> Result<()> {
+        self.clear_scan_state()?;
+        for &account_id in account_ids {
+            self.clear_all_cells_for_account(account_id)?;
+        }
         Ok(())
     }
 }
