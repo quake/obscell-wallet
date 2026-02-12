@@ -5,6 +5,7 @@
 
 use ckb_jsonrpc_types::BlockView;
 use color_eyre::eyre::{eyre, Result};
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use std::collections::{HashMap, HashSet};
@@ -22,7 +23,7 @@ use crate::{
 };
 
 /// Updates sent from background scanner to the main app.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BlockScanUpdate {
     /// Scan started
     Started { is_full_rescan: bool },

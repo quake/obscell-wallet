@@ -40,7 +40,7 @@ use crate::{
     infra::{
         devnet::DevNet,
         faucet::Faucet,
-        scanner::Scanner,
+        block_scanner::BlockScanner,
         store::{SELECTED_NETWORK_KEY, Store},
     },
     tui::{Event, Frame, Tui},
@@ -137,7 +137,7 @@ pub struct App {
     pub action_rx: UnboundedReceiver<Action>,
     pub tui: Tui,
     pub store: Store,
-    pub scanner: Scanner,
+    pub scanner: BlockScanner,
     pub account_manager: AccountManager,
     pub wallet_meta: Option<WalletMeta>,
     pub wallet_setup_component: WalletSetupComponent,
@@ -164,7 +164,7 @@ pub struct App {
     pub checkpoint_block: Option<u64>,
     // Background scan channel
     pub scan_update_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::scanner::ScanUpdate>>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::block_scanner::BlockScanUpdate>>,
 }
 
 impl App {
@@ -186,7 +186,7 @@ impl App {
 
         let config = Config::new(&network, args.rpc_url.as_deref());
         let store = Store::new(&config.network.name)?;
-        let scanner = Scanner::new(config.clone(), store.clone());
+        let scanner = BlockScanner::new(config.clone(), store.clone());
         let account_manager = AccountManager::new(store.clone());
         let settings_component = SettingsComponent::new(action_tx.clone(), &config.network.name);
         let accounts_component = AccountsComponent::new(action_tx.clone());
@@ -295,46 +295,40 @@ impl App {
     }
 
     /// Handle background scan progress updates.
-    fn handle_scan_update(&mut self, update: crate::infra::scanner::ScanUpdate) -> Result<()> {
-        use crate::infra::scanner::ScanUpdate;
+    fn handle_scan_update(&mut self, update: crate::infra::block_scanner::BlockScanUpdate) -> Result<()> {
+        use crate::infra::block_scanner::BlockScanUpdate;
 
         match update {
-            ScanUpdate::Started { is_full_rescan } => {
+            BlockScanUpdate::Started { is_full_rescan } => {
                 if is_full_rescan {
                     self.status_message = "Full rescan started...".to_string();
                 } else {
                     self.status_message = "Scanning...".to_string();
                 }
             }
-            ScanUpdate::CellScanProgress {
-                cells_scanned,
-                cells_matched,
+            BlockScanUpdate::Progress {
+                current_block,
+                tip_block,
+                cells_found,
             } => {
+                let progress_pct = if tip_block > 0 {
+                    (current_block as f64 / tip_block as f64 * 100.0) as u32
+                } else {
+                    0
+                };
                 self.status_message = format!(
-                    "Scanning cells: {} scanned, {} matched",
-                    cells_scanned, cells_matched
+                    "Scanning: block {}/{} ({}%), {} cells found",
+                    current_block, tip_block, progress_pct, cells_found
                 );
             }
-            ScanUpdate::CellScanComplete {
-                stealth_cells_found,
-                ct_cells_found,
-            } => {
+            BlockScanUpdate::ReorgDetected { fork_block, new_tip } => {
                 self.status_message = format!(
-                    "Cells found: {} stealth, {} CT. Scanning history...",
-                    stealth_cells_found, ct_cells_found
+                    "Reorg detected at block {}, rescanning to tip {}...",
+                    fork_block, new_tip
                 );
             }
-            ScanUpdate::HistoryScanProgress {
-                txs_processed,
-                total_txs,
-            } => {
-                // txs_processed = transactions checked, total_txs = relevant transactions found
-                self.status_message = format!(
-                    "Scanning history: {} checked, {} found",
-                    txs_processed, total_txs
-                );
-            }
-            ScanUpdate::Complete {
+            BlockScanUpdate::Complete {
+                last_block,
                 total_stealth_cells,
                 total_ct_cells,
                 total_tx_records,
@@ -359,8 +353,8 @@ impl App {
 
                 let ckb_amount = total_capacity as f64 / 100_000_000.0;
                 self.status_message = format!(
-                    "Scan complete: {} stealth, {} CT cells, {} tx records, {:.4} CKB",
-                    total_stealth_cells, total_ct_cells, total_tx_records, ckb_amount
+                    "Scan complete (block {}): {} stealth, {} CT cells, {} tx, {:.4} CKB",
+                    last_block, total_stealth_cells, total_ct_cells, total_tx_records, ckb_amount
                 );
 
                 // Refresh accounts display with updated balances
@@ -371,7 +365,7 @@ impl App {
                     self.tip_block_number = Some(tip);
                 }
             }
-            ScanUpdate::Error(msg) => {
+            BlockScanUpdate::Error(msg) => {
                 self.is_scanning = false;
                 self.scan_update_rx = None;
                 self.status_message = format!("Scan error: {}", msg);
@@ -777,7 +771,7 @@ impl App {
                         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                         self.scan_update_rx = Some(rx);
 
-                        Scanner::spawn_background_scan(
+                        BlockScanner::spawn_background_scan(
                             self.config.clone(),
                             self.store.clone(),
                             accounts,
@@ -939,7 +933,7 @@ impl App {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 self.scan_update_rx = Some(rx);
 
-                Scanner::spawn_background_scan(
+                BlockScanner::spawn_background_scan(
                     self.config.clone(),
                     self.store.clone(),
                     accounts,
@@ -966,7 +960,7 @@ impl App {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 self.scan_update_rx = Some(rx);
 
-                Scanner::spawn_background_scan(
+                BlockScanner::spawn_background_scan(
                     self.config.clone(),
                     self.store.clone(),
                     accounts,
@@ -2053,7 +2047,7 @@ impl App {
                 self.config = new_config.clone();
                 self.store = new_store;
                 self.account_manager = new_account_manager;
-                self.scanner = Scanner::new(self.config.clone(), self.store.clone());
+                self.scanner = BlockScanner::new(self.config.clone(), self.store.clone());
                 self.is_scanning = false;
                 self.last_auto_scan = None;
 

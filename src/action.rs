@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use strum::Display;
 
-use crate::infra::scanner::ScanUpdate;
+use crate::infra::block_scanner::BlockScanUpdate;
 
 /// Actions that can be triggered by user input or internal events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Display)]
@@ -52,7 +52,7 @@ pub enum Action {
     FullRescan,
 
     // Background scan updates
-    ScanProgress(ScanUpdate),
+    ScanProgress(BlockScanUpdate),
 
     // Token actions
     SelectToken(usize),
