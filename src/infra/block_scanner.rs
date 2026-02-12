@@ -1,9 +1,10 @@
 //! Block-based cell scanner for stealth address detection.
 //!
-//! Polls blocks via get_block() RPC instead of using indexer.
+//! Polls blocks via get_packed_block() RPC instead of using indexer.
 //! This eliminates the need for rich-indexer and simplifies deployment.
+//! Uses packed block format for more efficient network transfer.
 
-use ckb_jsonrpc_types::BlockView;
+use ckb_types::{packed, prelude::*};
 use color_eyre::eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -132,16 +133,17 @@ impl BlockScanner {
         &self.rpc
     }
 
-    /// Fetch a block with exponential backoff retry on transient errors.
+    /// Fetch a packed block with exponential backoff retry on transient errors.
     ///
     /// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms
-    fn get_block_with_retry(&self, block_number: u64) -> Result<Option<BlockView>> {
+    /// Uses get_packed_block for more efficient network transfer.
+    fn get_block_with_retry(&self, block_number: u64) -> Result<Option<packed::Block>> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 100;
 
         let mut attempt = 0;
         loop {
-            match self.rpc.get_block(block_number) {
+            match self.rpc.get_packed_block(block_number) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     attempt += 1;
@@ -175,20 +177,21 @@ impl BlockScanner {
         }
     }
 
-    /// Process a single block for all accounts.
+    /// Process a single packed block for all accounts.
     ///
     /// Returns cells found and spent cells for each account.
     pub fn process_block(
         &self,
-        block: &BlockView,
+        block: &packed::Block,
         accounts: &[Account],
     ) -> Result<BlockProcessResult> {
         let stealth_code_hash = self.stealth_lock_code_hash()?;
         let ct_code_hash = self.ct_token_code_hash()?;
         let ct_info_code_hash = self.ct_info_code_hash()?;
 
-        let block_number: u64 = block.header.inner.number.into();
-        let timestamp_ms: u64 = block.header.inner.timestamp.into();
+        let header = block.header();
+        let block_number: u64 = header.raw().number().unpack();
+        let timestamp_ms: u64 = header.raw().timestamp().unpack();
         let timestamp = (timestamp_ms / 1000) as i64;
 
         // Prepare account keys
@@ -220,121 +223,124 @@ impl BlockScanner {
         let mut result = BlockProcessResult::default();
 
         // Process each transaction in the block
-        for (tx_idx, tx) in block.transactions.iter().enumerate() {
-            let tx_hash_h256 = &tx.hash;
-            let mut tx_hash = [0u8; 32];
-            tx_hash.copy_from_slice(tx_hash_h256.as_bytes());
+        for (tx_idx, tx) in block.transactions().into_iter().enumerate() {
+            let tx_hash: packed::Byte32 = tx.calc_tx_hash();
+            let tx_hash_bytes: [u8; 32] = tx_hash.into();
 
             // Track per-account involvement for this tx
             let mut account_ckb_delta: HashMap<u64, i64> = HashMap::new();
             let mut account_ct_delta: HashMap<u64, HashMap<[u8; 32], i64>> = HashMap::new();
             let mut account_involved: HashSet<u64> = HashSet::new();
 
+            let raw_tx = tx.raw();
+            let outputs = raw_tx.outputs();
+            let outputs_data = raw_tx.outputs_data();
+
             // Process outputs (cells being created)
-            for (output_idx, output) in tx.inner.outputs.iter().enumerate() {
+            for output_idx in 0..outputs.len() {
+                let output = outputs.get(output_idx).unwrap();
+                let lock_script = output.lock();
+
                 // Check if this output uses stealth-lock
-                if output.lock.code_hash.as_bytes() != stealth_code_hash {
+                let lock_code_hash: [u8; 32] = lock_script.code_hash().as_slice().try_into()
+                    .map_err(|_| eyre!("Invalid lock code hash length"))?;
+                if lock_code_hash != stealth_code_hash {
                     continue;
                 }
 
-                let lock_args = output.lock.args.as_bytes();
+                let lock_args = lock_script.args().raw_data();
+                let lock_args_bytes = lock_args.as_ref();
 
                 // Build out_point bytes
                 let mut out_point = Vec::with_capacity(36);
-                out_point.extend_from_slice(tx_hash_h256.as_bytes());
+                out_point.extend_from_slice(&tx_hash_bytes);
                 out_point.extend_from_slice(&(output_idx as u32).to_le_bytes());
 
                 // Check ownership against all accounts
                 for (account_id, view_key, spend_pub) in &account_keys {
-                    if !matches_key(lock_args, view_key, spend_pub) {
+                    if !matches_key(lock_args_bytes, view_key, spend_pub) {
                         continue;
                     }
 
                     account_involved.insert(*account_id);
-                    let capacity: u64 = output.capacity.into();
+                    let capacity: u64 = output.capacity().unpack();
 
                     // Determine cell type
-                    let type_script = output.type_.as_ref();
-                    let is_ct = type_script
-                        .map(|ts| {
-                            ct_code_hash
-                                .as_ref()
-                                .map(|h| ts.code_hash.as_bytes() == h)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-                    let is_ct_info = type_script
-                        .map(|ts| {
-                            ct_info_code_hash
-                                .as_ref()
-                                .map(|h| ts.code_hash.as_bytes() == h)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
+                    let type_script_opt = output.type_().to_opt();
+                    let (is_ct, is_ct_info) = if let Some(ref ts) = type_script_opt {
+                        let type_code_hash: [u8; 32] = ts.code_hash().as_slice().try_into()
+                            .map_err(|_| eyre!("Invalid type code hash length"))?;
+                        let is_ct = ct_code_hash
+                            .as_ref()
+                            .map(|h| &type_code_hash == h)
+                            .unwrap_or(false);
+                        let is_ct_info = ct_info_code_hash
+                            .as_ref()
+                            .map(|h| &type_code_hash == h)
+                            .unwrap_or(false);
+                        (is_ct, is_ct_info)
+                    } else {
+                        (false, false)
+                    };
 
                     if is_ct {
                         // Process CT cell
-                        let output_data = tx
-                            .inner
-                            .outputs_data
+                        let output_data = outputs_data
                             .get(output_idx)
-                            .map(|d| d.as_bytes())
-                            .unwrap_or(&[]);
+                            .map(|d| d.raw_data())
+                            .unwrap_or_default();
+                        let output_data_bytes = output_data.as_ref();
 
                         if let Some((commitment, encrypted_amount)) =
-                            Self::parse_ct_cell_data(output_data)
+                            Self::parse_ct_cell_data(output_data_bytes)
+                            && let Some(shared_secret) = derive_shared_secret(lock_args_bytes, view_key)
+                            && let Some(amount) = ct::decrypt_amount(&encrypted_amount, &shared_secret)
                         {
-                            if let Some(shared_secret) = derive_shared_secret(lock_args, view_key) {
-                                if let Some(amount) =
-                                    ct::decrypt_amount(&encrypted_amount, &shared_secret)
-                                {
-                                    let type_script_args = type_script
-                                        .map(|ts| ts.args.as_bytes().to_vec())
-                                        .unwrap_or_default();
+                            let type_script_args = type_script_opt
+                                .as_ref()
+                                .map(|ts| ts.args().raw_data().to_vec())
+                                .unwrap_or_default();
 
-                                    let ct_cell = CtCell::new(
-                                        out_point.clone(),
-                                        type_script_args.clone(),
-                                        commitment,
-                                        encrypted_amount,
-                                        [0u8; 32], // blinding factor placeholder
-                                        amount,
-                                        lock_args.to_vec(),
-                                    );
+                            let ct_cell = CtCell::new(
+                                out_point.clone(),
+                                type_script_args.clone(),
+                                commitment,
+                                encrypted_amount,
+                                [0u8; 32], // blinding factor placeholder
+                                amount,
+                                lock_args_bytes.to_vec(),
+                            );
 
-                                    result
-                                        .new_ct_cells
-                                        .entry(*account_id)
-                                        .or_default()
-                                        .push(ct_cell);
+                            result
+                                .new_ct_cells
+                                .entry(*account_id)
+                                .or_default()
+                                .push(ct_cell);
 
-                                    // Track CT delta - use last 32 bytes as token_id
-                                    // (type_script_args = ct_info_code_hash || token_id)
-                                    let mut token_id = [0u8; 32];
-                                    if type_script_args.len() >= 32 {
-                                        let start = type_script_args.len() - 32;
-                                        token_id.copy_from_slice(&type_script_args[start..]);
-                                    }
-                                    *account_ct_delta
-                                        .entry(*account_id)
-                                        .or_default()
-                                        .entry(token_id)
-                                        .or_insert(0) += amount as i64;
-                                }
+                            // Track CT delta - use last 32 bytes as token_id
+                            // (type_script_args = ct_info_code_hash || token_id)
+                            let mut token_id = [0u8; 32];
+                            if type_script_args.len() >= 32 {
+                                let start = type_script_args.len() - 32;
+                                token_id.copy_from_slice(&type_script_args[start..]);
                             }
+                            *account_ct_delta
+                                .entry(*account_id)
+                                .or_default()
+                                .entry(token_id)
+                                .or_insert(0) += amount as i64;
                         }
                     } else if is_ct_info {
                         // Process CT-info cell
-                        let output_data = tx
-                            .inner
-                            .outputs_data
+                        let output_data = outputs_data
                             .get(output_idx)
-                            .map(|d| d.as_bytes().to_vec())
+                            .map(|d| d.raw_data().to_vec())
                             .unwrap_or_default();
 
                         if let Ok(ct_info_data) = CtInfoData::from_bytes(&output_data) {
-                            let type_args = type_script
-                                .map(|ts| ts.args.as_bytes().to_vec())
+                            let type_args = type_script_opt
+                                .as_ref()
+                                .map(|ts| ts.args().raw_data().to_vec())
                                 .unwrap_or_default();
 
                             if type_args.len() >= 32 {
@@ -348,7 +354,7 @@ impl BlockScanner {
                                     ct_info_data.supply_cap,
                                     ct_info_data.flags,
                                     capacity,
-                                    lock_args.to_vec(),
+                                    lock_args_bytes.to_vec(),
                                 );
 
                                 result
@@ -359,7 +365,7 @@ impl BlockScanner {
 
                                 // Record genesis tx
                                 let record = TxRecord::ct_genesis(
-                                    tx_hash,
+                                    tx_hash_bytes,
                                     token_id,
                                     timestamp,
                                     block_number,
@@ -374,7 +380,7 @@ impl BlockScanner {
                     } else {
                         // Plain stealth cell
                         let stealth_cell =
-                            StealthCell::new(out_point.clone(), capacity, lock_args.to_vec());
+                            StealthCell::new(out_point.clone(), capacity, lock_args_bytes.to_vec());
 
                         result
                             .new_stealth_cells
@@ -394,13 +400,14 @@ impl BlockScanner {
             // Process inputs (cells being spent)
             // Skip cellbase (first tx in block has no real inputs)
             if tx_idx > 0 {
-                for input in &tx.inner.inputs {
-                    let prev_tx_hash = input.previous_output.tx_hash.as_bytes();
-                    let prev_index: u32 = input.previous_output.index.into();
+                for input in raw_tx.inputs().into_iter() {
+                    let prev_out_point = input.previous_output();
+                    let prev_tx_hash = prev_out_point.tx_hash();
+                    let prev_index: u32 = prev_out_point.index().unpack();
 
                     // Build out_point for lookup
                     let mut out_point = Vec::with_capacity(36);
-                    out_point.extend_from_slice(prev_tx_hash);
+                    out_point.extend_from_slice(prev_tx_hash.as_slice());
                     out_point.extend_from_slice(&prev_index.to_le_bytes());
 
                     // Check if any account owns this cell
@@ -416,22 +423,20 @@ impl BlockScanner {
                             // We need to look up the capacity/amount to calculate delta
                             // This requires fetching the previous tx or having it cached
                             // For now, we'll handle this by looking at our stored cells
-                            if let Ok(cells) = self.store.get_stealth_cells(*account_id) {
-                                if let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
-                                {
-                                    *account_ckb_delta.entry(*account_id).or_insert(0) -=
-                                        cell.capacity as i64;
-                                }
+                            if let Ok(cells) = self.store.get_stealth_cells(*account_id)
+                                && let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
+                            {
+                                *account_ckb_delta.entry(*account_id).or_insert(0) -=
+                                    cell.capacity as i64;
                             }
-                            if let Ok(cells) = self.store.get_ct_cells(*account_id) {
-                                if let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
-                                {
-                                    *account_ct_delta
-                                        .entry(*account_id)
-                                        .or_default()
-                                        .entry(cell.token_id)
-                                        .or_insert(0) -= cell.amount as i64;
-                                }
+                            if let Ok(cells) = self.store.get_ct_cells(*account_id)
+                                && let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
+                            {
+                                *account_ct_delta
+                                    .entry(*account_id)
+                                    .or_default()
+                                    .entry(cell.token_id)
+                                    .or_insert(0) -= cell.amount as i64;
                             }
 
                             break;
@@ -443,15 +448,15 @@ impl BlockScanner {
             // Create TxRecords for involved accounts
             for account_id in account_involved {
                 // CKB record
-                if let Some(&delta) = account_ckb_delta.get(&account_id) {
-                    if delta != 0 {
-                        let record = TxRecord::ckb(tx_hash, delta, timestamp, block_number);
-                        result
-                            .tx_records
-                            .entry(account_id)
-                            .or_default()
-                            .push(record);
-                    }
+                if let Some(&delta) = account_ckb_delta.get(&account_id)
+                    && delta != 0
+                {
+                    let record = TxRecord::ckb(tx_hash_bytes, delta, timestamp, block_number);
+                    result
+                        .tx_records
+                        .entry(account_id)
+                        .or_default()
+                        .push(record);
                 }
 
                 // CT records
@@ -459,7 +464,7 @@ impl BlockScanner {
                     for (&token_id, &delta) in ct_deltas {
                         if delta != 0 {
                             let record =
-                                TxRecord::ct(tx_hash, token_id, delta, timestamp, block_number);
+                                TxRecord::ct(tx_hash_bytes, token_id, delta, timestamp, block_number);
                             result
                                 .tx_records
                                 .entry(account_id)
@@ -538,61 +543,59 @@ impl BlockScanner {
                 }
             };
 
-            let block_hash: [u8; 32] = block.header.hash.as_bytes().try_into()
-                .map_err(|_| eyre!("Invalid block hash length"))?;
-            let parent_hash: [u8; 32] = block.header.inner.parent_hash.as_bytes().try_into()
-                .map_err(|_| eyre!("Invalid parent hash length"))?;
+            let block_hash: [u8; 32] = block.calc_header_hash().into();
+            let parent_hash: [u8; 32] = block.header().raw().parent_hash().into();
 
             // Check for reorg
-            if let Some(expected_parent) = state.expected_parent_hash() {
-                if parent_hash != expected_parent {
-                    // Reorg detected!
-                    info!(
-                        "Reorg detected at block {}! Expected parent {:?}, got {:?}",
-                        current,
-                        hex::encode(&expected_parent[..8]),
-                        hex::encode(&parent_hash[..8])
-                    );
+            if let Some(expected_parent) = state.expected_parent_hash()
+                && parent_hash != expected_parent
+            {
+                // Reorg detected!
+                info!(
+                    "Reorg detected at block {}! Expected parent {:?}, got {:?}",
+                    current,
+                    hex::encode(&expected_parent[..8]),
+                    hex::encode(&parent_hash[..8])
+                );
 
-                    // Find fork point
-                    if let Some(fork_block) = state.find_fork_point(&parent_hash) {
-                        info!("Fork point found at block {}", fork_block);
+                // Find fork point
+                if let Some(fork_block) = state.find_fork_point(&parent_hash) {
+                    info!("Fork point found at block {}", fork_block);
 
-                        // Rollback state
-                        state.rollback_to(fork_block);
-                        self.store.save_scan_state(&state)?;
+                    // Rollback state
+                    state.rollback_to(fork_block);
+                    self.store.save_scan_state(&state)?;
 
-                        // We need to rollback cell data too
-                        // For simplicity, we'll do a full rescan from fork point
-                        // A more sophisticated implementation would track per-block changes
-                        for account in accounts {
-                            self.store.clear_all_cells_for_account(account.id)?;
-                        }
-                        state.clear();
-                        self.store.save_scan_state(&state)?;
-
-                        // Notify about reorg
-                        if let Some(tx) = update_tx {
-                            let _ = tx.send(BlockScanUpdate::ReorgDetected {
-                                fork_block,
-                                new_tip: tip,
-                            });
-                        }
-
-                        // Restart from fork point
-                        current = fork_block + 1;
-                        continue;
-                    } else {
-                        // Can't find fork point in recent blocks - need full rescan
-                        warn!("Fork point not found in recent blocks, initiating full rescan");
-                        for account in accounts {
-                            self.store.clear_all_cells_for_account(account.id)?;
-                        }
-                        state.clear();
-                        self.store.save_scan_state(&state)?;
-                        current = start_block;
-                        continue;
+                    // We need to rollback cell data too
+                    // For simplicity, we'll do a full rescan from fork point
+                    // A more sophisticated implementation would track per-block changes
+                    for account in accounts {
+                        self.store.clear_all_cells_for_account(account.id)?;
                     }
+                    state.clear();
+                    self.store.save_scan_state(&state)?;
+
+                    // Notify about reorg
+                    if let Some(tx) = update_tx {
+                        let _ = tx.send(BlockScanUpdate::ReorgDetected {
+                            fork_block,
+                            new_tip: tip,
+                        });
+                    }
+
+                    // Restart from fork point
+                    current = fork_block + 1;
+                    continue;
+                } else {
+                    // Can't find fork point in recent blocks - need full rescan
+                    warn!("Fork point not found in recent blocks, initiating full rescan");
+                    for account in accounts {
+                        self.store.clear_all_cells_for_account(account.id)?;
+                    }
+                    state.clear();
+                    self.store.save_scan_state(&state)?;
+                    current = start_block;
+                    continue;
                 }
             }
 
@@ -637,14 +640,14 @@ impl BlockScanner {
             blocks_processed += 1;
 
             // Send progress update periodically
-            if let Some(tx) = update_tx {
-                if blocks_processed % 100 == 0 || current == tip {
-                    let _ = tx.send(BlockScanUpdate::Progress {
-                        current_block: current,
-                        tip_block: tip,
-                        cells_found: total_cells_found,
-                    });
-                }
+            if let Some(tx) = update_tx
+                && (blocks_processed % 100 == 0 || current == tip)
+            {
+                let _ = tx.send(BlockScanUpdate::Progress {
+                    current_block: current,
+                    tip_block: tip,
+                    cells_found: total_cells_found,
+                });
             }
 
             current += 1;

@@ -166,10 +166,32 @@ impl RpcClient {
         Ok(result)
     }
 
-    /// Get a block by block number.
+    /// Get a block by block number (JSON format).
     pub fn get_block(&self, block_number: u64) -> Result<Option<ckb_jsonrpc_types::BlockView>> {
         let result = self.client.get_block_by_number(block_number.into())?;
         Ok(result)
+    }
+
+    /// Get a packed block by block number (more efficient than JSON).
+    ///
+    /// This uses get_packed_block_by_number RPC which returns packed bytes,
+    /// significantly reducing network transfer compared to JSON.
+    pub fn get_packed_block(&self, block_number: u64) -> Result<Option<ckb_types::packed::Block>> {
+        use ckb_types::prelude::*;
+
+        let result = self
+            .client
+            .get_packed_block_by_number(block_number.into())?;
+
+        match result {
+            Some(json_bytes) => {
+                let bytes = json_bytes.as_bytes();
+                let packed_block = ckb_types::packed::Block::from_slice(bytes)
+                    .map_err(|e| eyre!("Failed to parse packed block: {}", e))?;
+                Ok(Some(packed_block))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Get the config.
