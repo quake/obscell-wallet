@@ -2558,9 +2558,9 @@ impl App {
             if let (Some(scanned), Some(tip)) = (scanned_block_number, tip_block_number) {
                 header_spans.push(Span::raw("  "));
                 let (status_text, status_color) = if scanned >= tip {
-                    (format!("{} / {}", scanned, tip), Color::Green)
+                    (format!("{} / {} (TIP)", scanned, tip), Color::Green)
                 } else {
-                    (format!("{} / {}", scanned, tip), Color::Yellow)
+                    (format!("{} / {} (TIP)", scanned, tip), Color::Yellow)
                 };
                 header_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
             }
@@ -2691,9 +2691,6 @@ impl App {
             }
 
             // Draw status
-            let tip_str = tip_block_number
-                .map(|n| format!("Block: {}", n))
-                .unwrap_or_else(|| "Block: -".to_string());
             let underline = Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::UNDERLINED);
@@ -2701,8 +2698,6 @@ impl App {
             let status = Paragraph::new(vec![Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&status_message, Style::default().fg(Color::Green)),
-                Span::raw("  |  "),
-                Span::styled(&tip_str, Style::default().fg(Color::Yellow)),
                 Span::raw("  |  "),
                 Span::styled("F", underline),
                 Span::styled("ull Rescan ", dim),
