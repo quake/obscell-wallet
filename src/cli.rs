@@ -23,9 +23,14 @@ pub struct Args {
     #[arg(long)]
     pub rpc_url: Option<String>,
 
-    /// Data directory path
+    /// Data directory path (default: ./data)
     #[arg(long)]
     pub data_dir: Option<String>,
+
+    /// Config directory path for network config files
+    /// (default: searches ./{network}.toml, then ./config/{network}.toml)
+    #[arg(long)]
+    pub config_dir: Option<String>,
 }
 
 impl Args {

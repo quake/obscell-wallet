@@ -111,14 +111,16 @@ This wallet interacts with the [Obscell](https://github.com/quake/obscell) smart
 ## Configuration
 
 **Network config files** are searched in order:
-1. `./config/{network}.toml` (project directory, recommended)
-2. System config directory (`~/Library/Application Support/com.obscell.obscell-wallet/` on macOS)
+1. `--config-dir/{network}.toml` (if specified via CLI)
+2. `./{network}.toml` (current directory)
+3. `./config/{network}.toml` (config subdirectory)
 
 **Wallet data** (database, keys) is stored in `./data/{network}/` by default.
 
-Environment variables (optional):
-- `OBSCELL_WALLET_DATA`: Override data directory path
-- `OBSCELL_WALLET_CONFIG`: Override config directory path
+Command line options:
+- `--data-dir <path>`: Override data directory path (default: `./data`)
+- `--config-dir <path>`: Override config directory search path
+- `--network <name>`: Select network (testnet, mainnet, devnet)
 
 ## Development
 

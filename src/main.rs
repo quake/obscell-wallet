@@ -20,11 +20,12 @@ async fn main() -> Result<()> {
 
     let args = cli::Args::parse_args();
 
+    // Set directory overrides from CLI args (must be done before any config access)
     if let Some(ref data_dir) = args.data_dir {
-        // SAFETY: This is called at program startup before any other threads exist
-        unsafe {
-            std::env::set_var("OBSCELL_WALLET_DATA", data_dir);
-        }
+        config::set_data_dir(std::path::PathBuf::from(data_dir));
+    }
+    if let Some(ref config_dir) = args.config_dir {
+        config::set_config_dir(std::path::PathBuf::from(config_dir));
     }
 
     logging::init()?;

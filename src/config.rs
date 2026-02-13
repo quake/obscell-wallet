@@ -1,13 +1,30 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+/// Global data directory override (set from CLI args at startup)
+static DATA_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Global config directory override (set from CLI args at startup)
+static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the data directory override (call once at startup before any other access)
+pub fn set_data_dir(path: PathBuf) {
+    let _ = DATA_DIR_OVERRIDE.set(path);
+}
+
+/// Set the config directory override (call once at startup before any other access)
+pub fn set_config_dir(path: PathBuf) {
+    let _ = CONFIG_DIR_OVERRIDE.set(path);
+}
+
 /// Get the base data directory for the application.
+/// Default: ./data
 pub fn get_data_dir() -> PathBuf {
-    if let Ok(s) = std::env::var("OBSCELL_WALLET_DATA") {
-        PathBuf::from(s)
+    if let Some(path) = DATA_DIR_OVERRIDE.get() {
+        path.clone()
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -21,14 +38,10 @@ pub fn get_network_data_dir(network: &str) -> PathBuf {
 }
 
 /// Get the config directory for the application.
-pub fn get_config_dir() -> PathBuf {
-    if let Ok(s) = std::env::var("OBSCELL_WALLET_CONFIG") {
-        PathBuf::from(s)
-    } else if let Some(proj_dirs) = ProjectDirs::from("com", "obscell", "obscell-wallet") {
-        proj_dirs.config_local_dir().to_path_buf()
-    } else {
-        PathBuf::from(".").join(".config")
-    }
+/// This is only used when --config-dir is specified.
+/// Returns None if no override is set (config files are searched in current dir).
+pub fn get_config_dir() -> Option<PathBuf> {
+    CONFIG_DIR_OVERRIDE.get().cloned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,9 +250,9 @@ impl Config {
     ///
     /// Tries to load from config file first, falls back to hardcoded defaults.
     /// Config file search order:
-    /// 1. `./config/{network}.toml` (project directory)
-    /// 2. `$OBSCELL_WALLET_CONFIG/{network}.toml` (env var)
-    /// 3. System config directory `/{network}.toml`
+    /// 1. `--config-dir/{network}.toml` (if specified via CLI)
+    /// 2. `./{network}.toml` (current directory)
+    /// 3. `./config/{network}.toml` (config subdirectory)
     /// 4. Hardcoded defaults
     pub fn from_network(network: &str) -> Self {
         // Try to load from config file
@@ -273,13 +286,19 @@ impl Config {
     fn load_from_file(network: &str) -> Option<Self> {
         let filename = format!("{}.toml", network);
 
-        // Search paths in order of priority
-        let search_paths = vec![
-            // 1. Project directory ./config/
-            PathBuf::from("config").join(&filename),
-            // 2. System config directory
-            get_config_dir().join(&filename),
-        ];
+        // Build search paths in order of priority
+        let mut search_paths = Vec::new();
+
+        // 1. If --config-dir is specified, search there first
+        if let Some(config_dir) = get_config_dir() {
+            search_paths.push(config_dir.join(&filename));
+        }
+
+        // 2. Current directory ./{network}.toml
+        search_paths.push(PathBuf::from(&filename));
+
+        // 3. Config subdirectory ./config/{network}.toml
+        search_paths.push(PathBuf::from("config").join(&filename));
 
         for path in search_paths {
             if path.exists() {
