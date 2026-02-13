@@ -1,18 +1,23 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
+use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{get_data_dir, get_network_data_dir},
     domain::{
         account::Account,
+        block_changes::BlockChanges,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
         scan_state::ScanState,
         wallet::WalletMeta,
     },
 };
+
+/// Maximum number of block changes to retain for reorg undo support.
+/// Beyond this, older block changes are pruned.
+const MAX_BLOCK_CHANGES: usize = 64;
 
 /// Key for storing the selected network preference in global store.
 pub const SELECTED_NETWORK_KEY: &str = "selected_network";
@@ -483,12 +488,126 @@ impl Store {
         Ok(())
     }
 
-    /// Clear all data for a full rescan (scan state + all account cells).
+    /// Clear all data for a full rescan (scan state + all account cells + block changes).
     pub fn clear_all_for_rescan(&self, account_ids: &[u64]) -> Result<()> {
         self.clear_scan_state()?;
+        self.clear_block_changes()?;
         for &account_id in account_ids {
             self.clear_all_cells_for_account(account_id)?;
         }
+        Ok(())
+    }
+
+    // ==================== Block Changes Storage (for reorg undo) ====================
+
+    /// Save block changes for a specific block.
+    /// Automatically prunes old block changes beyond MAX_BLOCK_CHANGES.
+    pub fn save_block_changes(&self, changes: &BlockChanges) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Database<U64<BE>, SerdeRmp<BlockChanges>> =
+            self.env.create_database(&mut wtxn, Some("block_changes"))?;
+
+        // Save the new block changes
+        db.put(&mut wtxn, &changes.block_number, changes)?;
+
+        // Prune old blocks if we exceed MAX_BLOCK_CHANGES
+        // Get all block numbers and remove the oldest ones
+        let mut block_numbers: Vec<u64> = db
+            .iter(&wtxn)?
+            .filter_map(|r| r.ok())
+            .map(|(k, _)| k)
+            .collect();
+        block_numbers.sort();
+
+        if block_numbers.len() > MAX_BLOCK_CHANGES {
+            let to_remove = block_numbers.len() - MAX_BLOCK_CHANGES;
+            for &block_num in block_numbers.iter().take(to_remove) {
+                db.delete(&mut wtxn, &block_num)?;
+            }
+        }
+
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get block changes for a specific block.
+    pub fn get_block_changes(&self, block_number: u64) -> Result<Option<BlockChanges>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<BlockChanges>>> =
+            self.env.open_database(&rtxn, Some("block_changes"))?;
+
+        match db {
+            Some(db) => Ok(db.get(&rtxn, &block_number)?),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete block changes for a specific block (after undo).
+    pub fn delete_block_changes(&self, block_number: u64) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<BlockChanges>>> =
+            self.env.open_database(&wtxn, Some("block_changes"))?;
+
+        if let Some(db) = db {
+            db.delete(&mut wtxn, &block_number)?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Delete block changes for blocks >= start_block (for reorg cleanup).
+    pub fn delete_block_changes_from(&self, start_block: u64) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<BlockChanges>>> =
+            self.env.open_database(&wtxn, Some("block_changes"))?;
+
+        if let Some(db) = db {
+            // Collect block numbers to delete
+            let to_delete: Vec<u64> = db
+                .iter(&wtxn)?
+                .filter_map(|r| r.ok())
+                .filter(|(k, _)| *k >= start_block)
+                .map(|(k, _)| k)
+                .collect();
+
+            for block_num in to_delete {
+                db.delete(&mut wtxn, &block_num)?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Get all stored block change block numbers (sorted descending for undo order).
+    pub fn get_block_changes_range(&self) -> Result<Vec<u64>> {
+        let rtxn = self.env.read_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<BlockChanges>>> =
+            self.env.open_database(&rtxn, Some("block_changes"))?;
+
+        match db {
+            Some(db) => {
+                let mut block_numbers: Vec<u64> = db
+                    .iter(&rtxn)?
+                    .filter_map(|r| r.ok())
+                    .map(|(k, _)| k)
+                    .collect();
+                block_numbers.sort_by(|a, b| b.cmp(a)); // Descending for undo order
+                Ok(block_numbers)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Clear all block changes (for full rescan).
+    pub fn clear_block_changes(&self) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        let db: Option<Database<U64<BE>, SerdeRmp<BlockChanges>>> =
+            self.env.open_database(&wtxn, Some("block_changes"))?;
+
+        if let Some(db) = db {
+            db.clear(&mut wtxn)?;
+        }
+        wtxn.commit()?;
         Ok(())
     }
 }
@@ -496,6 +615,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cell::StealthCell;
     use tempfile::tempdir;
 
     #[test]
@@ -554,5 +674,150 @@ mod tests {
             assert_eq!(loaded.last_scanned_block, Some(200));
             assert_eq!(loaded.next_block_to_scan(0), 201);
         }
+    }
+
+    #[test]
+    fn test_block_changes_save_and_load() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Create block changes with some data
+        let mut changes = BlockChanges::new(100, [0xab; 32]);
+        let acc = changes.get_or_create_account(1);
+        acc.add_new_stealth_cell(StealthCell::new(vec![1, 2, 3], 1000, vec![4, 5, 6]));
+
+        // Save
+        store.save_block_changes(&changes).unwrap();
+
+        // Load
+        let loaded = store.get_block_changes(100).unwrap();
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.block_number, 100);
+        assert_eq!(loaded.block_hash, [0xab; 32]);
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[&1].new_stealth_cells.len(), 1);
+    }
+
+    #[test]
+    fn test_block_changes_delete() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Save multiple blocks
+        for i in 100..105 {
+            let changes = BlockChanges::new(i, [i as u8; 32]);
+            store.save_block_changes(&changes).unwrap();
+        }
+
+        // Delete one
+        store.delete_block_changes(102).unwrap();
+
+        // Verify
+        assert!(store.get_block_changes(102).unwrap().is_none());
+        assert!(store.get_block_changes(100).unwrap().is_some());
+        assert!(store.get_block_changes(104).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_block_changes_delete_from() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Save blocks 100-109
+        for i in 100..110 {
+            let changes = BlockChanges::new(i, [i as u8; 32]);
+            store.save_block_changes(&changes).unwrap();
+        }
+
+        // Delete from block 105 onwards
+        store.delete_block_changes_from(105).unwrap();
+
+        // Verify: blocks 100-104 should exist, 105-109 should be gone
+        for i in 100..105 {
+            assert!(
+                store.get_block_changes(i).unwrap().is_some(),
+                "Block {} should exist",
+                i
+            );
+        }
+        for i in 105..110 {
+            assert!(
+                store.get_block_changes(i).unwrap().is_none(),
+                "Block {} should be deleted",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_changes_range() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Save blocks 100, 102, 104 (not sequential)
+        for i in [100, 102, 104] {
+            let changes = BlockChanges::new(i, [i as u8; 32]);
+            store.save_block_changes(&changes).unwrap();
+        }
+
+        // Get range (should be descending for undo order)
+        let range = store.get_block_changes_range().unwrap();
+        assert_eq!(range, vec![104, 102, 100]);
+    }
+
+    #[test]
+    fn test_block_changes_auto_prune() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Save more blocks than MAX_BLOCK_CHANGES
+        for i in 0..(MAX_BLOCK_CHANGES + 10) as u64 {
+            let changes = BlockChanges::new(i, [i as u8; 32]);
+            store.save_block_changes(&changes).unwrap();
+        }
+
+        // Get range
+        let range = store.get_block_changes_range().unwrap();
+
+        // Should only have MAX_BLOCK_CHANGES blocks, and the oldest should be pruned
+        assert_eq!(range.len(), MAX_BLOCK_CHANGES);
+
+        // The oldest 10 blocks (0-9) should be gone
+        for i in 0..10 {
+            assert!(
+                store.get_block_changes(i).unwrap().is_none(),
+                "Block {} should be pruned",
+                i
+            );
+        }
+
+        // The newest blocks should still exist
+        for i in 10..(MAX_BLOCK_CHANGES + 10) as u64 {
+            assert!(
+                store.get_block_changes(i).unwrap().is_some(),
+                "Block {} should exist",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_changes_clear() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Save some blocks
+        for i in 100..105 {
+            let changes = BlockChanges::new(i, [i as u8; 32]);
+            store.save_block_changes(&changes).unwrap();
+        }
+
+        // Clear all
+        store.clear_block_changes().unwrap();
+
+        // Verify all are gone
+        let range = store.get_block_changes_range().unwrap();
+        assert!(range.is_empty());
     }
 }

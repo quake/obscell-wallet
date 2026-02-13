@@ -15,6 +15,7 @@ use crate::{
     config::Config,
     domain::{
         account::Account,
+        block_changes::BlockChanges,
         cell::{CtCell, CtInfoCell, StealthCell, TxRecord},
         ct,
         ct_info::CtInfoData,
@@ -58,6 +59,12 @@ pub struct BlockProcessResult {
     pub new_ct_info_cells: HashMap<u64, Vec<CtInfoCell>>,
     /// Spent out_points (per account).
     pub spent_out_points: HashMap<u64, Vec<Vec<u8>>>,
+    /// Spent stealth cells with original data (per account) - for undo support.
+    pub spent_stealth_cells: HashMap<u64, Vec<StealthCell>>,
+    /// Spent CT cells with original data (per account) - for undo support.
+    pub spent_ct_cells: HashMap<u64, Vec<CtCell>>,
+    /// Spent CT-info cells with original data (per account) - for undo support.
+    pub spent_ct_info_cells: HashMap<u64, Vec<CtInfoCell>>,
     /// New transaction records (per account).
     pub tx_records: HashMap<u64, Vec<TxRecord>>,
 }
@@ -430,14 +437,18 @@ impl BlockScanner {
                                 .or_default()
                                 .push(out_point.clone());
 
-                            // We need to look up the capacity/amount to calculate delta
-                            // This requires fetching the previous tx or having it cached
-                            // For now, we'll handle this by looking at our stored cells
+                            // Look up the original cell data for undo support and delta calculation
                             if let Ok(cells) = self.store.get_stealth_cells(*account_id)
                                 && let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
                             {
                                 *account_ckb_delta.entry(*account_id).or_insert(0) -=
                                     cell.capacity as i64;
+                                // Save original cell for undo
+                                result
+                                    .spent_stealth_cells
+                                    .entry(*account_id)
+                                    .or_default()
+                                    .push(cell.clone());
                             }
                             if let Ok(cells) = self.store.get_ct_cells(*account_id)
                                 && let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
@@ -447,6 +458,22 @@ impl BlockScanner {
                                     .or_default()
                                     .entry(cell.token_id)
                                     .or_insert(0) -= cell.amount as i64;
+                                // Save original cell for undo
+                                result
+                                    .spent_ct_cells
+                                    .entry(*account_id)
+                                    .or_default()
+                                    .push(cell.clone());
+                            }
+                            if let Ok(cells) = self.store.get_ct_info_cells(*account_id)
+                                && let Some(cell) = cells.iter().find(|c| c.out_point == out_point)
+                            {
+                                // Save original cell for undo
+                                result
+                                    .spent_ct_info_cells
+                                    .entry(*account_id)
+                                    .or_default()
+                                    .push(cell.clone());
                             }
 
                             break;
@@ -504,6 +531,123 @@ impl BlockScanner {
         commitment.copy_from_slice(&data[0..32]);
         encrypted_amount.copy_from_slice(&data[32..64]);
         Some((commitment, encrypted_amount))
+    }
+
+    /// Create BlockChanges from BlockProcessResult for undo support.
+    fn create_block_changes(
+        block_number: u64,
+        block_hash: [u8; 32],
+        result: &BlockProcessResult,
+    ) -> BlockChanges {
+        let mut changes = BlockChanges::new(block_number, block_hash);
+
+        for (&account_id, cells) in &result.new_stealth_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_new_stealth_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, cells) in &result.new_ct_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_new_ct_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, cells) in &result.new_ct_info_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_new_ct_info_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, cells) in &result.spent_stealth_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_spent_stealth_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, cells) in &result.spent_ct_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_spent_ct_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, cells) in &result.spent_ct_info_cells {
+            let acc = changes.get_or_create_account(account_id);
+            for cell in cells {
+                acc.add_spent_ct_info_cell(cell.clone());
+            }
+        }
+
+        for (&account_id, records) in &result.tx_records {
+            let acc = changes.get_or_create_account(account_id);
+            for record in records {
+                acc.add_tx_record(record.clone());
+            }
+        }
+
+        changes
+    }
+
+    /// Undo block changes - restore spent cells, remove new cells, remove tx records.
+    fn undo_block_changes(&self, changes: &BlockChanges) -> Result<()> {
+        for (&account_id, acc_changes) in &changes.accounts {
+            // Restore spent stealth cells (make them live again)
+            if !acc_changes.spent_stealth_cells.is_empty() {
+                let cells: Vec<StealthCell> =
+                    acc_changes.spent_stealth_cells.values().cloned().collect();
+                self.store.add_stealth_cells(account_id, &cells)?;
+            }
+
+            // Restore spent CT cells
+            if !acc_changes.spent_ct_cells.is_empty() {
+                let cells: Vec<CtCell> = acc_changes.spent_ct_cells.values().cloned().collect();
+                self.store.add_ct_cells(account_id, &cells)?;
+            }
+
+            // Restore spent CT-info cells
+            if !acc_changes.spent_ct_info_cells.is_empty() {
+                let cells: Vec<CtInfoCell> =
+                    acc_changes.spent_ct_info_cells.values().cloned().collect();
+                self.store.add_ct_info_cells(account_id, &cells)?;
+            }
+
+            // Remove new stealth cells (they didn't exist before this block)
+            if !acc_changes.new_stealth_cells.is_empty() {
+                let out_points: Vec<Vec<u8>> =
+                    acc_changes.new_stealth_cells.keys().cloned().collect();
+                self.store.remove_spent_cells(account_id, &out_points)?;
+            }
+
+            // Remove new CT cells
+            if !acc_changes.new_ct_cells.is_empty() {
+                let out_points: Vec<Vec<u8>> = acc_changes.new_ct_cells.keys().cloned().collect();
+                self.store.remove_spent_ct_cells(account_id, &out_points)?;
+            }
+
+            // Remove new CT-info cells
+            if !acc_changes.new_ct_info_cells.is_empty() {
+                let out_points: Vec<Vec<u8>> =
+                    acc_changes.new_ct_info_cells.keys().cloned().collect();
+                self.store
+                    .remove_spent_ct_info_cells(account_id, &out_points)?;
+            }
+
+            // Remove tx records created in this block
+            if !acc_changes.tx_records.is_empty() {
+                let tx_hashes: Vec<[u8; 32]> =
+                    acc_changes.tx_records.iter().map(|r| r.tx_hash).collect();
+                let mut records = self.store.get_tx_history(account_id)?;
+                records.retain(|r| !tx_hashes.contains(&r.tx_hash));
+                self.store.save_tx_history(account_id, &records)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Scan blocks from last position up to tip.
@@ -604,17 +748,38 @@ impl BlockScanner {
                 if let Some(fork_block) = state.find_fork_point(&parent_hash) {
                     info!("Fork point found at block {}", fork_block);
 
-                    // Rollback state to fork point
-                    state.rollback_to(fork_block);
-
-                    // Clear all cell data since we don't have per-block undo logs.
-                    // We'll rescan from fork_block + 1 to rebuild the correct state.
-                    for account in accounts {
-                        self.store.clear_all_cells_for_account(account.id)?;
+                    // Perform incremental undo from last_scanned down to fork_block + 1
+                    if let Some(last_scanned) = state.last_scanned_block {
+                        info!(
+                            "Undoing blocks {} down to {} (fork_block + 1)",
+                            last_scanned,
+                            fork_block + 1
+                        );
+                        for undo_block in (fork_block + 1..=last_scanned).rev() {
+                            if let Some(changes) = self.store.get_block_changes(undo_block)? {
+                                debug!("Undoing block {}", undo_block);
+                                self.undo_block_changes(&changes)?;
+                                self.store.delete_block_changes(undo_block)?;
+                            } else {
+                                // No BlockChanges found for this block - fall back to full clear
+                                warn!(
+                                    "No BlockChanges found for block {}, falling back to full rescan",
+                                    undo_block
+                                );
+                                for account in accounts {
+                                    self.store.clear_all_cells_for_account(account.id)?;
+                                }
+                                self.store.clear_block_changes()?;
+                                state.clear();
+                                self.store.save_scan_state(&state)?;
+                                current = start_block;
+                                continue;
+                            }
+                        }
                     }
 
-                    // Save state AFTER clearing cells but WITHOUT calling clear()
-                    // This preserves the fork point info so we continue from fork_block + 1
+                    // Rollback state to fork point
+                    state.rollback_to(fork_block);
                     self.store.save_scan_state(&state)?;
 
                     // Notify about reorg
@@ -634,6 +799,7 @@ impl BlockScanner {
                     for account in accounts {
                         self.store.clear_all_cells_for_account(account.id)?;
                     }
+                    self.store.clear_block_changes()?;
                     state.clear();
                     self.store.save_scan_state(&state)?;
                     current = start_block;
@@ -674,6 +840,12 @@ impl BlockScanner {
                 for record in records {
                     self.store.save_tx_record(*account_id, record)?;
                 }
+            }
+
+            // Save BlockChanges for undo support (only if there are changes)
+            let block_changes = Self::create_block_changes(current, block_hash, &result);
+            if !block_changes.is_empty() {
+                self.store.save_block_changes(&block_changes)?;
             }
 
             // Update scan state
@@ -816,6 +988,7 @@ impl BlockScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_block_scan_update_variants() {
@@ -951,5 +1124,191 @@ mod tests {
             }
             _ => panic!("Expected Error variant"),
         }
+    }
+
+    #[test]
+    fn test_create_block_changes_from_result() {
+        let mut result = BlockProcessResult::default();
+
+        // Add some new stealth cells
+        let cell1 = StealthCell::new(vec![1, 2, 3], 1000, vec![4, 5, 6]);
+        let cell2 = StealthCell::new(vec![7, 8, 9], 2000, vec![10, 11, 12]);
+        result
+            .new_stealth_cells
+            .entry(1)
+            .or_default()
+            .push(cell1.clone());
+        result
+            .new_stealth_cells
+            .entry(1)
+            .or_default()
+            .push(cell2.clone());
+
+        // Add spent stealth cells
+        let spent_cell = StealthCell::new(vec![20, 21, 22], 500, vec![23, 24, 25]);
+        result
+            .spent_stealth_cells
+            .entry(1)
+            .or_default()
+            .push(spent_cell.clone());
+
+        // Add tx records
+        let record = TxRecord::ckb([0xab; 32], 1000, 12345, 100);
+        result.tx_records.entry(1).or_default().push(record.clone());
+
+        // Create block changes
+        let changes = BlockScanner::create_block_changes(100, [0xcd; 32], &result);
+
+        assert_eq!(changes.block_number, 100);
+        assert_eq!(changes.block_hash, [0xcd; 32]);
+        assert!(!changes.is_empty());
+
+        // Check account 1 changes
+        let acc = changes.accounts.get(&1).unwrap();
+        assert_eq!(acc.new_stealth_cells.len(), 2);
+        assert_eq!(acc.spent_stealth_cells.len(), 1);
+        assert_eq!(acc.tx_records.len(), 1);
+    }
+
+    #[test]
+    fn test_create_block_changes_empty_result() {
+        let result = BlockProcessResult::default();
+        let changes = BlockScanner::create_block_changes(50, [0x00; 32], &result);
+
+        assert_eq!(changes.block_number, 50);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_block_process_result_spent_cells_tracking() {
+        let mut result = BlockProcessResult::default();
+
+        // Add spent stealth cells (with full data for undo)
+        let spent = StealthCell::new(vec![1, 2, 3], 5000, vec![4, 5, 6]);
+        result
+            .spent_stealth_cells
+            .entry(1)
+            .or_default()
+            .push(spent.clone());
+
+        // Also add to spent_out_points (for removal)
+        result
+            .spent_out_points
+            .entry(1)
+            .or_default()
+            .push(vec![1, 2, 3]);
+
+        assert_eq!(result.spent_stealth_cells.get(&1).unwrap().len(), 1);
+        assert_eq!(result.spent_out_points.get(&1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_undo_block_changes_restores_spent_cells() {
+        use crate::config::Config;
+
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+        let config = Config::default();
+        let scanner = BlockScanner::new(config, store.clone());
+
+        let account_id = 1u64;
+
+        // Start with a cell in the store
+        let original_cell = StealthCell::new(vec![1, 2, 3], 5000, vec![4, 5, 6]);
+        store.add_stealth_cells(account_id, &[original_cell.clone()]).unwrap();
+
+        // Verify cell exists
+        let cells_before = store.get_stealth_cells(account_id).unwrap();
+        assert_eq!(cells_before.len(), 1);
+
+        // Simulate spending the cell (remove it from store)
+        store.remove_spent_cells(account_id, &[vec![1, 2, 3]]).unwrap();
+
+        // Verify cell is gone
+        let cells_after_spend = store.get_stealth_cells(account_id).unwrap();
+        assert_eq!(cells_after_spend.len(), 0);
+
+        // Create BlockChanges representing this spend
+        let mut changes = BlockChanges::new(100, [0xab; 32]);
+        let acc = changes.get_or_create_account(account_id);
+        acc.add_spent_stealth_cell(original_cell.clone());
+
+        // Undo the changes - should restore the cell
+        scanner.undo_block_changes(&changes).unwrap();
+
+        // Verify cell is restored
+        let cells_after_undo = store.get_stealth_cells(account_id).unwrap();
+        assert_eq!(cells_after_undo.len(), 1);
+        assert_eq!(cells_after_undo[0].capacity, 5000);
+        assert_eq!(cells_after_undo[0].out_point, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_undo_block_changes_removes_new_cells() {
+        use crate::config::Config;
+
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+        let config = Config::default();
+        let scanner = BlockScanner::new(config, store.clone());
+
+        let account_id = 1u64;
+
+        // Start with a cell that was created in a block
+        let new_cell = StealthCell::new(vec![10, 11, 12], 3000, vec![13, 14, 15]);
+        store.add_stealth_cells(account_id, &[new_cell.clone()]).unwrap();
+
+        // Verify cell exists
+        let cells_before = store.get_stealth_cells(account_id).unwrap();
+        assert_eq!(cells_before.len(), 1);
+
+        // Create BlockChanges representing this new cell
+        let mut changes = BlockChanges::new(100, [0xab; 32]);
+        let acc = changes.get_or_create_account(account_id);
+        acc.add_new_stealth_cell(new_cell);
+
+        // Undo the changes - should remove the cell
+        scanner.undo_block_changes(&changes).unwrap();
+
+        // Verify cell is removed
+        let cells_after_undo = store.get_stealth_cells(account_id).unwrap();
+        assert_eq!(cells_after_undo.len(), 0);
+    }
+
+    #[test]
+    fn test_undo_block_changes_removes_tx_records() {
+        use crate::config::Config;
+
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+        let config = Config::default();
+        let scanner = BlockScanner::new(config, store.clone());
+
+        let account_id = 1u64;
+
+        // Add a tx record
+        let record = TxRecord::ckb([0xab; 32], 1000, 12345, 100);
+        store.save_tx_record(account_id, &record).unwrap();
+
+        // Add another record that should survive
+        let other_record = TxRecord::ckb([0xcd; 32], 2000, 12346, 101);
+        store.save_tx_record(account_id, &other_record).unwrap();
+
+        // Verify both records exist
+        let records_before = store.get_tx_history(account_id).unwrap();
+        assert_eq!(records_before.len(), 2);
+
+        // Create BlockChanges with the first record
+        let mut changes = BlockChanges::new(100, [0xab; 32]);
+        let acc = changes.get_or_create_account(account_id);
+        acc.add_tx_record(record);
+
+        // Undo the changes - should remove only the first record
+        scanner.undo_block_changes(&changes).unwrap();
+
+        // Verify only the other record remains
+        let records_after = store.get_tx_history(account_id).unwrap();
+        assert_eq!(records_after.len(), 1);
+        assert_eq!(records_after[0].tx_hash, [0xcd; 32]);
     }
 }
