@@ -67,6 +67,25 @@ impl TokenOperation {
             TokenOperation::Genesis => "Create New Token",
         }
     }
+
+    /// Check if this operation is enabled given the current token list state.
+    fn is_enabled(&self, has_tokens: bool) -> bool {
+        match self {
+            // Transfer and Mint require at least one token to be selected
+            TokenOperation::Transfer | TokenOperation::Mint => has_tokens,
+            // Genesis is always available
+            TokenOperation::Genesis => true,
+        }
+    }
+
+    /// Get hint text for why this operation is disabled.
+    fn disabled_hint(&self) -> &'static str {
+        match self {
+            TokenOperation::Transfer => "No tokens to transfer",
+            TokenOperation::Mint => "Select a token or Create New Token first",
+            TokenOperation::Genesis => "",
+        }
+    }
 }
 
 /// Input field focus state for transfer mode.
@@ -662,18 +681,32 @@ impl TokensComponent {
 
         // Operations menu
         let ops = TokenOperation::all();
+        let has_tokens = !balances.is_empty();
         let op_items: Vec<ListItem> = ops
             .iter()
             .enumerate()
             .map(|(i, op)| {
-                let style = if i == selected_operation && list_focus == ListFocus::Operations {
+                let is_enabled = op.is_enabled(has_tokens);
+                let is_selected = i == selected_operation && list_focus == ListFocus::Operations;
+
+                let style = if !is_enabled {
+                    // Disabled: dark gray
+                    Style::default().fg(Color::DarkGray)
+                } else if is_selected {
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
-                ListItem::new(Line::from(Span::styled(op.label(), style)))
+
+                let label = if !is_enabled {
+                    format!("{} (disabled)", op.label())
+                } else {
+                    op.label().to_string()
+                };
+
+                ListItem::new(Line::from(Span::styled(label, style)))
             })
             .collect();
 
@@ -1463,15 +1496,17 @@ impl Component for TokensComponent {
                             KeyCode::Enter => {
                                 // Execute selected operation
                                 if let Some(op) = ops.get(self.selected_operation) {
+                                    // Check if operation is enabled
+                                    let has_tokens = !self.balances.is_empty();
+                                    if !op.is_enabled(has_tokens) {
+                                        self.error_message = Some(op.disabled_hint().to_string());
+                                        return Ok(());
+                                    }
+
                                     match op {
                                         TokenOperation::Transfer => {
-                                            if !self.balances.is_empty() {
-                                                self.mode = TokensMode::Transfer;
-                                                self.clear_transfer();
-                                            } else {
-                                                self.error_message =
-                                                    Some("No tokens to transfer".to_string());
-                                            }
+                                            self.mode = TokensMode::Transfer;
+                                            self.clear_transfer();
                                         }
                                         TokenOperation::Mint => {
                                             self.mode = TokensMode::Mint;
