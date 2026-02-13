@@ -1,6 +1,8 @@
 [network]
 name = "mainnet"
-rpc_url = "https://mainnet-rich-indexer.ckbapp.dev"
+rpc_url = "https://mainnet.ckbapp.dev"
+# Start scanning from block after contract deployment to skip irrelevant history
+# scan_start_block = 18611940
 
 [contracts]
 stealth_lock_code_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
