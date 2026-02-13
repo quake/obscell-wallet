@@ -154,7 +154,7 @@ impl HistoryComponent {
                     "CT Send"
                 }
             }
-            TxType::CtGenesis { .. } => "Create",
+            TxType::CtGenesis { .. } => "CT New",
         }
     }
 
@@ -258,16 +258,14 @@ impl HistoryComponent {
             ]));
             lines.push(Line::from(""));
 
-            // Add token ID for CT transactions
-            if let TxType::Ct { token, .. } = &tx.tx_type {
+            // Add token ID for CT transactions (show full token ID)
+            if let TxType::Ct { token, .. } | TxType::CtGenesis { token } = &tx.tx_type {
                 lines.push(Line::from(vec![Span::styled(
                     "Token ID:",
                     Style::default().fg(Color::DarkGray),
                 )]));
-                let token_hex = hex::encode(token);
-                let truncated = format!("{}...{}", &token_hex[..8], &token_hex[56..]);
                 lines.push(Line::from(vec![Span::styled(
-                    truncated,
+                    hex::encode(token),
                     Style::default().fg(Color::Yellow),
                 )]));
                 lines.push(Line::from(""));

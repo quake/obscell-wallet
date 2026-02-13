@@ -486,8 +486,27 @@ impl Component for SendComponent {
                 }
                 KeyCode::Enter => {
                     // Confirm current field and move to next
-                    self.is_editing = false;
                     self.next_field();
+                    // Auto-enter edit mode if next field is also an input field
+                    let next_is_input = self.focused_field == SendField::Recipient
+                        || self.focused_field == SendField::Amount;
+                    self.is_editing = next_is_input;
+                }
+                KeyCode::Down => {
+                    // Move to next field while editing
+                    self.next_field();
+                    // Auto-enter edit mode if next field is also an input field
+                    let next_is_input = self.focused_field == SendField::Recipient
+                        || self.focused_field == SendField::Amount;
+                    self.is_editing = next_is_input;
+                }
+                KeyCode::Up => {
+                    // Move to previous field while editing
+                    self.prev_field();
+                    // Auto-enter edit mode if previous field is also an input field
+                    let prev_is_input = self.focused_field == SendField::Recipient
+                        || self.focused_field == SendField::Amount;
+                    self.is_editing = prev_is_input;
                 }
                 KeyCode::Char(c) => {
                     self.handle_char(c);
@@ -502,9 +521,17 @@ impl Component for SendComponent {
             match key.code {
                 KeyCode::Down => {
                     self.next_field();
+                    // Auto-enter edit mode when selecting an input field
+                    let is_input = self.focused_field == SendField::Recipient
+                        || self.focused_field == SendField::Amount;
+                    self.is_editing = is_input;
                 }
                 KeyCode::Up => {
                     self.prev_field();
+                    // Auto-enter edit mode when selecting an input field
+                    let is_input = self.focused_field == SendField::Recipient
+                        || self.focused_field == SendField::Amount;
+                    self.is_editing = is_input;
                 }
                 KeyCode::Enter => {
                     if self.focused_field == SendField::Confirm {

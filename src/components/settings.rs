@@ -556,7 +556,7 @@ impl SettingsComponent {
 
         // Hint
         let hint = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "[s] Save to file    [Esc] Close    [Enter] Close",
+            "[v] Save to file    [Esc] Close    [Enter] Close",
             Style::default().fg(Color::DarkGray),
         )])]);
         f.render_widget(hint, chunks[2]);
@@ -572,7 +572,7 @@ impl Component for SettingsComponent {
                     self.mode = SettingsMode::Menu;
                     self.backup_string = None;
                 }
-                KeyCode::Char('s') | KeyCode::Char('S') => {
+                KeyCode::Char('v') | KeyCode::Char('V') => {
                     // Save backup to file
                     if let Some(ref backup) = self.backup_string {
                         self.action_tx

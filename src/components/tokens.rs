@@ -743,11 +743,6 @@ impl TokensComponent {
 
         let details = if let Some(bal) = balances.get(selected_index) {
             vec![
-                Line::from(vec![
-                    Span::styled("Token: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(bal.display_name(), Style::default().fg(Color::White)),
-                ]),
-                Line::from(""),
                 Line::from(vec![Span::styled(
                     "Token ID: ",
                     Style::default().fg(Color::DarkGray),
@@ -1543,8 +1538,21 @@ impl Component for TokensComponent {
                         }
                         KeyCode::Enter => {
                             // Exit editing and move to next field
-                            self.is_editing = false;
                             self.next_field();
+                            // Auto-enter edit mode if next field is also an input field
+                            self.is_editing = self.needs_direct_input();
+                        }
+                        KeyCode::Down => {
+                            // Move to next field while editing
+                            self.next_field();
+                            // Auto-enter edit mode if next field is also an input field
+                            self.is_editing = self.needs_direct_input();
+                        }
+                        KeyCode::Up => {
+                            // Move to previous field while editing
+                            self.prev_field();
+                            // Auto-enter edit mode if previous field is also an input field
+                            self.is_editing = self.needs_direct_input();
                         }
                         _ => {}
                     }
@@ -1558,9 +1566,13 @@ impl Component for TokensComponent {
                         }
                         KeyCode::Down => {
                             self.next_field();
+                            // Auto-enter edit mode when selecting an input field
+                            self.is_editing = self.needs_direct_input();
                         }
                         KeyCode::Up => {
                             self.prev_field();
+                            // Auto-enter edit mode when selecting an input field
+                            self.is_editing = self.needs_direct_input();
                         }
                         KeyCode::Char(' ') if self.mode == TokensMode::Genesis => {
                             // Toggle unlimited checkbox in Genesis mode
