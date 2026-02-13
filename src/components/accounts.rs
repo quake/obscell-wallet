@@ -261,7 +261,7 @@ impl AccountsComponent {
 impl Component for AccountsComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 self.next();
                 // Auto-select account on navigation
                 if !self.accounts.is_empty() {
@@ -269,7 +269,7 @@ impl Component for AccountsComponent {
                         .send(Action::SelectAccount(self.selected_index))?;
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.previous();
                 // Auto-select account on navigation
                 if !self.accounts.is_empty() {

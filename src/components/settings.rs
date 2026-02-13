@@ -586,10 +586,10 @@ impl Component for SettingsComponent {
 
         // Normal menu mode
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 self.next_item();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.previous_item();
             }
             KeyCode::Enter => {

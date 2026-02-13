@@ -61,7 +61,7 @@ Options:
 |-----|--------|
 | `a/t/s/r/h/g` | Jump to Accounts/Tokens/Send/Receive/History/Settings tab |
 | `Tab` / `Shift+Tab` | Switch between tabs |
-| `↑/↓` or `j/k` | Navigate lists |
+| `↑/↓` | Navigate lists |
 | `Enter` | Confirm/Select |
 | `Esc` | Cancel/Back |
 | `q` | Quit |
