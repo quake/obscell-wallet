@@ -8,7 +8,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
@@ -25,8 +25,8 @@ use crate::{
 
 /// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
 /// CT cell needs: capacity (8B) + lock (stealth 86B) + type (65B) + data (64B) = 223 bytes
-/// Using 255 CKB for safety margin.
-const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
+/// Type script args changed from 64B to 32B (ct_info_script_hash only).
+const MIN_CT_CELL_CAPACITY: u64 = 223_00000000;
 
 /// Minimum cell capacity for a plain stealth cell (no type script).
 /// stealth cell: capacity (8B) + lock (stealth 86B) = 94 bytes, but minimum is 61 CKB
@@ -878,7 +878,8 @@ mod tests {
 
     #[test]
     fn test_min_ct_cell_capacity() {
-        // 255 CKB minimum for CT cell with stealth-lock
-        assert_eq!(MIN_CT_CELL_CAPACITY, 255_00000000);
+        // 223 CKB minimum for CT cell with stealth-lock
+        // (reduced from 255 CKB after type args changed from 64B to 32B)
+        assert_eq!(MIN_CT_CELL_CAPACITY, 223_00000000);
     }
 }

@@ -11,7 +11,7 @@ use ckb_jsonrpc_types::{
     Uint64,
 };
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
@@ -35,8 +35,8 @@ use crate::{
 /// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (32 = ct_info_script_hash) = 65 bytes
 /// - Data: commitment (32) + encrypted_amount (32) = 64 bytes
 ///
-/// Total: 8 + 86 + 65 + 64 = 223 bytes → 223 CKB (keeping 255 for safety margin)
-const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
+/// Total: 8 + 86 + 65 + 64 = 223 bytes → 223 CKB
+const MIN_CT_CELL_CAPACITY: u64 = 223_00000000;
 
 /// Default transaction fee in shannons (0.001 CKB = 100,000 shannons).
 /// This covers the minimum fee rate of 1000 shannons/KB for typical tx sizes.
@@ -1105,7 +1105,8 @@ mod tests {
 
     #[test]
     fn test_min_capacities() {
-        assert_eq!(MIN_CT_CELL_CAPACITY, 255_00000000);
+        // 223 CKB for CT cell (reduced from 255 after type args changed from 64B to 32B)
+        assert_eq!(MIN_CT_CELL_CAPACITY, 223_00000000);
         assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 230_00000000);
     }
 }
