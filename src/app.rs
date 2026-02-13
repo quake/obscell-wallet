@@ -2215,42 +2215,45 @@ impl App {
                 // Export wallet backup string with provided passphrase
                 match &self.wallet_meta {
                     Some(wallet_meta) => {
-                        // Verify the passphrase first by trying to decrypt mnemonic
-                        match crate::domain::wallet::decrypt_mnemonic(wallet_meta, passphrase) {
-                            Ok(mnemonic) => {
-                                // Get account count
-                                let account_count =
-                                    self.account_manager.list_accounts()?.len() as u32;
-                                match crate::domain::wallet::export_wallet(
-                                    &mnemonic,
-                                    account_count,
-                                    passphrase,
-                                ) {
-                                    Ok(backup_string) => {
-                                        // Clear passphrase state
-                                        self.passphrase_popup_purpose = None;
-                                        self.passphrase_popup_input.clear();
-                                        self.passphrase_popup_error = None;
-                                        self.settings_component.set_backup_string(backup_string);
-                                        self.settings_component.error_message = None;
-                                    }
+                        // Get account count before spawning thread
+                        let account_count = self.account_manager.list_accounts()?.len() as u32;
+
+                        // Clone data for background thread (before draw_ui borrow)
+                        let wallet_meta = wallet_meta.clone();
+                        let passphrase = passphrase.clone();
+                        let action_tx = self.action_tx.clone();
+
+                        // Show spinner immediately
+                        self.tx_progress_visible = true;
+                        self.tx_progress_frame = 0;
+                        self.draw_ui()?;
+
+                        std::thread::spawn(move || {
+                            // Verify passphrase by decrypting mnemonic (CPU-intensive due to Argon2)
+                            let mnemonic =
+                                match crate::domain::wallet::decrypt_mnemonic(&wallet_meta, &passphrase) {
+                                    Ok(m) => m,
                                     Err(e) => {
-                                        self.passphrase_popup_error =
-                                            Some(format!("Export failed: {}", e));
-                                        self.passphrase_popup_purpose =
-                                            Some(crate::action::PassphrasePurpose::ExportBackup);
-                                        self.passphrase_popup_input.clear();
+                                        let _ = action_tx.send(Action::BackupError(format!(
+                                            "Invalid passphrase: {}",
+                                            e
+                                        )));
+                                        return;
                                     }
+                                };
+
+                            // Export wallet (CPU-intensive due to Argon2)
+                            match crate::domain::wallet::export_wallet(&mnemonic, account_count, &passphrase)
+                            {
+                                Ok(backup_string) => {
+                                    let _ = action_tx.send(Action::BackupReady(backup_string));
+                                }
+                                Err(e) => {
+                                    let _ =
+                                        action_tx.send(Action::BackupError(format!("Export failed: {}", e)));
                                 }
                             }
-                            Err(e) => {
-                                self.passphrase_popup_error =
-                                    Some(format!("Invalid passphrase: {}", e));
-                                self.passphrase_popup_purpose =
-                                    Some(crate::action::PassphrasePurpose::ExportBackup);
-                                self.passphrase_popup_input.clear();
-                            }
-                        }
+                        });
                     }
                     None => {
                         self.passphrase_popup_error = Some("Wallet not initialized".to_string());
@@ -2258,6 +2261,28 @@ impl App {
                             Some(crate::action::PassphrasePurpose::ExportBackup);
                     }
                 }
+            }
+            Action::BackupReady(ref backup_string) => {
+                // Hide spinner
+                self.tx_progress_visible = false;
+
+                // Clear passphrase state
+                self.passphrase_popup_purpose = None;
+                self.passphrase_popup_input.clear();
+                self.passphrase_popup_error = None;
+
+                // Show backup string in settings component
+                self.settings_component.set_backup_string(backup_string.clone());
+                self.settings_component.error_message = None;
+            }
+            Action::BackupError(ref msg) => {
+                // Hide spinner
+                self.tx_progress_visible = false;
+
+                // Show error in passphrase popup and keep it open
+                self.passphrase_popup_error = Some(msg.clone());
+                self.passphrase_popup_purpose = Some(crate::action::PassphrasePurpose::ExportBackup);
+                self.passphrase_popup_input.clear();
             }
             Action::SaveBackupToFile(ref backup_string) => {
                 // Save backup string to a file in the current directory

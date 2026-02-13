@@ -129,6 +129,12 @@ pub enum Action {
     /// Wallet creation failed with error message
     WalletError(String),
 
+    // Backup export (background thread results)
+    /// Backup exported successfully
+    BackupReady(String),
+    /// Backup export failed with error message
+    BackupError(String),
+
     // Scrolling
     ScrollUp,
     ScrollDown,
