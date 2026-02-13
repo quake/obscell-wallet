@@ -240,6 +240,8 @@ impl BlockScanner {
             let mut account_ckb_delta: HashMap<u64, i64> = HashMap::new();
             let mut account_ct_delta: HashMap<u64, HashMap<[u8; 32], i64>> = HashMap::new();
             let mut account_involved: HashSet<u64> = HashSet::new();
+            // Track accounts that have genesis transactions (skip CKB record for these)
+            let mut account_genesis: HashSet<u64> = HashSet::new();
 
             let raw_tx = tx.raw();
             let outputs = raw_tx.outputs();
@@ -380,7 +382,8 @@ impl BlockScanner {
                                     .or_default()
                                     .push(ct_info_cell);
 
-                                // Record genesis tx
+                                // Record genesis tx and mark account
+                                account_genesis.insert(*account_id);
                                 let record = TxRecord::ct_genesis(
                                     tx_hash_bytes,
                                     token_id,
@@ -484,8 +487,9 @@ impl BlockScanner {
 
             // Create TxRecords for involved accounts
             for account_id in account_involved {
-                // CKB record
-                if let Some(&delta) = account_ckb_delta.get(&account_id)
+                // CKB record (skip for genesis transactions - they are merged into CT New)
+                if !account_genesis.contains(&account_id)
+                    && let Some(&delta) = account_ckb_delta.get(&account_id)
                     && delta != 0
                 {
                     let record = TxRecord::ckb(tx_hash_bytes, delta, timestamp, block_number);

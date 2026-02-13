@@ -1550,7 +1550,7 @@ impl Scanner {
                         ad.spent_out_points.extend(spent_points);
 
                         // Check if this is a genesis transaction (creates ct-info cell)
-                        if let Some(token_id) = self.detect_genesis_for_account(
+                        let is_genesis = if let Some(token_id) = self.detect_genesis_for_account(
                             &tx_view.inner,
                             &ad.view_key,
                             &ad.spend_pub,
@@ -1564,23 +1564,28 @@ impl Scanner {
                             ad.records.push(record);
                             total_records_found += 1;
                             batch_has_new_records = true;
-                        }
+                            true
+                        } else {
+                            false
+                        };
 
-                        // Calculate CKB delta for this account
-                        let ckb_delta = self.calculate_ckb_delta_cached(
-                            &tx_view.inner,
-                            &ad.view_key,
-                            &ad.spend_pub,
-                            &mut tx_cache,
-                        )?;
+                        // Calculate CKB delta for this account (skip for genesis transactions)
+                        if !is_genesis {
+                            let ckb_delta = self.calculate_ckb_delta_cached(
+                                &tx_view.inner,
+                                &ad.view_key,
+                                &ad.spend_pub,
+                                &mut tx_cache,
+                            )?;
 
-                        // Record CKB delta if non-zero
-                        if ckb_delta != 0 {
-                            let record =
-                                TxRecord::ckb(tx_hash_bytes, ckb_delta, timestamp, block_number);
-                            ad.records.push(record);
-                            total_records_found += 1;
-                            batch_has_new_records = true;
+                            // Record CKB delta if non-zero
+                            if ckb_delta != 0 {
+                                let record =
+                                    TxRecord::ckb(tx_hash_bytes, ckb_delta, timestamp, block_number);
+                                ad.records.push(record);
+                                total_records_found += 1;
+                                batch_has_new_records = true;
+                            }
                         }
 
                         // Calculate CT token deltas for this account
