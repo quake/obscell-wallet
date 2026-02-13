@@ -502,13 +502,25 @@ impl BlockScanner {
         accounts: &[Account],
         update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
     ) -> Result<usize> {
+        self.scan_blocks_from_height(accounts, self.config.network.scan_start_block, update_tx)
+    }
+
+    /// Scan blocks from a specific height up to tip.
+    ///
+    /// Handles reorg detection by checking parent_hash against stored recent_blocks.
+    /// Returns the number of blocks processed.
+    pub fn scan_blocks_from_height(
+        &self,
+        accounts: &[Account],
+        start_block: u64,
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+    ) -> Result<usize> {
         if accounts.is_empty() {
             return Ok(0);
         }
 
         let tip = self.get_tip_block_number()?;
         let mut state = self.store.load_scan_state()?;
-        let start_block = self.config.network.scan_start_block;
 
         let mut current = state.next_block_to_scan(start_block);
         let mut blocks_processed = 0;
@@ -678,7 +690,19 @@ impl BlockScanner {
         accounts: &[Account],
         update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
     ) -> Result<usize> {
-        info!("Starting full rescan...");
+        self.full_rescan_from_height(accounts, None, update_tx)
+    }
+
+    /// Perform a full rescan from a specific block height.
+    /// If `start_height` is None, uses the config's scan_start_block.
+    pub fn full_rescan_from_height(
+        &self,
+        accounts: &[Account],
+        start_height: Option<u64>,
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+    ) -> Result<usize> {
+        let start = start_height.unwrap_or(self.config.network.scan_start_block);
+        info!("Starting full rescan from block {}...", start);
 
         // Clear all data
         let account_ids: Vec<u64> = accounts.iter().map(|a| a.id).collect();
@@ -689,16 +713,19 @@ impl BlockScanner {
             let _ = tx.send(BlockScanUpdate::Started { is_full_rescan: true });
         }
 
-        // Run scan
-        self.scan_blocks(accounts, update_tx)
+        // Run scan from specified height
+        self.scan_blocks_from_height(accounts, start, update_tx)
     }
 
     /// Spawn a background scan task.
+    /// If `start_height` is Some, performs a full rescan from that height.
+    /// If `start_height` is None and `is_full_rescan` is true, uses config's scan_start_block.
     pub fn spawn_background_scan(
         config: Config,
         store: Store,
         accounts: Vec<Account>,
         is_full_rescan: bool,
+        start_height: Option<u64>,
         update_tx: tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>,
     ) {
         tokio::spawn(async move {
@@ -712,7 +739,7 @@ impl BlockScanner {
             let result = tokio::task::spawn_blocking(move || {
                 let scanner = BlockScanner::new(config, store);
                 if is_full_rescan {
-                    scanner.full_rescan(&accounts, Some(&update_tx_clone))
+                    scanner.full_rescan_from_height(&accounts, start_height, Some(&update_tx_clone))
                 } else {
                     scanner.scan_blocks(&accounts, Some(&update_tx_clone))
                 }

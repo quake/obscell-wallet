@@ -165,6 +165,9 @@ pub struct App {
     // Background scan channel
     pub scan_update_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::infra::block_scanner::BlockScanUpdate>>,
+    // Rescan height input
+    pub entering_rescan_height: bool,
+    pub rescan_height_input: String,
 }
 
 impl App {
@@ -271,6 +274,9 @@ impl App {
             checkpoint_block: None,
             // Background scan
             scan_update_rx: None,
+            // Rescan height input
+            entering_rescan_height: false,
+            rescan_height_input: String::new(),
         })
     }
 
@@ -532,6 +538,39 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle rescan height input mode
+        if self.entering_rescan_height {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel input
+                    self.entering_rescan_height = false;
+                    self.rescan_height_input.clear();
+                }
+                KeyCode::Enter => {
+                    // Submit input
+                    if let Ok(height) = self.rescan_height_input.parse::<u64>() {
+                        self.entering_rescan_height = false;
+                        self.rescan_height_input.clear();
+                        self.action_tx.send(Action::FullRescanFromHeight(height))?;
+                    } else if self.rescan_height_input.is_empty() {
+                        // Empty input = use default
+                        self.entering_rescan_height = false;
+                        self.action_tx.send(Action::FullRescan)?;
+                    } else {
+                        self.status_message = "Invalid block height".to_string();
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.rescan_height_input.pop();
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    self.rescan_height_input.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         // Handle wallet setup mode - route all key events to wallet setup component
         if self.mode == AppMode::WalletSetup {
             // Only allow Ctrl+C to quit
@@ -639,7 +678,9 @@ impl App {
             }
             // Global hotkey: F for Full Rescan (case-insensitive)
             KeyCode::Char('f' | 'F') if key.modifiers.is_empty() => {
-                self.action_tx.send(Action::FullRescan)?;
+                // Show height input dialog
+                self.entering_rescan_height = true;
+                self.rescan_height_input.clear();
             }
             _ => match self.active_tab {
                 Tab::Settings => {
@@ -768,6 +809,7 @@ impl App {
                             self.store.clone(),
                             accounts,
                             false, // incremental scan
+                            None,  // no custom start height
                             tx,
                         );
                     }
@@ -924,6 +966,7 @@ impl App {
                     self.store.clone(),
                     accounts,
                     false, // incremental scan
+                    None,  // no custom start height
                     tx,
                 );
             }
@@ -951,6 +994,35 @@ impl App {
                     self.store.clone(),
                     accounts,
                     true, // full rescan
+                    None, // use config's scan_start_block
+                    tx,
+                );
+            }
+            Action::FullRescanFromHeight(start_height) => {
+                if self.is_scanning {
+                    self.status_message = "Scan already in progress...".to_string();
+                    return Ok(());
+                }
+
+                let accounts = self.account_manager.list_accounts()?;
+                if accounts.is_empty() {
+                    self.status_message = "No accounts to scan".to_string();
+                    return Ok(());
+                }
+
+                // Start background full rescan from specified height
+                self.status_message = format!("Full rescan from block {}...", start_height);
+                self.is_scanning = true;
+
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                self.scan_update_rx = Some(rx);
+
+                BlockScanner::spawn_background_scan(
+                    self.config.clone(),
+                    self.store.clone(),
+                    accounts,
+                    true, // full rescan
+                    Some(start_height),
                     tx,
                 );
             }
@@ -2727,6 +2799,11 @@ impl App {
         self.draw_tabs(f, chunks[1]);
         self.draw_content(f, chunks[2]);
         self.draw_status(f, chunks[3]);
+
+        // Draw rescan height input overlay if active
+        if self.entering_rescan_height {
+            self.draw_rescan_height_input(f);
+        }
     }
 
     fn draw_header(&self, f: &mut Frame, area: Rect) {
@@ -2834,5 +2911,69 @@ impl App {
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
         f.render_widget(status, area);
+    }
+
+    fn draw_rescan_height_input(&self, f: &mut Frame) {
+        // Calculate centered popup area
+        let area = f.area();
+        let popup_width = 50u16.min(area.width.saturating_sub(4));
+        let popup_height = 9u16.min(area.height.saturating_sub(4));
+        let x = (area.width.saturating_sub(popup_width)) / 2;
+        let y = (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        // Clear background
+        f.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .title("Full Rescan")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(popup_area);
+        f.render_widget(block, popup_area);
+
+        let chunks = Layout::vertical([
+            Constraint::Length(2), // Instruction
+            Constraint::Length(3), // Input field
+            Constraint::Length(2), // Hint
+            Constraint::Min(0),    // Padding
+        ])
+        .split(inner);
+
+        // Instruction text
+        let instruction = Paragraph::new(vec![Line::from(vec![Span::styled(
+            "Enter start block height (or press Enter for default):",
+            Style::default().fg(Color::Gray),
+        )])]);
+        f.render_widget(instruction, chunks[0]);
+
+        // Input field with cursor
+        let display_value = if self.rescan_height_input.is_empty() {
+            format!("{} (default)", self.config.network.scan_start_block)
+        } else {
+            format!("{}_", self.rescan_height_input)
+        };
+        let input_style = if self.rescan_height_input.is_empty() {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let input_widget = Paragraph::new(display_value)
+            .style(input_style)
+            .block(
+                Block::default()
+                    .title("Block Height")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        f.render_widget(input_widget, chunks[1]);
+
+        // Hint text
+        let hint = Paragraph::new(vec![Line::from(vec![Span::styled(
+            "[Enter] Start    [Esc] Cancel    [0-9] Input",
+            Style::default().fg(Color::DarkGray),
+        )])]);
+        f.render_widget(hint, chunks[2]);
     }
 }

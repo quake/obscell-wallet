@@ -50,6 +50,8 @@ pub enum Action {
     SendTransactionWithPassphrase(String),
     Rescan,
     FullRescan,
+    /// Full rescan starting from a specific block height
+    FullRescanFromHeight(u64),
 
     // Background scan updates
     ScanProgress(BlockScanUpdate),
