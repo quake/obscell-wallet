@@ -324,7 +324,11 @@ impl App {
                 cells_found: _,
             } => {
                 self.scanned_block_number = Some(current_block);
-                self.tip_block_number = Some(tip_block);
+                // Only update tip if it's higher (avoid flickering when auto-mine
+                // produces new blocks during a scan)
+                if self.tip_block_number.map_or(true, |t| tip_block > t) {
+                    self.tip_block_number = Some(tip_block);
+                }
                 self.status_message = "Scanning...".to_string();
             }
             BlockScanUpdate::ReorgDetected {
