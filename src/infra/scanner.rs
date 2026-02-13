@@ -3,8 +3,7 @@
 //! Scans the CKB blockchain for cells that belong to the wallet's accounts
 //! using the stealth address protocol.
 
-use ckb_hash::blake2b_256;
-use ckb_jsonrpc_types::{Either, JsonBytes, Script};
+use ckb_jsonrpc_types::{Either, JsonBytes};
 use ckb_types::{packed, prelude::*};
 use color_eyre::eyre::Result;
 use secp256k1::{PublicKey, SecretKey};
@@ -24,28 +23,6 @@ use crate::{
     },
     infra::{rpc::RpcClient, store::Store},
 };
-
-/// Calculate the script hash of a ckb_jsonrpc_types::Script.
-/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
-fn calc_script_hash(script: &Script) -> [u8; 32] {
-    let code_hash = packed::Byte32::from_slice(script.code_hash.as_bytes()).unwrap();
-    let args: packed::Bytes = script.args.as_bytes().to_vec().pack();
-    let hash_type = match script.hash_type {
-        ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
-        ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
-        ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
-        ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
-        _ => packed::Byte::new(1),
-    };
-
-    let packed_script = packed::Script::new_builder()
-        .code_hash(code_hash)
-        .hash_type(hash_type)
-        .args(args)
-        .build();
-
-    blake2b_256(packed_script.as_slice())
-}
 
 /// Scan cursor stored in LMDB for resuming scans.
 const SCAN_CURSOR_KEY: &str = "scan_cursor";
@@ -1049,7 +1026,10 @@ impl Scanner {
                         type_id.copy_from_slice(&type_args[0..32]);
 
                         // Calculate ct_info_script_hash
-                        let ct_info_script_hash = calc_script_hash(type_script);
+                        let ct_info_script_hash: [u8; 32] =
+                            packed::Script::from(type_script.clone())
+                                .calc_script_hash()
+                                .unpack();
 
                         let capacity: u64 = cell.output.capacity.into();
 
@@ -1355,7 +1335,10 @@ impl Scanner {
 
                     // ct_info_script_hash = blake2b(ct_info_type_script.as_slice())
                     // This is the new token_id used by ct-token-type to match ct-info cells
-                    let ct_info_script_hash = calc_script_hash(type_script);
+                    let ct_info_script_hash: [u8; 32] =
+                        packed::Script::from(type_script.clone())
+                            .calc_script_hash()
+                            .unpack();
 
                     let capacity: u64 = cell.output.capacity.into();
 

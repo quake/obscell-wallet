@@ -10,7 +10,7 @@ use ckb_jsonrpc_types::{
     CellDep, CellInput, CellOutput, DepType, JsonBytes, OutPoint, Script, Transaction, Uint32,
     Uint64,
 };
-use ckb_types::H256;
+use ckb_types::{packed, prelude::*, H256};
 use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
@@ -270,7 +270,9 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     let ct_token_code_hash_bytes = hex::decode(ct_token_code_hash)?;
 
     // Calculate ct-info type script hash (blake2b of the packed script)
-    let ct_info_script_hash = calc_script_hash(&ct_info_type_script);
+    let ct_info_script_hash: [u8; 32] = packed::Script::from(ct_info_type_script.clone())
+        .calc_script_hash()
+        .unpack();
 
     let ct_token_type_script = Script {
         code_hash: H256::from_slice(&ct_token_code_hash_bytes)?,
@@ -764,32 +766,6 @@ fn calculate_tx_hash(tx: &Transaction) -> H256 {
     let hash = blake2b_256(raw_tx.as_slice());
     H256::from_slice(&hash).unwrap()
 }
-
-/// Calculate the script hash of a ckb_jsonrpc_types::Script.
-/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
-fn calc_script_hash(script: &Script) -> [u8; 32] {
-    use ckb_types::packed;
-    use ckb_types::prelude::*;
-
-    let code_hash = packed::Byte32::from_slice(script.code_hash.as_bytes()).unwrap();
-    let args: packed::Bytes = script.args.as_bytes().to_vec().pack();
-    let hash_type = match script.hash_type {
-        ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
-        ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
-        ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
-        ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
-        _ => packed::Byte::new(1),
-    };
-
-    let packed_script = packed::Script::new_builder()
-        .code_hash(code_hash)
-        .hash_type(hash_type)
-        .args(args)
-        .build();
-
-    blake2b_256(packed_script.as_slice())
-}
-
 // ============================================================================
 // Genesis functionality
 // ============================================================================

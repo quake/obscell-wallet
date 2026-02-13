@@ -4,7 +4,6 @@
 //! This eliminates the need for rich-indexer and simplifies deployment.
 //! Uses packed block format for more efficient network transfer.
 
-use ckb_hash::blake2b_256;
 use ckb_types::{packed, prelude::*};
 use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
@@ -24,12 +23,6 @@ use crate::{
     },
     infra::{rpc::RpcClient, store::Store},
 };
-
-/// Calculate the script hash of a packed::Script.
-/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
-fn calc_packed_script_hash(script: &packed::Script) -> [u8; 32] {
-    blake2b_256(script.as_slice())
-}
 
 /// Updates sent from background scanner to the main app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -372,7 +365,8 @@ impl BlockScanner {
                                 type_id.copy_from_slice(&type_args[0..32]);
 
                                 // Calculate ct_info_script_hash
-                                let ct_info_script_hash = calc_packed_script_hash(type_script);
+                                let ct_info_script_hash: [u8; 32] =
+                                    type_script.calc_script_hash().unpack();
 
                                 let ct_info_cell = CtInfoCell::new(
                                     out_point.clone(),
