@@ -1646,7 +1646,7 @@ impl App {
                                     crate::action::PassphrasePurpose::TransferToken,
                                     format!(
                                         "CT Transfer sent!\nHash: 0x{}",
-                                        hex::encode(&tx_hash.0)
+                                        hex::encode(tx_hash.0)
                                     ),
                                 ));
                             }
@@ -1849,7 +1849,7 @@ impl App {
                                     crate::action::PassphrasePurpose::MintToken,
                                     format!(
                                         "CT Mint sent!\nHash: 0x{}",
-                                        hex::encode(&tx_hash.0)
+                                        hex::encode(tx_hash.0)
                                     ),
                                 ));
                             }
@@ -2026,8 +2026,8 @@ impl App {
                                     crate::action::PassphrasePurpose::CreateToken,
                                     format!(
                                         "Token created!\nHash: 0x{}\nToken ID: 0x{}",
-                                        hex::encode(&tx_hash.0),
-                                        hex::encode(&token_id)
+                                        hex::encode(tx_hash.0),
+                                        hex::encode(token_id)
                                     ),
                                 ));
                             }

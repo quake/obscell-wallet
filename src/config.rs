@@ -123,25 +123,21 @@ impl Config {
                     tx_hash: "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: "0x91b7a8e6fdeef45389dee510a1f070dc764855f72b08b24165d9c92ef36ff920"
                         .to_string(),
                     index: 1,
-                    ..Default::default()
                 },
                 ct_token: CellDepConfig {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 ct_info: CellDepConfig {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
             },
         }
@@ -169,25 +165,21 @@ impl Config {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 1,
-                    ..Default::default()
                 },
                 ct_token: CellDepConfig {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 ct_info: CellDepConfig {
                     tx_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
             },
         }
@@ -218,25 +210,21 @@ impl Config {
                     tx_hash: "0x87c82ca69e0e8273320120e17667b6264818cc7cc6e9cad58eb08452d933efef"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: "0x71c34864af8700efcc7346ece7aeb83d13fea99eae7a341cab30d1672c69bd0c"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 ct_token: CellDepConfig {
                     tx_hash: "0x4e2fdebd1e5348b932e2cc3ffbdb1c89a44df9a3f5946e17a874ed0c9580fb89"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
                 ct_info: CellDepConfig {
                     tx_hash: "0xa44bca576ae0aae6e797da31709cb442f50cda74b8863d479563e88fefdf4fd4"
                         .to_string(),
                     index: 0,
-                    ..Default::default()
                 },
             },
         }
