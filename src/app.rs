@@ -958,12 +958,36 @@ impl App {
             Action::HideTxProgress => {
                 self.tx_progress_visible = false;
             }
-            Action::TxSuccess(ref msg) => {
+            Action::TxSuccess(ref purpose, ref msg) => {
                 self.tx_progress_visible = false;
                 self.tx_result_popup = Some(TxResultPopup {
                     is_success: true,
                     message: msg.clone(),
                 });
+                // Clear the appropriate form based on the transaction purpose
+                match purpose {
+                    crate::action::PassphrasePurpose::SendTransaction => {
+                        self.send_component.recipient.clear();
+                        self.send_component.amount.clear();
+                        self.send_component.focused_field =
+                            crate::components::send::SendField::Recipient;
+                        self.send_component.is_editing = false;
+                        self.send_component.error_message = None;
+                    }
+                    crate::action::PassphrasePurpose::TransferToken => {
+                        self.tokens_component.clear_transfer();
+                        self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    }
+                    crate::action::PassphrasePurpose::MintToken => {
+                        self.tokens_component.clear_mint();
+                        self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    }
+                    crate::action::PassphrasePurpose::CreateToken => {
+                        self.tokens_component.clear_genesis();
+                        self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    }
+                    _ => {}
+                }
             }
             Action::TxError(ref msg) => {
                 self.tx_progress_visible = false;
@@ -1315,24 +1339,17 @@ impl App {
                             Ok(tx_hash) => {
                                 let amount_ckb = amount_shannon as f64 / 100_000_000.0;
                                 let tx_hash_hex = hex::encode(tx_hash.0);
-                                let _ = action_tx.send(Action::TxSuccess(format!(
-                                    "Sent {:.8} CKB! Tx: 0x{}",
-                                    amount_ckb, tx_hash_hex
-                                )));
+                                let _ = action_tx.send(Action::TxSuccess(
+                                    crate::action::PassphrasePurpose::SendTransaction,
+                                    format!("Sent {:.8} CKB! Tx: 0x{}", amount_ckb, tx_hash_hex),
+                                ));
                             }
                             Err(e) => {
                                 let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
                             }
                         }
                     });
-
-                    // Clear send form (success message will be shown via TxSuccess action)
-                    self.send_component.recipient.clear();
-                    self.send_component.amount.clear();
-                    self.send_component.focused_field =
-                        crate::components::send::SendField::Recipient;
-                    self.send_component.is_editing = false;
-                    self.send_component.error_message = None;
+                    // Form will be cleared on TxSuccess
                 } else {
                     self.send_component.error_message =
                         Some("No account selected or invalid amount".to_string());
@@ -1536,21 +1553,21 @@ impl App {
                         let rpc = RpcClient::new(config);
                         match rpc.send_transaction(signed_tx) {
                             Ok(tx_hash) => {
-                                let _ = action_tx.send(Action::TxSuccess(format!(
-                                    "CT Transfer sent! Hash: {}...{}",
-                                    &hex::encode(&tx_hash.0[..4]),
-                                    &hex::encode(&tx_hash.0[28..])
-                                )));
+                                let _ = action_tx.send(Action::TxSuccess(
+                                    crate::action::PassphrasePurpose::TransferToken,
+                                    format!(
+                                        "CT Transfer sent! Hash: {}...{}",
+                                        &hex::encode(&tx_hash.0[..4]),
+                                        &hex::encode(&tx_hash.0[28..])
+                                    ),
+                                ));
                             }
                             Err(e) => {
                                 let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
                             }
                         }
                     });
-
-                    // Clear transfer form (success will be shown via TxSuccess action)
-                    self.tokens_component.clear_transfer();
-                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    // Form will be cleared on TxSuccess
                 } else {
                     self.tokens_component.error_message = Some(
                         "No account selected, invalid amount, or no token selected".to_string(),
@@ -1733,11 +1750,14 @@ impl App {
                         let rpc = RpcClient::new(config);
                         match rpc.send_transaction(signed_tx) {
                             Ok(tx_hash) => {
-                                let _ = action_tx.send(Action::TxSuccess(format!(
-                                    "CT Mint sent! Hash: {}...{}",
-                                    &hex::encode(&tx_hash.0[..4]),
-                                    &hex::encode(&tx_hash.0[28..])
-                                )));
+                                let _ = action_tx.send(Action::TxSuccess(
+                                    crate::action::PassphrasePurpose::MintToken,
+                                    format!(
+                                        "CT Mint sent! Hash: {}...{}",
+                                        &hex::encode(&tx_hash.0[..4]),
+                                        &hex::encode(&tx_hash.0[28..])
+                                    ),
+                                ));
                             }
                             Err(e) => {
                                 // Enhanced error logging for troubleshooting
@@ -1753,10 +1773,7 @@ impl App {
                             }
                         }
                     });
-
-                    // Clear mint form (success will be shown via TxSuccess action)
-                    self.tokens_component.clear_mint();
-                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    // Form will be cleared on TxSuccess
                 } else {
                     self.tokens_component.error_message = Some(
                         "No account selected, invalid amount, or no token selected".to_string(),
@@ -1900,23 +1917,23 @@ impl App {
                         let rpc = RpcClient::new(config);
                         match rpc.send_transaction(signed_tx) {
                             Ok(tx_hash) => {
-                                let _ = action_tx.send(Action::TxSuccess(format!(
-                                    "Token created! Hash: {}...{}\nToken ID: {}...{}",
-                                    &hex::encode(&tx_hash.0[..4]),
-                                    &hex::encode(&tx_hash.0[28..]),
-                                    &hex::encode(&token_id[..4]),
-                                    &hex::encode(&token_id[28..])
-                                )));
+                                let _ = action_tx.send(Action::TxSuccess(
+                                    crate::action::PassphrasePurpose::CreateToken,
+                                    format!(
+                                        "Token created! Hash: {}...{}\nToken ID: {}...{}",
+                                        &hex::encode(&tx_hash.0[..4]),
+                                        &hex::encode(&tx_hash.0[28..]),
+                                        &hex::encode(&token_id[..4]),
+                                        &hex::encode(&token_id[28..])
+                                    ),
+                                ));
                             }
                             Err(e) => {
                                 let _ = action_tx.send(Action::TxError(format!("Genesis submission failed: {}", e)));
                             }
                         }
                     });
-
-                    // Clear genesis form (success will be shown via TxSuccess action)
-                    self.tokens_component.clear_genesis();
-                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
+                    // Form will be cleared on TxSuccess
                 } else {
                     self.tokens_component.error_message = Some("No account selected".to_string());
                     self.status_message = "Genesis failed: no account".to_string();

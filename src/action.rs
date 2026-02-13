@@ -103,8 +103,8 @@ pub enum Action {
     ShowTxProgress,
     /// Hide the transaction progress spinner
     HideTxProgress,
-    /// Transaction completed successfully (with optional message)
-    TxSuccess(String),
+    /// Transaction completed successfully (with purpose to clear the right form)
+    TxSuccess(PassphrasePurpose, String),
     /// Transaction failed with error message
     TxError(String),
     /// Passphrase verification failed (re-show popup with error)
