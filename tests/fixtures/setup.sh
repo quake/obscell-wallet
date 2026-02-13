@@ -124,7 +124,7 @@ main() {
     echo ""
     echo "  1. Start CKB node: $CKB_PATH run -C $DEVNET_DIR"
     echo "  2. Run integration tests to deploy contracts:"
-    echo "     cargo test --test integration -- --test-threads=1 --nocapture"
+    echo "     cargo test --features test-utils --test integration -- --test-threads=1 --nocapture"
     echo ""
     echo "  After running tests once, contracts are deployed and you can use:"
     echo "     cargo run -- --network devnet"
