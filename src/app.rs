@@ -171,6 +171,15 @@ pub struct App {
     // Transaction progress spinner state
     pub tx_progress_visible: bool,
     pub tx_progress_frame: usize,
+    // Transaction result popup state
+    pub tx_result_popup: Option<TxResultPopup>,
+}
+
+/// Transaction result popup data
+#[derive(Debug, Clone)]
+pub struct TxResultPopup {
+    pub is_success: bool,
+    pub message: String,
 }
 
 impl App {
@@ -287,6 +296,8 @@ impl App {
             // Transaction progress spinner
             tx_progress_visible: false,
             tx_progress_frame: 0,
+            // Transaction result popup
+            tx_result_popup: None,
         })
     }
 
@@ -556,6 +567,17 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle transaction result popup - dismiss on any key
+        if self.tx_result_popup.is_some() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.tx_result_popup = None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         // Handle passphrase popup input mode
         if self.passphrase_popup_purpose.is_some() {
             match key.code {
@@ -936,11 +958,17 @@ impl App {
             }
             Action::TxSuccess(ref msg) => {
                 self.tx_progress_visible = false;
-                self.status_message = msg.clone();
+                self.tx_result_popup = Some(TxResultPopup {
+                    is_success: true,
+                    message: msg.clone(),
+                });
             }
             Action::TxError(ref msg) => {
                 self.tx_progress_visible = false;
-                self.status_message = format!("Error: {}", msg);
+                self.tx_result_popup = Some(TxResultPopup {
+                    is_success: false,
+                    message: msg.clone(),
+                });
             }
             Action::Quit => {
                 self.should_quit = true;
@@ -2657,6 +2685,9 @@ impl App {
         let tx_progress_visible = self.tx_progress_visible;
         let tx_progress_frame = self.tx_progress_frame;
 
+        // Transaction result popup state
+        let tx_result_popup = self.tx_result_popup.clone();
+
         // Pre-compute layout to save tab area for mouse click detection
         let size = self.tui.terminal.size()?;
         let terminal_area = Rect::new(0, 0, size.width, size.height);
@@ -3020,6 +3051,66 @@ impl App {
                     ]),
                 ])
                 .alignment(ratatui::layout::Alignment::Center);
+                f.render_widget(content, inner);
+            }
+
+            // Draw transaction result popup if active
+            if let Some(ref result) = tx_result_popup {
+                let area = f.area();
+                // Calculate popup size based on message length
+                let lines: Vec<&str> = result.message.lines().collect();
+                let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(20);
+                let popup_width = ((max_line_len + 6) as u16).clamp(30, area.width.saturating_sub(4));
+                let popup_height = ((lines.len() + 5) as u16).clamp(7, area.height.saturating_sub(4));
+                let x = (area.width.saturating_sub(popup_width)) / 2;
+                let y = (area.height.saturating_sub(popup_height)) / 2;
+                let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+                // Clear background
+                f.render_widget(ratatui::widgets::Clear, popup_area);
+
+                let (title, border_color, icon) = if result.is_success {
+                    ("Success", Color::Green, "✓")
+                } else {
+                    ("Error", Color::Red, "✗")
+                };
+
+                let block = Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color));
+
+                let inner = block.inner(popup_area);
+                f.render_widget(block, popup_area);
+
+                // Build content lines
+                let mut content_lines = vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", icon),
+                            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                ];
+
+                // Add message lines
+                for line in &lines {
+                    content_lines.push(Line::from(Span::styled(
+                        *line,
+                        Style::default().fg(Color::White),
+                    )));
+                }
+
+                // Add dismiss hint
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(Span::styled(
+                    "Press Enter or Esc to close",
+                    Style::default().fg(Color::DarkGray),
+                )));
+
+                let content = Paragraph::new(content_lines)
+                    .alignment(ratatui::layout::Alignment::Center);
                 f.render_widget(content, inner);
             }
         })?;
