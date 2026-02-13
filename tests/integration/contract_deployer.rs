@@ -122,7 +122,7 @@ impl ContractDeployer {
             network: NetworkConfig {
                 name: "devnet".to_string(),
                 rpc_url: "http://127.0.0.1:8114".to_string(),
-                scan_start_block: 0,
+                scan_start_block: 1,
             },
             contracts: ContractConfig {
                 // For stealth_lock, ct_info, ct_token: use type_id_hash (referenced by Type)
