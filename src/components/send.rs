@@ -310,8 +310,6 @@ impl SendComponent {
 
         let recipient_text = if recipient.is_empty() && focused_field != SendField::Recipient {
             "Enter address (stealth or CKB)"
-        } else if recipient.is_empty() {
-            "│"
         } else {
             recipient
         };
@@ -369,8 +367,6 @@ impl SendComponent {
 
         let amount_text = if amount.is_empty() && focused_field != SendField::Amount {
             "Enter amount in CKB (e.g., 100.5)"
-        } else if amount.is_empty() {
-            "│"
         } else {
             amount
         };
