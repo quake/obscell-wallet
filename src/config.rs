@@ -68,10 +68,6 @@ pub struct CellDepConfig {
     pub tx_hash: String,
     #[serde(default)]
     pub index: u32,
-    #[serde(default)]
-    pub data_hash: Option<String>,
-    #[serde(default)]
-    pub type_id_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
