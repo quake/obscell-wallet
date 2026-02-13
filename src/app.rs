@@ -43,7 +43,7 @@ use crate::{
         block_scanner::BlockScanner,
         store::{SELECTED_NETWORK_KEY, Store},
     },
-    tui::{Event, Frame, Tui},
+    tui::{Event, Tui},
 };
 
 /// Application mode - whether we're in wallet setup or normal operation
@@ -2590,6 +2590,11 @@ impl App {
             .as_ref()
             .and_then(|d| d.success_message.clone());
 
+        // Rescan height input state
+        let entering_rescan_height = self.entering_rescan_height;
+        let rescan_height_input = self.rescan_height_input.clone();
+        let config_scan_start_block = self.config.network.scan_start_block;
+
         // Pre-compute layout to save tab area for mouse click detection
         let size = self.tui.terminal.size()?;
         let terminal_area = Rect::new(0, 0, size.width, size.height);
@@ -2782,198 +2787,72 @@ impl App {
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
             f.render_widget(status, chunks[3]);
+
+            // Draw rescan height input overlay if active
+            if entering_rescan_height {
+                // Calculate centered popup area
+                let area = f.area();
+                let popup_width = 50u16.min(area.width.saturating_sub(4));
+                let popup_height = 9u16.min(area.height.saturating_sub(4));
+                let x = (area.width.saturating_sub(popup_width)) / 2;
+                let y = (area.height.saturating_sub(popup_height)) / 2;
+                let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+                // Clear background
+                f.render_widget(ratatui::widgets::Clear, popup_area);
+
+                let block = Block::default()
+                    .title("Full Rescan")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan));
+
+                let inner = block.inner(popup_area);
+                f.render_widget(block, popup_area);
+
+                let overlay_chunks = Layout::vertical([
+                    Constraint::Length(2), // Instruction
+                    Constraint::Length(3), // Input field
+                    Constraint::Length(2), // Hint
+                    Constraint::Min(0),    // Padding
+                ])
+                .split(inner);
+
+                // Instruction text
+                let instruction = Paragraph::new(vec![Line::from(vec![Span::styled(
+                    "Enter start block height (or Enter for default):",
+                    Style::default().fg(Color::Gray),
+                )])]);
+                f.render_widget(instruction, overlay_chunks[0]);
+
+                // Input field with cursor
+                let display_value = if rescan_height_input.is_empty() {
+                    format!("{} (default)", config_scan_start_block)
+                } else {
+                    format!("{}_", rescan_height_input)
+                };
+                let input_style = if rescan_height_input.is_empty() {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let input_widget = Paragraph::new(display_value)
+                    .style(input_style)
+                    .block(
+                        Block::default()
+                            .title("Block Height")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow)),
+                    );
+                f.render_widget(input_widget, overlay_chunks[1]);
+
+                // Hint text
+                let hint = Paragraph::new(vec![Line::from(vec![Span::styled(
+                    "[Enter] Start    [Esc] Cancel    [0-9] Input",
+                    Style::default().fg(Color::DarkGray),
+                )])]);
+                f.render_widget(hint, overlay_chunks[2]);
+            }
         })?;
         Ok(())
-    }
-
-    fn draw(&mut self, f: &mut Frame) {
-        let chunks = Layout::vertical([
-            Constraint::Length(3), // Header
-            Constraint::Length(3), // Tabs
-            Constraint::Min(0),    // Content
-            Constraint::Length(3), // Status
-        ])
-        .split(f.area());
-
-        self.draw_header(f, chunks[0]);
-        self.draw_tabs(f, chunks[1]);
-        self.draw_content(f, chunks[2]);
-        self.draw_status(f, chunks[3]);
-
-        // Draw rescan height input overlay if active
-        if self.entering_rescan_height {
-            self.draw_rescan_height_input(f);
-        }
-    }
-
-    fn draw_header(&self, f: &mut Frame, area: Rect) {
-        let title = Paragraph::new(vec![Line::from(vec![
-            Span::styled(
-                "Obscell Wallet",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("[{}]", self.config.network.name),
-                Style::default().fg(Color::Yellow),
-            ),
-        ])])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-        f.render_widget(title, area);
-    }
-
-    fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let titles: Vec<Line> = Tab::all(self.dev_mode).iter().map(|t| t.title()).collect();
-
-        let tabs = Tabs::new(titles)
-            .block(Block::default().borders(Borders::ALL))
-            .select(self.active_tab.index(self.dev_mode))
-            .style(Style::default().fg(Color::White))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        f.render_widget(tabs, area);
-    }
-
-    fn draw_content(&mut self, f: &mut Frame, area: Rect) {
-        match self.active_tab {
-            Tab::Settings => {
-                self.settings_component.draw(f, area);
-            }
-            Tab::Accounts => {
-                self.accounts_component.draw(f, area);
-            }
-            Tab::Send => {
-                let block = Block::default()
-                    .title("Send")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("Send view - Coming soon...")
-                    .block(block)
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(paragraph, area);
-            }
-            Tab::Receive => {
-                let block = Block::default()
-                    .title("Receive")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("Receive view - Coming soon...")
-                    .block(block)
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(paragraph, area);
-            }
-            Tab::Tokens => {
-                let block = Block::default()
-                    .title("Tokens")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray));
-                let paragraph = Paragraph::new("Tokens view - Coming soon...")
-                    .block(block)
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(paragraph, area);
-            }
-            Tab::History => {
-                self.history_component.draw(f, area);
-            }
-            Tab::Dev => {
-                if let Some(ref mut dev) = self.dev_component {
-                    dev.draw(f, area);
-                }
-            }
-        }
-    }
-
-    fn draw_status(&self, f: &mut Frame, area: Rect) {
-        let underline = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::UNDERLINED);
-        let dim = Style::default().fg(Color::DarkGray);
-        let status = Paragraph::new(vec![Line::from(vec![
-            Span::styled("Status: ", dim),
-            Span::styled(&self.status_message, Style::default().fg(Color::Green)),
-            Span::raw("  |  "),
-            Span::styled("Q", underline),
-            Span::styled("uit [?]Help [Tab]Switch", dim),
-        ])])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-        f.render_widget(status, area);
-    }
-
-    fn draw_rescan_height_input(&self, f: &mut Frame) {
-        // Calculate centered popup area
-        let area = f.area();
-        let popup_width = 50u16.min(area.width.saturating_sub(4));
-        let popup_height = 9u16.min(area.height.saturating_sub(4));
-        let x = (area.width.saturating_sub(popup_width)) / 2;
-        let y = (area.height.saturating_sub(popup_height)) / 2;
-        let popup_area = Rect::new(x, y, popup_width, popup_height);
-
-        // Clear background
-        f.render_widget(ratatui::widgets::Clear, popup_area);
-
-        let block = Block::default()
-            .title("Full Rescan")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(popup_area);
-        f.render_widget(block, popup_area);
-
-        let chunks = Layout::vertical([
-            Constraint::Length(2), // Instruction
-            Constraint::Length(3), // Input field
-            Constraint::Length(2), // Hint
-            Constraint::Min(0),    // Padding
-        ])
-        .split(inner);
-
-        // Instruction text
-        let instruction = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "Enter start block height (or press Enter for default):",
-            Style::default().fg(Color::Gray),
-        )])]);
-        f.render_widget(instruction, chunks[0]);
-
-        // Input field with cursor
-        let display_value = if self.rescan_height_input.is_empty() {
-            format!("{} (default)", self.config.network.scan_start_block)
-        } else {
-            format!("{}_", self.rescan_height_input)
-        };
-        let input_style = if self.rescan_height_input.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let input_widget = Paragraph::new(display_value)
-            .style(input_style)
-            .block(
-                Block::default()
-                    .title("Block Height")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
-        f.render_widget(input_widget, chunks[1]);
-
-        // Hint text
-        let hint = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "[Enter] Start    [Esc] Cancel    [0-9] Input",
-            Style::default().fg(Color::DarkGray),
-        )])]);
-        f.render_widget(hint, chunks[2]);
     }
 }
