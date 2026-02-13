@@ -49,7 +49,6 @@ pub enum TokenOperation {
     Transfer,
     Mint,
     Genesis,
-    Rescan,
 }
 
 impl TokenOperation {
@@ -58,7 +57,6 @@ impl TokenOperation {
             TokenOperation::Transfer,
             TokenOperation::Mint,
             TokenOperation::Genesis,
-            TokenOperation::Rescan,
         ]
     }
 
@@ -67,7 +65,6 @@ impl TokenOperation {
             TokenOperation::Transfer => "Transfer",
             TokenOperation::Mint => "Mint (Issuer)",
             TokenOperation::Genesis => "Create New Token",
-            TokenOperation::Rescan => "Rescan Blockchain",
         }
     }
 }
@@ -1483,9 +1480,6 @@ impl Component for TokensComponent {
                                         TokenOperation::Genesis => {
                                             self.mode = TokensMode::Genesis;
                                             self.clear_genesis();
-                                        }
-                                        TokenOperation::Rescan => {
-                                            self.action_tx.send(Action::Rescan)?;
                                         }
                                     }
                                 }
