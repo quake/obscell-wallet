@@ -354,10 +354,9 @@ mod tests {
         );
         println!("Loaded from network: {}", config.network.name);
 
-        // The config/devnet.toml has this code_hash:
-        // 0x78a2db71ff8ccbca6c515e469f7346cf8d987c4c4aa8c2e85ba8ad045b5776fa
+        // The config/devnet.toml has this code_hash (updated by contract deployment):
         let devnet_toml_code_hash =
-            "0x78a2db71ff8ccbca6c515e469f7346cf8d987c4c4aa8c2e85ba8ad045b5776fa";
+            "0xc6abe10f415dc7727058a7afd50fa4f3a22e316b38173a5b1b259cd766e7cb87";
 
         // The hardcoded Config::devnet() has:
         // 0xe5e49e1d9e89a41e74830c2286489876723b976b530214ac00318a933f7b3335

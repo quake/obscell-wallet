@@ -3008,6 +3008,7 @@ impl App {
                         selected_index,
                         receive_one_time_address.as_deref(),
                         receive_is_spinning,
+                        Some(&config_network_name),
                     );
                 }
                 Tab::Send => {

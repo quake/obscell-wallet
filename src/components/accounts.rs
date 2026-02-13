@@ -94,6 +94,7 @@ impl AccountsComponent {
         selected_index: usize,
         one_time_address: Option<&str>,
         is_spinning: bool,
+        network_name: Option<&str>,
     ) {
         let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
@@ -176,19 +177,28 @@ impl AccountsComponent {
             };
 
             // Status text based on spinning state
-            let status_line = if is_spinning {
-                Line::from(vec![Span::styled(
+            let status_lines = if is_spinning {
+                vec![Line::from(vec![Span::styled(
                     "Rotating... Press Enter to select",
                     Style::default().fg(Color::Yellow),
-                )])
+                )])]
             } else {
-                Line::from(vec![Span::styled(
+                let mut lines = vec![Line::from(vec![Span::styled(
                     "Address selected! Press Enter to regenerate",
                     Style::default().fg(Color::Green),
-                )])
+                )])];
+                // Show faucet hint for testnet
+                if network_name == Some("testnet") {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "Get test CKB from: https://faucet.nervos.org/",
+                        Style::default().fg(Color::Cyan),
+                    )]));
+                }
+                lines
             };
 
-            vec![
+            let mut details = vec![
                 Line::from(vec![
                     Span::styled("Name: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(&acc.name, Style::default().fg(Color::White)),
@@ -217,8 +227,9 @@ impl AccountsComponent {
                 )]),
                 Line::from(vec![Span::styled(ckb_addr, addr_style)]),
                 Line::from(""),
-                status_line,
-            ]
+            ];
+            details.extend(status_lines);
+            details
         } else {
             vec![
                 Line::from(vec![Span::styled(
@@ -294,6 +305,7 @@ impl Component for AccountsComponent {
             self.selected_index,
             None, // one_time_address is managed by ReceiveComponent
             true, // is_spinning default to true
+            None, // network_name not available here
         );
     }
 }
