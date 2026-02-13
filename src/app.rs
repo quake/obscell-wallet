@@ -1645,9 +1645,8 @@ impl App {
                                 let _ = action_tx.send(Action::TxSuccess(
                                     crate::action::PassphrasePurpose::TransferToken,
                                     format!(
-                                        "CT Transfer sent! Hash: {}...{}",
-                                        &hex::encode(&tx_hash.0[..4]),
-                                        &hex::encode(&tx_hash.0[28..])
+                                        "CT Transfer sent!\nHash: 0x{}",
+                                        hex::encode(&tx_hash.0)
                                     ),
                                 ));
                             }
@@ -1849,9 +1848,8 @@ impl App {
                                 let _ = action_tx.send(Action::TxSuccess(
                                     crate::action::PassphrasePurpose::MintToken,
                                     format!(
-                                        "CT Mint sent! Hash: {}...{}",
-                                        &hex::encode(&tx_hash.0[..4]),
-                                        &hex::encode(&tx_hash.0[28..])
+                                        "CT Mint sent!\nHash: 0x{}",
+                                        hex::encode(&tx_hash.0)
                                     ),
                                 ));
                             }
@@ -2027,11 +2025,9 @@ impl App {
                                 let _ = action_tx.send(Action::TxSuccess(
                                     crate::action::PassphrasePurpose::CreateToken,
                                     format!(
-                                        "Token created! Hash: {}...{}\nToken ID: {}...{}",
-                                        &hex::encode(&tx_hash.0[..4]),
-                                        &hex::encode(&tx_hash.0[28..]),
-                                        &hex::encode(&token_id[..4]),
-                                        &hex::encode(&token_id[28..])
+                                        "Token created!\nHash: 0x{}\nToken ID: 0x{}",
+                                        hex::encode(&tx_hash.0),
+                                        hex::encode(&token_id)
                                     ),
                                 ));
                             }
