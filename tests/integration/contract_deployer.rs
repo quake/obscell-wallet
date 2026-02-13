@@ -80,33 +80,18 @@ impl ContractDeployer {
     }
 
     pub fn load_from_config() -> Option<DeployedContracts> {
+        // NOTE: Since CellDepConfig no longer stores data_hash and type_id_hash,
+        // we cannot reconstruct DeployedContracts from the config file alone.
+        // Integration tests should always deploy contracts fresh.
+        // This function is kept for backward compatibility but now always returns None.
         let path = Self::devnet_config_file();
         if !path.exists() {
             return None;
         }
 
-        let content = fs::read_to_string(&path).ok()?;
-        let config: obscell_wallet::config::Config = toml::from_str(&content).ok()?;
-
-        let parse_h256 = |s: &String| -> Option<H256> {
-            H256::from_slice(&hex::decode(s.trim_start_matches("0x")).ok()?).ok()
-        };
-
-        let parse_dep = |dep: &obscell_wallet::config::CellDepConfig| -> Option<DeployedContract> {
-            Some(DeployedContract {
-                tx_hash: parse_h256(&dep.tx_hash)?,
-                output_index: dep.index,
-                data_hash: dep.data_hash.as_ref().and_then(parse_h256)?,
-                type_id_hash: dep.type_id_hash.as_ref().and_then(parse_h256),
-            })
-        };
-
-        Some(DeployedContracts {
-            stealth_lock: parse_dep(&config.cell_deps.stealth_lock)?,
-            ckb_auth: parse_dep(&config.cell_deps.ckb_auth)?,
-            ct_info_type: parse_dep(&config.cell_deps.ct_info)?,
-            ct_token_type: parse_dep(&config.cell_deps.ct_token)?,
-        })
+        // We can only verify the config file exists but cannot restore full deployment info
+        // Return None to trigger fresh deployment
+        None
     }
 
     /// Generate devnet.toml config file from deployed contracts.
@@ -166,50 +151,18 @@ impl ContractDeployer {
                 ckb_auth: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ckb_auth.tx_hash.as_bytes())),
                     index: info.ckb_auth.output_index,
-                    data_hash: Some(format!(
-                        "0x{}",
-                        hex::encode(info.ckb_auth.data_hash.as_bytes())
-                    )),
-                    type_id_hash: None,
                 },
                 stealth_lock: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.stealth_lock.tx_hash.as_bytes())),
                     index: info.stealth_lock.output_index,
-                    data_hash: Some(format!(
-                        "0x{}",
-                        hex::encode(info.stealth_lock.data_hash.as_bytes())
-                    )),
-                    type_id_hash: info
-                        .stealth_lock
-                        .type_id_hash
-                        .as_ref()
-                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_token: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_token_type.tx_hash.as_bytes())),
                     index: info.ct_token_type.output_index,
-                    data_hash: Some(format!(
-                        "0x{}",
-                        hex::encode(info.ct_token_type.data_hash.as_bytes())
-                    )),
-                    type_id_hash: info
-                        .ct_token_type
-                        .type_id_hash
-                        .as_ref()
-                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
                 ct_info: CellDepConfig {
                     tx_hash: format!("0x{}", hex::encode(info.ct_info_type.tx_hash.as_bytes())),
                     index: info.ct_info_type.output_index,
-                    data_hash: Some(format!(
-                        "0x{}",
-                        hex::encode(info.ct_info_type.data_hash.as_bytes())
-                    )),
-                    type_id_hash: info
-                        .ct_info_type
-                        .type_id_hash
-                        .as_ref()
-                        .map(|h| format!("0x{}", hex::encode(h.as_bytes()))),
                 },
             },
         };
