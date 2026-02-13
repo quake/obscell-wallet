@@ -1266,17 +1266,9 @@ impl App {
                                 &tx_hash_hex[56..]
                             );
 
-                            // Note: Transaction history is now derived from on-chain data,
-                            // not recorded at send time. History will update after rescan.
-
-                            // Remove spent cells from store
-                            let spent_out_points: Vec<_> =
-                                input_cells.iter().map(|c| c.out_point.clone()).collect();
-                            if let Err(e) =
-                                self.store.remove_spent_cells(account.id, &spent_out_points)
-                            {
-                                info!("Failed to remove spent cells: {}", e);
-                            }
+                            // Note: Don't remove spent cells here - let BlockScanner handle it.
+                            // Removing cells before scan causes incorrect delta calculation
+                            // (the tx would appear as "receive" instead of "send").
 
                             // Clear send form and passphrase
                             self.send_component.recipient.clear();
@@ -1497,25 +1489,8 @@ impl App {
                             ));
                             self.status_message = format!("Transferred {} CT tokens", amount_value);
 
-                            // Remove spent CT cells from store
-                            let spent_out_points: Vec<_> =
-                                input_cells.iter().map(|c| c.out_point.clone()).collect();
-                            if let Err(e) = self
-                                .store
-                                .remove_spent_ct_cells(account.id, &spent_out_points)
-                            {
-                                info!("Failed to remove spent CT cells: {}", e);
-                            }
-
-                            // Remove spent funding cell from store (if used)
-                            if let Some(ref fc) = funding_input
-                                && let Err(e) = self.store.remove_spent_cells(
-                                    account.id,
-                                    std::slice::from_ref(&fc.out_point),
-                                )
-                            {
-                                info!("Failed to remove spent funding cell: {}", e);
-                            }
+                            // Note: Don't remove spent cells here - let BlockScanner handle it.
+                            // Removing cells before scan causes incorrect delta calculation.
 
                             // Refresh CT balances
                             if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
@@ -1714,13 +1689,8 @@ impl App {
                             ));
                             self.status_message = format!("Minted {} CT tokens", amount_value);
 
-                            // Remove spent funding cell from store
-                            if let Err(e) = self.store.remove_spent_cells(
-                                account.id,
-                                std::slice::from_ref(&funding_input.out_point),
-                            ) {
-                                info!("Failed to remove spent funding cell: {}", e);
-                            }
+                            // Note: Don't remove spent cells here - let BlockScanner handle it.
+                            // Removing cells before scan causes incorrect delta calculation.
 
                             // Clear mint form
                             self.tokens_component.clear_mint();
@@ -1886,13 +1856,8 @@ impl App {
                                 &hex::encode(&token_id[28..])
                             );
 
-                            // Remove spent stealth cell from store
-                            if let Err(e) = self.store.remove_spent_cells(
-                                account.id,
-                                std::slice::from_ref(&funding_cell.out_point),
-                            ) {
-                                info!("Failed to remove spent stealth cell: {}", e);
-                            }
+                            // Note: Don't remove spent cells here - let BlockScanner handle it.
+                            // Removing cells before scan causes incorrect delta calculation.
 
                             // Trigger a rescan to detect the new ct-info cell
                             self.status_message
