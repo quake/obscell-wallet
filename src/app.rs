@@ -61,7 +61,6 @@ pub enum Tab {
     Accounts,
     Tokens,
     Send,
-    Receive,
     History,
     Dev,
 }
@@ -72,7 +71,6 @@ impl Tab {
             Tab::Accounts,
             Tab::Tokens,
             Tab::Send,
-            Tab::Receive,
             Tab::History,
             Tab::Settings,
         ];
@@ -93,7 +91,6 @@ impl Tab {
             Tab::Accounts => Line::from(vec![Span::styled("A", underline), Span::raw("ccounts")]),
             Tab::Tokens => Line::from(vec![Span::styled("T", underline), Span::raw("okens")]),
             Tab::Send => Line::from(vec![Span::styled("S", underline), Span::raw("end")]),
-            Tab::Receive => Line::from(vec![Span::styled("R", underline), Span::raw("eceive")]),
             Tab::History => Line::from(vec![Span::styled("H", underline), Span::raw("istory")]),
             Tab::Dev => Line::from(vec![Span::styled("D", underline), Span::raw("ev")]),
         }
@@ -104,11 +101,10 @@ impl Tab {
             Tab::Accounts => 0,
             Tab::Tokens => 1,
             Tab::Send => 2,
-            Tab::Receive => 3,
-            Tab::History => 4,
-            Tab::Settings => 5,
-            Tab::Dev if dev_mode => 6,
-            Tab::Dev => 5, // Fallback if somehow Dev tab is accessed without dev_mode
+            Tab::History => 3,
+            Tab::Settings => 4,
+            Tab::Dev if dev_mode => 5,
+            Tab::Dev => 4, // Fallback if somehow Dev tab is accessed without dev_mode
         }
     }
 
@@ -117,10 +113,9 @@ impl Tab {
             0 => Tab::Accounts,
             1 => Tab::Tokens,
             2 => Tab::Send,
-            3 => Tab::Receive,
-            4 => Tab::History,
-            5 => Tab::Settings,
-            6 if dev_mode => Tab::Dev,
+            3 => Tab::History,
+            4 => Tab::Settings,
+            5 if dev_mode => Tab::Dev,
             _ => Tab::Accounts,
         }
     }
@@ -701,9 +696,6 @@ impl App {
             KeyCode::Char('s' | 'S') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Send);
             }
-            KeyCode::Char('r' | 'R') if key.modifiers.is_empty() => {
-                self.switch_tab(Tab::Receive);
-            }
             KeyCode::Char('t' | 'T') if key.modifiers.is_empty() => {
                 self.switch_tab(Tab::Tokens);
             }
@@ -728,9 +720,6 @@ impl App {
                 }
                 Tab::Send => {
                     self.send_component.handle_key_event(key)?;
-                }
-                Tab::Receive => {
-                    self.receive_component.handle_key_event(key)?;
                 }
                 Tab::Tokens => {
                     self.tokens_component.handle_key_event(key)?;
@@ -1021,6 +1010,17 @@ impl App {
                     }
                 }
                 self.status_message = format!("Selected Account {}", index + 1);
+            }
+            Action::ToggleAddressSpinning => {
+                // Toggle address spinning - same behavior as old Receive tab Enter key
+                if self.receive_component.is_spinning {
+                    // Stop spinning, keep current address
+                    self.receive_component.is_spinning = false;
+                } else {
+                    // Regenerate pool and start spinning again
+                    self.receive_component.regenerate_pool();
+                    self.receive_component.is_spinning = true;
+                }
             }
             Action::Rescan => {
                 if self.is_scanning {
@@ -2607,13 +2607,10 @@ impl App {
         let selected_index = self.accounts_component.selected_index;
         let tip_block_number = self.tip_block_number;
         let scanned_block_number = self.scanned_block_number;
-        // Rotate address on every frame when spinning, but only if visible
-        if self.receive_component.is_spinning
-            && matches!(self.active_tab, Tab::Accounts | Tab::Receive)
-        {
+        // Rotate address on every frame when spinning, but only if Accounts tab is visible
+        if self.receive_component.is_spinning && matches!(self.active_tab, Tab::Accounts) {
             self.receive_component.rotate_address();
         }
-        let receive_account = self.receive_component.account.clone();
         let receive_one_time_address = self.receive_component.one_time_address.clone();
         let receive_is_spinning = self.receive_component.is_spinning;
         let send_account = self.send_component.account.clone();
@@ -2796,6 +2793,7 @@ impl App {
                         &accounts,
                         selected_index,
                         receive_one_time_address.as_deref(),
+                        receive_is_spinning,
                     );
                 }
                 Tab::Send => {
@@ -2810,15 +2808,6 @@ impl App {
                         send_is_editing,
                         send_error_message.as_deref(),
                         send_success_message.as_deref(),
-                    );
-                }
-                Tab::Receive => {
-                    ReceiveComponent::draw_static(
-                        f,
-                        chunks[2],
-                        receive_account.as_ref(),
-                        receive_one_time_address.as_deref(),
-                        receive_is_spinning,
                     );
                 }
                 Tab::Tokens => {

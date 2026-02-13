@@ -76,7 +76,7 @@ impl ReceiveComponent {
     }
 
     /// Generate a pool of one-time addresses.
-    fn regenerate_pool(&mut self) {
+    pub fn regenerate_pool(&mut self) {
         self.address_pool.clear();
         self.current_index = 0;
 

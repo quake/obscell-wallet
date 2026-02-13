@@ -44,7 +44,6 @@ pub enum Action {
     TabSettings,
     TabAccounts,
     TabSend,
-    TabReceive,
     TabTokens,
     TabHistory,
 
@@ -61,6 +60,8 @@ pub enum Action {
     ExportAccount,
     SelectAccount(usize),
     DeleteAccount,
+    /// Toggle one-time address spinning (stop/start rotation)
+    ToggleAddressSpinning,
 
     // Transaction actions
     SendTransaction,

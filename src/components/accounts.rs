@@ -93,6 +93,7 @@ impl AccountsComponent {
         accounts: &[Account],
         selected_index: usize,
         one_time_address: Option<&str>,
+        is_spinning: bool,
     ) {
         let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
@@ -160,8 +161,32 @@ impl AccountsComponent {
         let details = if let Some(acc) = accounts.get(selected_index) {
             let stealth_addr = truncate(&acc.stealth_address());
             let ckb_addr = one_time_address
-                .map(truncate)
+                .map(&truncate)
                 .unwrap_or_else(|| "(generating...)".to_string());
+
+            // Address style - blinking effect when spinning
+            let addr_style = if is_spinning {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::RAPID_BLINK)
+            } else {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            };
+
+            // Status text based on spinning state
+            let status_line = if is_spinning {
+                Line::from(vec![Span::styled(
+                    "Rotating... Press Enter to select",
+                    Style::default().fg(Color::Yellow),
+                )])
+            } else {
+                Line::from(vec![Span::styled(
+                    "Address selected! Press Enter to regenerate",
+                    Style::default().fg(Color::Green),
+                )])
+            };
 
             vec![
                 Line::from(vec![
@@ -190,10 +215,9 @@ impl AccountsComponent {
                     "One-time CKB Address:",
                     Style::default().fg(Color::DarkGray),
                 )]),
-                Line::from(vec![Span::styled(
-                    ckb_addr,
-                    Style::default().fg(Color::Cyan),
-                )]),
+                Line::from(vec![Span::styled(ckb_addr, addr_style)]),
+                Line::from(""),
+                status_line,
             ]
         } else {
             vec![
@@ -220,7 +244,7 @@ impl AccountsComponent {
 
         // Help text
         let help_text = Line::from(Span::styled(
-            "Up/Down: Navigate | Enter: Select account",
+            "Up/Down: Navigate | Enter: Select/Regenerate address",
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -239,16 +263,23 @@ impl Component for AccountsComponent {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.next();
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.previous();
-            }
-            KeyCode::Enter => {
-                // Select the current account
+                // Auto-select account on navigation
                 if !self.accounts.is_empty() {
                     self.action_tx
                         .send(Action::SelectAccount(self.selected_index))?;
                 }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.previous();
+                // Auto-select account on navigation
+                if !self.accounts.is_empty() {
+                    self.action_tx
+                        .send(Action::SelectAccount(self.selected_index))?;
+                }
+            }
+            KeyCode::Enter => {
+                // Toggle one-time address spinning
+                self.action_tx.send(Action::ToggleAddressSpinning)?;
             }
             _ => {}
         }
@@ -262,6 +293,7 @@ impl Component for AccountsComponent {
             &self.accounts,
             self.selected_index,
             None, // one_time_address is managed by ReceiveComponent
+            true, // is_spinning default to true
         );
     }
 }
