@@ -416,6 +416,10 @@ fn test_ct_transfer_history_both_parties() {
         "Alice should have 1 CT cell"
     );
 
+    // Get the actual token_id from the scanned CT cell (ct_info_script_hash)
+    // Note: genesis_tx.token_id is the Type ID, not the ct_info_script_hash
+    let actual_token_id = alice_results[0].cells[0].token_id;
+
     // Alice's history should show CT receive (positive delta)
     let alice_history = alice_store
         .get_tx_history(alice.id)
@@ -427,7 +431,7 @@ fn test_ct_transfer_history_both_parties() {
             *delta, mint_amount as i64,
             "Receive amount should match (positive delta)"
         );
-        assert_eq!(*token, token_id, "Token ID should match");
+        assert_eq!(*token, actual_token_id, "Token ID should match");
     } else {
         panic!(
             "Alice should have Ct type, got: {:?}",
@@ -486,9 +490,10 @@ fn test_ct_transfer_history_both_parties() {
 
     // Record send in Alice's history (simulating what app.rs does)
     // Use negative delta to indicate sent tokens
+    // Note: token_id in TxRecord should be ct_info_script_hash, not Type ID
     let send_record = TxRecord::ct(
         built_transfer.tx_hash.0,
-        token_id,
+        actual_token_id,
         -(transfer_amount as i64),
         0, // timestamp
         0, // block_number
@@ -527,7 +532,7 @@ fn test_ct_transfer_history_both_parties() {
             *delta, transfer_amount as i64,
             "Bob receive amount should match (positive delta)"
         );
-        assert_eq!(*token, token_id, "Token ID should match");
+        assert_eq!(*token, actual_token_id, "Token ID should match");
     } else {
         panic!("Bob should have Ct type, got: {:?}", bob_history[0].tx_type);
     }
@@ -566,13 +571,13 @@ fn test_ct_transfer_history_both_parties() {
             -(transfer_amount as i64),
             "Transfer amount should match (negative)"
         );
-        assert_eq!(*token, token_id, "Token ID should match");
+        assert_eq!(*token, actual_token_id, "Token ID should match");
     }
 
     println!("\nCT transfer history test passed!");
     println!("  Alice history: {} entries", alice_history_final.len());
     println!("  Bob history: {} entries", bob_history.len());
-    println!("  Token ID: 0x{}", hex::encode(&token_id[..8]));
+    println!("  Token ID: 0x{}", hex::encode(&actual_token_id[..8]));
 }
 
 /// Test that history entries have correct status transitions.

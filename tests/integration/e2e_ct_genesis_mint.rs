@@ -921,7 +921,8 @@ fn test_scanner_finds_ct_info_cells() {
     );
 
     let ct_info_cell = &issuer_result.cells[0];
-    assert_eq!(ct_info_cell.token_id, token_id, "Token ID should match");
+    // genesis_tx.token_id is the Type ID, which should match ct_info_cell.type_id
+    assert_eq!(ct_info_cell.type_id, token_id, "Type ID should match");
     assert_eq!(ct_info_cell.total_supply, 0, "Initial supply should be 0");
     assert_eq!(
         ct_info_cell.supply_cap, 5_000_000,
