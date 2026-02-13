@@ -14,7 +14,6 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::cell::TxType;
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
-#[allow(unused_imports)]
 use obscell_wallet::infra::block_scanner::BlockScanner;
 use obscell_wallet::infra::scanner::Scanner;
 use obscell_wallet::infra::store::Store;
@@ -30,7 +29,7 @@ fn create_test_config(env: &TestEnv) -> Config {
         network: NetworkConfig {
             name: "devnet".to_string(),
             rpc_url: DevNet::RPC_URL.to_string(),
-            scan_start_block: 0,
+            scan_start_block: 1, // Block 0 doesn't support BlockV1 format
         },
         contracts: ContractConfig {
             stealth_lock_code_hash: format!("0x{}", hex::encode(stealth_type_id_hash.as_bytes())),
@@ -199,13 +198,7 @@ fn test_faucet_to_stealth_records_history() {
 /// This test uses BlockScanner (the same scanner used in TUI) instead of
 /// the indexer-based Scanner, to verify the bug report about faucet->stealth
 /// transactions not appearing in history.
-///
-/// NOTE: This test is ignored because BlockScanner uses BlockV1 format (CKB2023+)
-/// which is not supported by the devnet's CKB version. The devnet returns Block
-/// with 4 fields instead of BlockV1 with 5 fields.
-/// To test BlockScanner, use testnet or mainnet.
 #[test]
-#[ignore = "BlockScanner requires BlockV1 format not available on devnet"]
 fn test_faucet_to_stealth_records_history_block_scanner() {
     let env = TestEnv::get();
     let config = create_test_config(env);
