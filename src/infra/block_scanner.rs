@@ -240,8 +240,11 @@ impl BlockScanner {
             let mut account_ckb_delta: HashMap<u64, i64> = HashMap::new();
             let mut account_ct_delta: HashMap<u64, HashMap<[u8; 32], i64>> = HashMap::new();
             let mut account_involved: HashSet<u64> = HashSet::new();
-            // Track accounts that have genesis transactions (skip CKB record for these)
-            let mut account_genesis: HashSet<u64> = HashSet::new();
+            // Track accounts that have ct-info output (could be genesis or mint)
+            // Maps account_id -> set of token_ids that have ct-info output
+            let mut account_ct_info_output: HashMap<u64, HashSet<[u8; 32]>> = HashMap::new();
+            // Track ct-info cells that were spent in this tx (account_id -> set of token_ids)
+            let mut spent_ct_info_tokens: HashMap<u64, HashSet<[u8; 32]>> = HashMap::new();
 
             let raw_tx = tx.raw();
             let outputs = raw_tx.outputs();
@@ -385,20 +388,12 @@ impl BlockScanner {
                                     .or_default()
                                     .push(ct_info_cell);
 
-                                // Record genesis tx and mark account
-                                // Use ct_info_script_hash as token_id for consistency
-                                account_genesis.insert(*account_id);
-                                let record = TxRecord::ct_genesis(
-                                    tx_hash_bytes,
-                                    ct_info_script_hash,
-                                    timestamp,
-                                    block_number,
-                                );
-                                result
-                                    .tx_records
+                                // Track ct-info output for later genesis/mint determination
+                                // (after we know which ct-info cells were spent)
+                                account_ct_info_output
                                     .entry(*account_id)
                                     .or_default()
-                                    .push(record);
+                                    .insert(ct_info_script_hash);
                             }
                         }
                     } else {
@@ -481,6 +476,11 @@ impl BlockScanner {
                                     .entry(*account_id)
                                     .or_default()
                                     .push(cell.clone());
+                                // Track that this token's ct-info was spent (for mint detection)
+                                spent_ct_info_tokens
+                                    .entry(*account_id)
+                                    .or_default()
+                                    .insert(cell.token_id());
                             }
 
                             break;
@@ -491,8 +491,67 @@ impl BlockScanner {
 
             // Create TxRecords for involved accounts
             for account_id in account_involved {
-                // CKB record (skip for genesis transactions - they are merged into CT New)
-                if !account_genesis.contains(&account_id)
+                // Check for genesis or mint operations based on ct-info activity
+                let ct_info_outputs = account_ct_info_output.get(&account_id);
+                let ct_info_spent = spent_ct_info_tokens.get(&account_id);
+                let has_ct_info_activity = ct_info_outputs.is_some();
+
+                // Track if this account has CT activity (including self-transfers with delta=0)
+                let has_ct_activity = account_ct_delta
+                    .get(&account_id)
+                    .map(|deltas| !deltas.is_empty())
+                    .unwrap_or(false);
+
+                // Process ct-info outputs: determine if genesis or mint
+                if let Some(token_ids) = ct_info_outputs {
+                    for &token_id in token_ids {
+                        // Check if this token's ct-info was also spent (mint) or new (genesis)
+                        let is_mint = ct_info_spent
+                            .map(|spent| spent.contains(&token_id))
+                            .unwrap_or(false);
+
+                        if is_mint {
+                            // Mint: ct-info was updated, get minted amount from CT delta
+                            // The minted amount is the positive CT delta for this token
+                            let minted_amount = account_ct_delta
+                                .get(&account_id)
+                                .and_then(|deltas| deltas.get(&token_id))
+                                .map(|&delta| if delta > 0 { delta as u64 } else { 0 })
+                                .unwrap_or(0);
+
+                            let record = TxRecord::ct_mint(
+                                tx_hash_bytes,
+                                token_id,
+                                minted_amount,
+                                timestamp,
+                                block_number,
+                            );
+                            result
+                                .tx_records
+                                .entry(account_id)
+                                .or_default()
+                                .push(record);
+                        } else {
+                            // Genesis: new ct-info cell created
+                            let record = TxRecord::ct_genesis(
+                                tx_hash_bytes,
+                                token_id,
+                                timestamp,
+                                block_number,
+                            );
+                            result
+                                .tx_records
+                                .entry(account_id)
+                                .or_default()
+                                .push(record);
+                        }
+                    }
+                }
+
+                // CKB record (skip for ct-info transactions and CT transactions)
+                // For CT/mint transactions, the CKB change is just fee, not meaningful to show separately
+                if !has_ct_info_activity
+                    && !has_ct_activity
                     && let Some(&delta) = account_ckb_delta.get(&account_id)
                     && delta != 0
                 {
@@ -504,23 +563,40 @@ impl BlockScanner {
                         .push(record);
                 }
 
-                // CT records
+                // CT records (include delta=0 for self-transfers)
+                // Skip tokens that were part of a mint operation (already recorded above)
                 if let Some(ct_deltas) = account_ct_delta.get(&account_id) {
+                    let mint_tokens: HashSet<[u8; 32]> = ct_info_outputs
+                        .iter()
+                        .flat_map(|s| s.iter())
+                        .filter(|&token_id| {
+                            ct_info_spent
+                                .map(|spent| spent.contains(token_id))
+                                .unwrap_or(false)
+                        })
+                        .copied()
+                        .collect();
+
                     for (&token_id, &delta) in ct_deltas {
-                        if delta != 0 {
-                            let record = TxRecord::ct(
-                                tx_hash_bytes,
-                                token_id,
-                                delta,
-                                timestamp,
-                                block_number,
-                            );
-                            result
-                                .tx_records
-                                .entry(account_id)
-                                .or_default()
-                                .push(record);
+                        // Skip if this token was minted (already recorded as CtMint)
+                        if mint_tokens.contains(&token_id) {
+                            continue;
                         }
+
+                        // Always create CT record if account touched this token
+                        // (even for self-transfers where delta=0)
+                        let record = TxRecord::ct(
+                            tx_hash_bytes,
+                            token_id,
+                            delta,
+                            timestamp,
+                            block_number,
+                        );
+                        result
+                            .tx_records
+                            .entry(account_id)
+                            .or_default()
+                            .push(record);
                     }
                 }
             }

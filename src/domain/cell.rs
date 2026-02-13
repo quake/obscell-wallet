@@ -11,12 +11,19 @@ pub enum TxType {
         /// Net change in shannons (positive = received, negative = sent).
         delta: i64,
     },
-    /// Confidential token balance change (mint or transfer).
+    /// Confidential token balance change (transfer).
     Ct {
         /// Token ID (first 32 bytes of type args).
         token: [u8; 32],
         /// Net change in token amount (positive = received, negative = sent).
         delta: i64,
+    },
+    /// Mint new tokens (increases total supply).
+    CtMint {
+        /// Token ID.
+        token: [u8; 32],
+        /// Amount minted (always positive).
+        amount: u64,
     },
     /// Create new token (genesis transaction).
     CtGenesis {
@@ -88,6 +95,22 @@ impl TxRecord {
         }
     }
 
+    /// Create a CT mint transaction record.
+    pub fn ct_mint(
+        tx_hash: [u8; 32],
+        token: [u8; 32],
+        amount: u64,
+        timestamp: i64,
+        block_number: u64,
+    ) -> Self {
+        Self {
+            tx_hash,
+            tx_type: TxType::CtMint { token, amount },
+            timestamp,
+            block_number,
+        }
+    }
+
     /// Get display-friendly tx hash (shortened).
     pub fn short_hash(&self) -> String {
         format!(
@@ -107,6 +130,7 @@ impl TxRecord {
         match &self.tx_type {
             TxType::Ckb { delta } => *delta,
             TxType::Ct { delta, .. } => *delta,
+            TxType::CtMint { amount, .. } => *amount as i64,
             TxType::CtGenesis { .. } => 0,
         }
     }
@@ -115,7 +139,7 @@ impl TxRecord {
     pub fn delta_ckb(&self) -> Option<f64> {
         match &self.tx_type {
             TxType::Ckb { delta } => Some(*delta as f64 / 100_000_000.0),
-            TxType::Ct { .. } | TxType::CtGenesis { .. } => None,
+            TxType::Ct { .. } | TxType::CtMint { .. } | TxType::CtGenesis { .. } => None,
         }
     }
 
@@ -123,7 +147,9 @@ impl TxRecord {
     pub fn token_id(&self) -> Option<[u8; 32]> {
         match &self.tx_type {
             TxType::Ckb { .. } => None,
-            TxType::Ct { token, .. } | TxType::CtGenesis { token } => Some(*token),
+            TxType::Ct { token, .. }
+            | TxType::CtMint { token, .. }
+            | TxType::CtGenesis { token } => Some(*token),
         }
     }
 

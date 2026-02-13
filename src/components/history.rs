@@ -127,12 +127,15 @@ impl HistoryComponent {
                 }
             }
             TxType::Ct { delta, .. } => {
-                if *delta >= 0 {
+                if *delta > 0 {
                     (format!("+{} CT", delta), Color::Green)
-                } else {
+                } else if *delta < 0 {
                     (format!("{} CT", delta), Color::Red)
+                } else {
+                    ("0 CT".to_string(), Color::Yellow) // Self-transfer
                 }
             }
+            TxType::CtMint { amount, .. } => (format!("+{} CT", amount), Color::Magenta),
             TxType::CtGenesis { .. } => ("New Token".to_string(), Color::Cyan),
         }
     }
@@ -148,12 +151,15 @@ impl HistoryComponent {
                 }
             }
             TxType::Ct { delta, .. } => {
-                if *delta >= 0 {
+                if *delta > 0 {
                     "CT Recv"
-                } else {
+                } else if *delta < 0 {
                     "CT Send"
+                } else {
+                    "CT Self" // Self-transfer (delta = 0)
                 }
             }
+            TxType::CtMint { .. } => "CT Mint",
             TxType::CtGenesis { .. } => "CT New",
         }
     }
@@ -259,7 +265,10 @@ impl HistoryComponent {
             lines.push(Line::from(""));
 
             // Add token ID for CT transactions (show full token ID)
-            if let TxType::Ct { token, .. } | TxType::CtGenesis { token } = &tx.tx_type {
+            if let TxType::Ct { token, .. }
+            | TxType::CtMint { token, .. }
+            | TxType::CtGenesis { token } = &tx.tx_type
+            {
                 lines.push(Line::from(vec![Span::styled(
                     "Token ID:",
                     Style::default().fg(Color::DarkGray),
