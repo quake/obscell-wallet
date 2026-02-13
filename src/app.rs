@@ -952,6 +952,8 @@ impl App {
             Action::ShowTxProgress => {
                 self.tx_progress_visible = true;
                 self.tx_progress_frame = 0;
+                // Force immediate render so spinner is visible before background work starts
+                self.draw_ui()?;
             }
             Action::HideTxProgress => {
                 self.tx_progress_visible = false;
@@ -1231,8 +1233,10 @@ impl App {
                         }
                     };
 
-                    // Show progress spinner and start background transaction
-                    self.action_tx.send(Action::ShowTxProgress)?;
+                    // Show progress spinner immediately and render before starting background work
+                    self.tx_progress_visible = true;
+                    self.tx_progress_frame = 0;
+                    self.draw_ui()?;
 
                     // Clone values for the background thread
                     let config = self.config.clone();
@@ -1462,8 +1466,10 @@ impl App {
                         }
                     };
 
-                    // Show progress spinner and start background transaction
-                    self.action_tx.send(Action::ShowTxProgress)?;
+                    // Show progress spinner immediately and render before starting background work
+                    self.tx_progress_visible = true;
+                    self.tx_progress_frame = 0;
+                    self.draw_ui()?;
 
                     // Clone values for the background thread
                     let config = self.config.clone();
@@ -1670,8 +1676,10 @@ impl App {
                         }
                     };
 
-                    // Show progress spinner and start background transaction
-                    self.action_tx.send(Action::ShowTxProgress)?;
+                    // Show progress spinner immediately and render before starting background work
+                    self.tx_progress_visible = true;
+                    self.tx_progress_frame = 0;
+                    self.draw_ui()?;
 
                     // Clone values for the background thread
                     let config = self.config.clone();
@@ -1832,8 +1840,10 @@ impl App {
                         }
                     };
 
-                    // Show progress spinner and start background transaction
-                    self.action_tx.send(Action::ShowTxProgress)?;
+                    // Show progress spinner immediately and render before starting background work
+                    self.tx_progress_visible = true;
+                    self.tx_progress_frame = 0;
+                    self.draw_ui()?;
 
                     // Clone values for the background thread
                     let config = self.config.clone();
