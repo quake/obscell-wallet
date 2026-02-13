@@ -539,6 +539,15 @@ impl BlockScanner {
         let mut blocks_processed = 0;
         let mut total_cells_found: u64 = 0;
 
+        // Log scan state on startup
+        debug!(
+            "Scan state: start_block={}, last_scanned={:?}, recent_blocks_count={}, next_to_scan={}",
+            start_block,
+            state.last_scanned_block,
+            state.recent_blocks.len(),
+            current
+        );
+
         // Only log if there are blocks to scan
         if current <= tip {
             info!("Starting block scan from {} to {} (tip)", current, tip);
@@ -584,7 +593,7 @@ impl BlockScanner {
                 && parent_hash != expected_parent
             {
                 // Reorg detected!
-                info!(
+                warn!(
                     "Reorg detected at block {}! Expected parent {:?}, got {:?}",
                     current,
                     hex::encode(&expected_parent[..8]),
@@ -595,17 +604,17 @@ impl BlockScanner {
                 if let Some(fork_block) = state.find_fork_point(&parent_hash) {
                     info!("Fork point found at block {}", fork_block);
 
-                    // Rollback state
+                    // Rollback state to fork point
                     state.rollback_to(fork_block);
-                    self.store.save_scan_state(&state)?;
 
-                    // We need to rollback cell data too
-                    // For simplicity, we'll do a full rescan from fork point
-                    // A more sophisticated implementation would track per-block changes
+                    // Clear all cell data since we don't have per-block undo logs.
+                    // We'll rescan from fork_block + 1 to rebuild the correct state.
                     for account in accounts {
                         self.store.clear_all_cells_for_account(account.id)?;
                     }
-                    state.clear();
+
+                    // Save state AFTER clearing cells but WITHOUT calling clear()
+                    // This preserves the fork point info so we continue from fork_block + 1
                     self.store.save_scan_state(&state)?;
 
                     // Notify about reorg
@@ -616,7 +625,7 @@ impl BlockScanner {
                         });
                     }
 
-                    // Restart from fork point
+                    // Restart scanning from fork point + 1
                     current = fork_block + 1;
                     continue;
                 } else {

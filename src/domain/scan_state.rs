@@ -156,4 +156,89 @@ mod tests {
         state.add_block(100, [1u8; 32]);
         assert_eq!(state.next_block_to_scan(50), 101); // Continue from last
     }
+
+    /// Test that after rollback, the state can correctly continue scanning
+    /// from the fork point. This is the expected behavior for reorg handling.
+    #[test]
+    fn test_scan_state_rollback_preserves_continuity() {
+        let mut state = ScanState::new();
+
+        // Simulate scanning blocks 100-105
+        state.add_block(100, [1u8; 32]);
+        state.add_block(101, [2u8; 32]);
+        state.add_block(102, [3u8; 32]);
+        state.add_block(103, [4u8; 32]);
+        state.add_block(104, [5u8; 32]);
+        state.add_block(105, [6u8; 32]);
+
+        assert_eq!(state.last_scanned_block, Some(105));
+        assert_eq!(state.next_block_to_scan(0), 106);
+
+        // Simulate reorg detected at block 104 - fork at block 102
+        // The new chain has block 103' with parent = block 102's hash
+        let fork_parent = [3u8; 32]; // block 102's hash
+        let fork_point = state.find_fork_point(&fork_parent);
+        assert_eq!(fork_point, Some(102));
+
+        // Rollback to fork point
+        state.rollback_to(102);
+
+        // After rollback:
+        // - last_scanned_block should be 102
+        // - next_block_to_scan should be 103 (to scan new chain)
+        // - expected_parent_hash should be block 102's hash
+        assert_eq!(state.last_scanned_block, Some(102));
+        assert_eq!(state.next_block_to_scan(0), 103);
+        assert_eq!(state.expected_parent_hash(), Some([3u8; 32]));
+
+        // Should have blocks 100, 101, 102 in recent_blocks
+        assert_eq!(state.recent_blocks.len(), 3);
+    }
+
+    /// Test that clear() completely resets the state.
+    #[test]
+    fn test_scan_state_clear_resets_everything() {
+        let mut state = ScanState::new();
+
+        state.add_block(100, [1u8; 32]);
+        state.add_block(101, [2u8; 32]);
+        state.add_block(102, [3u8; 32]);
+
+        state.clear();
+
+        assert_eq!(state.last_scanned_block, None);
+        assert!(state.recent_blocks.is_empty());
+        assert_eq!(state.expected_parent_hash(), None);
+        // After clear, should start from provided start_block
+        assert_eq!(state.next_block_to_scan(50), 50);
+    }
+
+    /// Test that rollback followed by clear is different from just rollback.
+    /// This documents the bug: calling clear() after rollback loses the fork point info.
+    #[test]
+    fn test_scan_state_rollback_vs_clear() {
+        let mut state1 = ScanState::new();
+        let mut state2 = ScanState::new();
+
+        // Both states scan the same blocks
+        for (s, h) in [(100, [1u8; 32]), (101, [2u8; 32]), (102, [3u8; 32])] {
+            state1.add_block(s, h);
+            state2.add_block(s, h);
+        }
+
+        // State 1: proper rollback only
+        state1.rollback_to(100);
+
+        // State 2: rollback then clear (the bug)
+        state2.rollback_to(100);
+        state2.clear();
+
+        // State 1 can continue from block 101
+        assert_eq!(state1.next_block_to_scan(0), 101);
+        assert_eq!(state1.expected_parent_hash(), Some([1u8; 32]));
+
+        // State 2 lost everything and will restart from start_block
+        assert_eq!(state2.next_block_to_scan(50), 50); // Uses start_block!
+        assert_eq!(state2.expected_parent_hash(), None);
+    }
 }

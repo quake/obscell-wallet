@@ -492,3 +492,67 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_scan_state_persistence() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Create a scan state with data
+        let mut state = ScanState::new();
+        state.add_block(100, [1u8; 32]);
+        state.add_block(101, [2u8; 32]);
+        state.add_block(102, [3u8; 32]);
+
+        // Save it
+        store.save_scan_state(&state).unwrap();
+
+        // Load it back
+        let loaded = store.load_scan_state().unwrap();
+
+        assert_eq!(loaded.last_scanned_block, Some(102));
+        assert_eq!(loaded.recent_blocks.len(), 3);
+        assert_eq!(loaded.next_block_to_scan(0), 103);
+        assert_eq!(loaded.expected_parent_hash(), Some([3u8; 32]));
+    }
+
+    #[test]
+    fn test_scan_state_empty_on_new_store() {
+        let temp_dir = tempdir().unwrap();
+        let store = Store::with_path(temp_dir.path().join("test.mdb")).unwrap();
+
+        // Load from empty store
+        let loaded = store.load_scan_state().unwrap();
+
+        assert_eq!(loaded.last_scanned_block, None);
+        assert!(loaded.recent_blocks.is_empty());
+        assert_eq!(loaded.next_block_to_scan(50), 50); // Should use start_block
+    }
+
+    #[test]
+    fn test_scan_state_survives_reopen() {
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.mdb");
+
+        // Create and save state
+        {
+            let store = Store::with_path(db_path.clone()).unwrap();
+            let mut state = ScanState::new();
+            state.add_block(200, [42u8; 32]);
+            store.save_scan_state(&state).unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let store = Store::with_path(db_path).unwrap();
+            let loaded = store.load_scan_state().unwrap();
+            assert_eq!(loaded.last_scanned_block, Some(200));
+            assert_eq!(loaded.next_block_to_scan(0), 201);
+        }
+    }
+}
