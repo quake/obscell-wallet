@@ -59,21 +59,21 @@ Options:
 
 | Key | Action |
 |-----|--------|
-| `a/t/s/r/h/g` | Jump to Accounts/Tokens/Send/Receive/History/Settings tab |
+| `a/t/s/h/g` | Jump to Accounts/Tokens/Send/History/Settings tab |
 | `Tab` / `Shift+Tab` | Switch between tabs |
 | `↑/↓` | Navigate lists |
 | `Enter` | Confirm/Select |
 | `Esc` | Cancel/Back |
+| `f` | Full rescan from specified height |
 | `q` | Quit |
 
 ### Tabs
 
-1. **Accounts**: Create, import, and switch between accounts
+1. **Accounts**: Create, import, and switch between accounts. Shows stealth address for receiving funds.
 2. **Tokens**: View CT balances, create new tokens, mint, and transfer
 3. **Send**: Send CKB or CT tokens to a stealth address
-4. **Receive**: Display your stealth address for receiving funds
-5. **History**: View transaction history
-6. **Settings**: Network selection and wallet management
+4. **History**: View transaction history
+5. **Settings**: Network selection and wallet management
 
 ## How It Works
 
