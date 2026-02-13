@@ -1,6 +1,8 @@
 [network]
 name = "testnet"
 rpc_url = "https://testnet-rich-indexer.ckbapp.dev"
+# Start scanning from block after contract deployment to skip irrelevant history
+scan_start_block = 20101200
 
 [contracts]
 stealth_lock_code_hash = "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6"
