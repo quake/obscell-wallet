@@ -2411,7 +2411,7 @@ impl App {
                 let mnemonic_str = self.wallet_setup_component.get_mnemonic();
                 let passphrase = self.wallet_setup_component.get_passphrase().to_string();
 
-                // Parse mnemonic first
+                // Parse mnemonic first (quick validation)
                 let mnemonic = match crate::domain::wallet::parse_mnemonic(&mnemonic_str) {
                     Ok(m) => m,
                     Err(e) => {
@@ -2421,72 +2421,60 @@ impl App {
                     }
                 };
 
-                match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                    Ok(mut meta) => {
-                        // Save to store
-                        if let Err(e) = self.store.save_wallet_meta(&meta) {
-                            self.wallet_setup_component.error_message =
-                                Some(format!("Failed to save wallet: {}", e));
-                            return Ok(());
-                        }
+                // Show progress spinner immediately
+                self.tx_progress_visible = true;
+                self.tx_progress_frame = 0;
+                self.draw_ui()?;
 
-                        // Automatically create the first account
-                        let account = match self.account_manager.create_account(
-                            "Account 1".to_string(),
-                            &mut meta,
-                            &passphrase,
-                        ) {
-                            Ok(acc) => acc,
+                // Clone for background thread
+                let action_tx = self.action_tx.clone();
+
+                std::thread::spawn(move || {
+                    // Create wallet meta (CPU-intensive due to Argon2)
+                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let _ = action_tx.send(Action::WalletError(format!("Failed to create wallet: {}", e)));
+                            return;
+                        }
+                    };
+
+                    // Derive keys for first account (CPU-intensive due to Argon2)
+                    let (view_key, spend_public_key, encrypted_spend_key) =
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                            Ok(keys) => keys,
                             Err(e) => {
-                                self.wallet_setup_component.error_message =
-                                    Some(format!("Failed to create account: {}", e));
-                                return Ok(());
+                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                return;
                             }
                         };
 
-                        // Update wallet meta after account creation (next_account_index changed)
-                        if let Err(e) = self.store.save_wallet_meta(&meta) {
-                            self.wallet_setup_component.error_message =
-                                Some(format!("Failed to save wallet: {}", e));
-                            return Ok(());
-                        }
+                    // Create account object
+                    let account = crate::domain::account::Account::new(
+                        0,
+                        "Account 1".to_string(),
+                        0,
+                        view_key,
+                        spend_public_key,
+                        encrypted_spend_key,
+                    );
 
-                        // Update app state
-                        self.wallet_meta = Some(meta);
+                    // Update meta account count
+                    meta.account_count = 1;
 
-                        // Update accounts list
-                        let accounts = self.account_manager.list_accounts().unwrap_or_default();
-                        self.accounts_component.set_accounts(accounts);
-                        self.accounts_component.select(0);
-                        self.account_manager.set_active_account(0).ok();
-
-                        // Update all components with the new account
-                        self.receive_component.set_account(Some(account.clone()));
-                        self.send_component.set_account(Some(account.clone()));
-                        self.history_component.set_account(Some(account.clone()));
-                        self.tokens_component.set_account(Some(account.clone()));
-                        if let Some(ref mut dev) = self.dev_component {
-                            dev.set_account(Some(account));
-                        }
-
-                        // Switch to normal mode and show Accounts tab
-                        self.mode = AppMode::Normal;
-                        self.switch_tab(Tab::Accounts);
-                        self.wallet_setup_component.reset();
-                        self.status_message = "Wallet created with Account 1!".to_string();
-                    }
-                    Err(e) => {
-                        self.wallet_setup_component.error_message =
-                            Some(format!("Failed to create wallet: {}", e));
-                    }
-                }
+                    let _ = action_tx.send(Action::WalletReady {
+                        wallet_meta: meta,
+                        account,
+                        status_message: "Wallet created with Account 1!".to_string(),
+                    });
+                });
             }
             Action::RestoreFromMnemonic => {
                 // Restore wallet from mnemonic
                 let mnemonic_str = self.wallet_setup_component.get_mnemonic();
                 let passphrase = self.wallet_setup_component.get_passphrase().to_string();
 
-                // Parse and validate mnemonic first
+                // Parse and validate mnemonic first (quick validation)
                 let mnemonic = match crate::domain::wallet::parse_mnemonic(&mnemonic_str) {
                     Ok(m) => m,
                     Err(e) => {
@@ -2496,142 +2484,166 @@ impl App {
                     }
                 };
 
-                match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                    Ok(mut meta) => {
-                        // Save to store
-                        if let Err(e) = self.store.save_wallet_meta(&meta) {
-                            self.wallet_setup_component.error_message =
-                                Some(format!("Failed to save wallet: {}", e));
-                            return Ok(());
-                        }
+                // Show progress spinner immediately
+                self.tx_progress_visible = true;
+                self.tx_progress_frame = 0;
+                self.draw_ui()?;
 
-                        // Automatically create the first account
-                        let account = match self.account_manager.create_account(
-                            "Account 1".to_string(),
-                            &mut meta,
-                            &passphrase,
-                        ) {
-                            Ok(acc) => acc,
+                // Clone for background thread
+                let action_tx = self.action_tx.clone();
+
+                std::thread::spawn(move || {
+                    // Create wallet meta (CPU-intensive due to Argon2)
+                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let _ = action_tx.send(Action::WalletError(format!("Failed to restore wallet: {}", e)));
+                            return;
+                        }
+                    };
+
+                    // Derive keys for first account (CPU-intensive due to Argon2)
+                    let (view_key, spend_public_key, encrypted_spend_key) =
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                            Ok(keys) => keys,
                             Err(e) => {
-                                self.wallet_setup_component.error_message =
-                                    Some(format!("Failed to create account: {}", e));
-                                return Ok(());
+                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                return;
                             }
                         };
 
-                        // Update wallet meta after account creation (next_account_index changed)
-                        if let Err(e) = self.store.save_wallet_meta(&meta) {
-                            self.wallet_setup_component.error_message =
-                                Some(format!("Failed to save wallet: {}", e));
-                            return Ok(());
-                        }
+                    // Create account object
+                    let account = crate::domain::account::Account::new(
+                        0,
+                        "Account 1".to_string(),
+                        0,
+                        view_key,
+                        spend_public_key,
+                        encrypted_spend_key,
+                    );
 
-                        // Update app state
-                        self.wallet_meta = Some(meta);
+                    // Update meta account count
+                    meta.account_count = 1;
 
-                        // Update accounts list
-                        let accounts = self.account_manager.list_accounts().unwrap_or_default();
-                        self.accounts_component.set_accounts(accounts);
-                        self.accounts_component.select(0);
-                        self.account_manager.set_active_account(0).ok();
-
-                        // Update all components with the new account
-                        self.receive_component.set_account(Some(account.clone()));
-                        self.send_component.set_account(Some(account.clone()));
-                        self.history_component.set_account(Some(account.clone()));
-                        self.tokens_component.set_account(Some(account.clone()));
-                        if let Some(ref mut dev) = self.dev_component {
-                            dev.set_account(Some(account));
-                        }
-
-                        // Switch to normal mode and show Accounts tab
-                        self.mode = AppMode::Normal;
-                        self.switch_tab(Tab::Accounts);
-                        self.wallet_setup_component.reset();
-                        self.status_message = "Wallet restored with Account 1!".to_string();
-                    }
-                    Err(e) => {
-                        self.wallet_setup_component.error_message =
-                            Some(format!("Failed to restore wallet: {}", e));
-                    }
-                }
+                    let _ = action_tx.send(Action::WalletReady {
+                        wallet_meta: meta,
+                        account,
+                        status_message: "Wallet restored with Account 1!".to_string(),
+                    });
+                });
             }
             Action::RestoreFromBackup => {
                 // Restore wallet from backup string
                 let backup_string = self.wallet_setup_component.get_backup_input().to_string();
                 let passphrase = self.wallet_setup_component.get_passphrase().to_string();
 
-                // Import returns (mnemonic, account_count)
-                match crate::domain::wallet::import_wallet(&backup_string, &passphrase) {
-                    Ok((mnemonic, _account_count)) => {
-                        // Create wallet meta from the imported mnemonic
-                        match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                            Ok(mut meta) => {
-                                // Save to store
-                                if let Err(e) = self.store.save_wallet_meta(&meta) {
-                                    self.wallet_setup_component.error_message =
-                                        Some(format!("Failed to save wallet: {}", e));
-                                    return Ok(());
-                                }
+                // Show progress spinner immediately
+                self.tx_progress_visible = true;
+                self.tx_progress_frame = 0;
+                self.draw_ui()?;
 
-                                // Automatically create the first account
-                                let account = match self.account_manager.create_account(
-                                    "Account 1".to_string(),
-                                    &mut meta,
-                                    &passphrase,
-                                ) {
-                                    Ok(acc) => acc,
-                                    Err(e) => {
-                                        self.wallet_setup_component.error_message =
-                                            Some(format!("Failed to create account: {}", e));
-                                        return Ok(());
-                                    }
-                                };
+                // Clone for background thread
+                let action_tx = self.action_tx.clone();
 
-                                // Update wallet meta after account creation (next_account_index changed)
-                                if let Err(e) = self.store.save_wallet_meta(&meta) {
-                                    self.wallet_setup_component.error_message =
-                                        Some(format!("Failed to save wallet: {}", e));
-                                    return Ok(());
-                                }
-
-                                // Update app state
-                                self.wallet_meta = Some(meta);
-
-                                // Update accounts list
-                                let accounts =
-                                    self.account_manager.list_accounts().unwrap_or_default();
-                                self.accounts_component.set_accounts(accounts);
-                                self.accounts_component.select(0);
-                                self.account_manager.set_active_account(0).ok();
-
-                                // Update all components with the new account
-                                self.receive_component.set_account(Some(account.clone()));
-                                self.send_component.set_account(Some(account.clone()));
-                                self.history_component.set_account(Some(account.clone()));
-                                self.tokens_component.set_account(Some(account.clone()));
-                                if let Some(ref mut dev) = self.dev_component {
-                                    dev.set_account(Some(account));
-                                }
-
-                                // Switch to normal mode and show Accounts tab
-                                self.mode = AppMode::Normal;
-                                self.switch_tab(Tab::Accounts);
-                                self.wallet_setup_component.reset();
-                                self.status_message =
-                                    "Wallet restored from backup with Account 1!".to_string();
-                            }
-                            Err(e) => {
-                                self.wallet_setup_component.error_message =
-                                    Some(format!("Failed to create wallet from import: {}", e));
-                            }
+                std::thread::spawn(move || {
+                    // Import wallet (CPU-intensive due to Argon2 decryption)
+                    let mnemonic = match crate::domain::wallet::import_wallet(&backup_string, &passphrase) {
+                        Ok((m, _account_count)) => m,
+                        Err(e) => {
+                            let _ = action_tx.send(Action::WalletError(format!("Failed to restore from backup: {}", e)));
+                            return;
                         }
-                    }
-                    Err(e) => {
-                        self.wallet_setup_component.error_message =
-                            Some(format!("Failed to restore from backup: {}", e));
-                    }
+                    };
+
+                    // Create wallet meta (CPU-intensive due to Argon2)
+                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let _ = action_tx.send(Action::WalletError(format!("Failed to create wallet from import: {}", e)));
+                            return;
+                        }
+                    };
+
+                    // Derive keys for first account (CPU-intensive due to Argon2)
+                    let (view_key, spend_public_key, encrypted_spend_key) =
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                            Ok(keys) => keys,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                return;
+                            }
+                        };
+
+                    // Create account object
+                    let account = crate::domain::account::Account::new(
+                        0,
+                        "Account 1".to_string(),
+                        0,
+                        view_key,
+                        spend_public_key,
+                        encrypted_spend_key,
+                    );
+
+                    // Update meta account count
+                    meta.account_count = 1;
+
+                    let _ = action_tx.send(Action::WalletReady {
+                        wallet_meta: meta,
+                        account,
+                        status_message: "Wallet restored from backup with Account 1!".to_string(),
+                    });
+                });
+            }
+            Action::WalletReady {
+                ref wallet_meta,
+                ref account,
+                ref status_message,
+            } => {
+                // Hide spinner
+                self.tx_progress_visible = false;
+
+                // Save wallet meta to store
+                if let Err(e) = self.store.save_wallet_meta(wallet_meta) {
+                    self.wallet_setup_component.error_message =
+                        Some(format!("Failed to save wallet: {}", e));
+                    return Ok(());
                 }
+
+                // Save account to store
+                if let Err(e) = self.store.save_account(account) {
+                    self.wallet_setup_component.error_message =
+                        Some(format!("Failed to save account: {}", e));
+                    return Ok(());
+                }
+
+                // Update app state
+                self.wallet_meta = Some(wallet_meta.clone());
+
+                // Update accounts list
+                let accounts = self.account_manager.list_accounts().unwrap_or_default();
+                self.accounts_component.set_accounts(accounts);
+                self.accounts_component.select(0);
+                self.account_manager.set_active_account(0).ok();
+
+                // Update all components with the new account
+                self.receive_component.set_account(Some(account.clone()));
+                self.send_component.set_account(Some(account.clone()));
+                self.history_component.set_account(Some(account.clone()));
+                self.tokens_component.set_account(Some(account.clone()));
+                if let Some(ref mut dev) = self.dev_component {
+                    dev.set_account(Some(account.clone()));
+                }
+
+                // Switch to normal mode and show Accounts tab
+                self.mode = AppMode::Normal;
+                self.switch_tab(Tab::Accounts);
+                self.wallet_setup_component.reset();
+                self.status_message = status_message.clone();
+            }
+            Action::WalletError(ref msg) => {
+                // Hide spinner and show error
+                self.tx_progress_visible = false;
+                self.wallet_setup_component.error_message = Some(msg.clone());
             }
             Action::WalletSetupComplete => {
                 // Switch to normal mode (in case it's manually triggered)

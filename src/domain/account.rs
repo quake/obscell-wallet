@@ -14,7 +14,7 @@ use super::wallet::WalletMeta;
 ///
 /// The view_key and spend_public_key are stored in plaintext for scanning without password.
 /// The spend_key is encrypted and requires passphrase to decrypt for signing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Account {
     pub id: u64,
     pub name: String,
@@ -31,7 +31,7 @@ pub struct Account {
     pub ct_tokens: Vec<CtBalance>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CtBalance {
     pub token_type_hash: [u8; 32],
     pub amount: u64,

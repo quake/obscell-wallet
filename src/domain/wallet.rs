@@ -24,7 +24,7 @@ const EXPORT_VERSION: u8 = 1;
 const EXPORT_PREFIX: &str = "obscell";
 
 /// Wallet metadata stored in database.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WalletMeta {
     /// Encrypted 64-byte seed (using passphrase).
     pub encrypted_seed: Vec<u8>,

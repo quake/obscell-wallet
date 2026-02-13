@@ -119,6 +119,16 @@ pub enum Action {
         derivation_index: u32,
     },
 
+    // Wallet creation (background thread results)
+    /// Wallet and first account created successfully
+    WalletReady {
+        wallet_meta: crate::domain::wallet::WalletMeta,
+        account: crate::domain::account::Account,
+        status_message: String,
+    },
+    /// Wallet creation failed with error message
+    WalletError(String),
+
     // Scrolling
     ScrollUp,
     ScrollDown,
