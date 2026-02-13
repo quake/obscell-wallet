@@ -41,6 +41,7 @@ use crate::{
         block_scanner::BlockScanner,
         devnet::DevNet,
         faucet::Faucet,
+        rpc::RpcClient,
         store::{SELECTED_NETWORK_KEY, Store},
     },
     tui::{Event, Tui},
@@ -167,6 +168,9 @@ pub struct App {
     pub passphrase_popup_purpose: Option<crate::action::PassphrasePurpose>,
     pub passphrase_popup_input: String,
     pub passphrase_popup_error: Option<String>,
+    // Transaction progress spinner state
+    pub tx_progress_visible: bool,
+    pub tx_progress_frame: usize,
 }
 
 impl App {
@@ -280,6 +284,9 @@ impl App {
             passphrase_popup_purpose: None,
             passphrase_popup_input: String::new(),
             passphrase_popup_error: None,
+            // Transaction progress spinner
+            tx_progress_visible: false,
+            tx_progress_frame: 0,
         })
     }
 
@@ -326,7 +333,7 @@ impl App {
                 self.scanned_block_number = Some(current_block);
                 // Only update tip if it's higher (avoid flickering when auto-mine
                 // produces new blocks during a scan)
-                if self.tip_block_number.map_or(true, |t| tip_block > t) {
+                if self.tip_block_number.is_none_or(|t| tip_block > t) {
                     self.tip_block_number = Some(tip_block);
                 }
                 self.status_message = "Scanning...".to_string();
@@ -807,6 +814,11 @@ impl App {
                     .unwrap_or_default()
                     .as_secs();
 
+                // Update spinner animation frame
+                if self.tx_progress_visible {
+                    self.tx_progress_frame = (self.tx_progress_frame + 1) % 10;
+                }
+
                 // Check for background scan updates
                 let mut updates = Vec::new();
                 if let Some(ref mut rx) = self.scan_update_rx {
@@ -914,6 +926,21 @@ impl App {
                         self.passphrase_popup_error = None;
                     }
                 }
+            }
+            Action::ShowTxProgress => {
+                self.tx_progress_visible = true;
+                self.tx_progress_frame = 0;
+            }
+            Action::HideTxProgress => {
+                self.tx_progress_visible = false;
+            }
+            Action::TxSuccess(ref msg) => {
+                self.tx_progress_visible = false;
+                self.status_message = msg.clone();
+            }
+            Action::TxError(ref msg) => {
+                self.tx_progress_visible = false;
+                self.status_message = format!("Error: {}", msg);
             }
             Action::Quit => {
                 self.should_quit = true;
@@ -1141,70 +1168,9 @@ impl App {
                         return Ok(());
                     }
 
-                    // Build the transaction based on address type
-                    let builder = StealthTxBuilder::new(self.config.clone());
-                    let builder = match address_type {
-                        AddressType::Stealth => {
-                            // Parse the recipient stealth address
-                            let stealth_addr = match parse_stealth_address(&recipient) {
-                                Ok(addr) => addr,
-                                Err(e) => {
-                                    self.send_component.error_message =
-                                        Some(format!("Invalid stealth address: {}", e));
-                                    self.status_message =
-                                        "Send failed: invalid address".to_string();
-                                    return Ok(());
-                                }
-                            };
-                            builder.add_output(stealth_addr, amount_shannon)
-                        }
-                        AddressType::Ckb => {
-                            // Use the CKB address directly
-                            match builder.add_ckb_output_with_capacity(&recipient, amount_shannon) {
-                                Ok(b) => b,
-                                Err(e) => {
-                                    self.send_component.error_message =
-                                        Some(format!("Invalid CKB address: {}", e));
-                                    self.status_message =
-                                        "Send failed: invalid address".to_string();
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        AddressType::Unknown => {
-                            self.send_component.error_message =
-                                Some("Invalid recipient address format".to_string());
-                            self.status_message = "Send failed: invalid address".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    let builder = match builder.select_inputs(&available_cells, amount_shannon) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Input selection failed: {}", e));
-                            self.status_message = "Send failed: insufficient funds".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Get the selected input cells for signing
-                    let input_cells = builder.inputs.clone();
-
-                    let built_tx = match builder.build(account) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Build failed: {}", e));
-                            self.status_message = "Send failed: build error".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Sign the transaction using provided passphrase
+                    // Validate passphrase and get spend key (quick operation)
                     let wallet_meta = match &self.wallet_meta {
-                        Some(meta) => meta,
+                        Some(meta) => meta.clone(),
                         None => {
                             self.passphrase_popup_error =
                                 Some("Wallet not initialized".to_string());
@@ -1215,7 +1181,7 @@ impl App {
                         }
                     };
 
-                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
                         Ok(key) => key,
                         Err(e) => {
                             self.passphrase_popup_error =
@@ -1237,54 +1203,97 @@ impl App {
                         }
                     };
 
-                    let signed_tx = match StealthTxBuilder::sign(
-                        built_tx.clone(),
-                        account,
-                        &spend_key,
-                        &input_cells,
-                    ) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Signing failed: {}", e));
-                            self.status_message = "Send failed: signing error".to_string();
-                            return Ok(());
-                        }
-                    };
+                    // Show progress spinner and start background transaction
+                    self.action_tx.send(Action::ShowTxProgress)?;
 
-                    // Submit the transaction
-                    match self.scanner.rpc().send_transaction(signed_tx) {
-                        Ok(tx_hash) => {
-                            let amount_ckb = amount_shannon as f64 / 100_000_000.0;
-                            let tx_hash_hex = hex::encode(tx_hash.0);
-                            self.send_component.success_message =
-                                Some(format!("Sent {:.8} CKB! Tx: 0x{}", amount_ckb, tx_hash_hex));
-                            self.status_message = format!(
-                                "Sent {:.8} CKB (tx: 0x{}...{})",
-                                amount_ckb,
-                                &tx_hash_hex[..8],
-                                &tx_hash_hex[56..]
-                            );
+                    // Clone values for the background thread
+                    let config = self.config.clone();
+                    let account = account.clone();
+                    let action_tx = self.action_tx.clone();
 
-                            // Note: Don't remove spent cells here - let BlockScanner handle it.
-                            // Removing cells before scan causes incorrect delta calculation
-                            // (the tx would appear as "receive" instead of "send").
+                    std::thread::spawn(move || {
+                        // Build the transaction based on address type
+                        let builder = StealthTxBuilder::new(config.clone());
+                        let builder = match address_type {
+                            AddressType::Stealth => {
+                                match parse_stealth_address(&recipient) {
+                                    Ok(stealth_addr) => builder.add_output(stealth_addr, amount_shannon),
+                                    Err(e) => {
+                                        let _ = action_tx.send(Action::TxError(format!("Invalid stealth address: {}", e)));
+                                        return;
+                                    }
+                                }
+                            }
+                            AddressType::Ckb => {
+                                match builder.add_ckb_output_with_capacity(&recipient, amount_shannon) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        let _ = action_tx.send(Action::TxError(format!("Invalid CKB address: {}", e)));
+                                        return;
+                                    }
+                                }
+                            }
+                            AddressType::Unknown => {
+                                let _ = action_tx.send(Action::TxError("Invalid recipient address format".to_string()));
+                                return;
+                            }
+                        };
 
-                            // Clear send form and passphrase
-                            self.send_component.recipient.clear();
-                            self.send_component.amount.clear();
-                            self.send_component.focused_field =
-                                crate::components::send::SendField::Recipient;
-                            self.send_component.is_editing = false;
-                            self.send_component.error_message = None;
-                            // Note: success_message is kept to show the tx hash to user
+                        let builder = match builder.select_inputs(&available_cells, amount_shannon) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Input selection failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        let input_cells = builder.inputs.clone();
+
+                        let built_tx = match builder.build(&account) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Build failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        let signed_tx = match StealthTxBuilder::sign(
+                            built_tx.clone(),
+                            &account,
+                            &spend_key,
+                            &input_cells,
+                        ) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Signing failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        // Submit the transaction
+                        let rpc = RpcClient::new(config);
+                        match rpc.send_transaction(signed_tx) {
+                            Ok(tx_hash) => {
+                                let amount_ckb = amount_shannon as f64 / 100_000_000.0;
+                                let tx_hash_hex = hex::encode(tx_hash.0);
+                                let _ = action_tx.send(Action::TxSuccess(format!(
+                                    "Sent {:.8} CKB! Tx: 0x{}",
+                                    amount_ckb, tx_hash_hex
+                                )));
+                            }
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
+                            }
                         }
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Submission failed: {}", e));
-                            self.status_message = "Send failed: RPC error".to_string();
-                        }
-                    }
+                    });
+
+                    // Clear send form (success message will be shown via TxSuccess action)
+                    self.send_component.recipient.clear();
+                    self.send_component.amount.clear();
+                    self.send_component.focused_field =
+                        crate::components::send::SendField::Recipient;
+                    self.send_component.is_editing = false;
+                    self.send_component.error_message = None;
                 } else {
                     self.send_component.error_message =
                         Some("No account selected or invalid amount".to_string());
@@ -1328,7 +1337,7 @@ impl App {
                         return Ok(());
                     }
 
-                    // Parse the recipient stealth address
+                    // Parse the recipient stealth address (quick validation)
                     let stealth_addr = match parse_stealth_address(&recipient) {
                         Ok(addr) => addr,
                         Err(e) => {
@@ -1372,7 +1381,6 @@ impl App {
                     }
 
                     // Get stealth cells (CKB) to use as funding for the transfer
-                    // CT transfers may need extra capacity for change outputs
                     let stealth_cells = match self.store.get_stealth_cells(account.id) {
                         Ok(cells) => cells,
                         Err(e) => {
@@ -1385,59 +1393,18 @@ impl App {
 
                     // Find a funding cell with enough capacity (255 CKB + fees)
                     const MIN_FUNDING_CAPACITY: u64 = 256_00000000; // 256 CKB
-                    let funding_cell = stealth_cells
+                    let funding_input = stealth_cells
                         .iter()
-                        .find(|c| c.capacity >= MIN_FUNDING_CAPACITY);
-
-                    // Build the CT transaction
-                    let mut builder = CtTxBuilder::new(
-                        self.config.clone(),
-                        token_balance.type_script_args.clone(),
-                    );
-
-                    // Add funding cell if available
-                    let funding_input = if let Some(fc) = funding_cell {
-                        let funding = FundingCell {
+                        .find(|c| c.capacity >= MIN_FUNDING_CAPACITY)
+                        .map(|fc| FundingCell {
                             out_point: fc.out_point.clone(),
                             capacity: fc.capacity,
                             lock_script_args: fc.stealth_script_args.clone(),
-                        };
-                        builder = builder.funding_cell(funding.clone());
-                        Some(funding)
-                    } else {
-                        None
-                    };
+                        });
 
-                    let builder = match builder
-                        .add_output(stealth_addr, amount_value)
-                        .select_inputs(&matching_ct_cells, amount_value)
-                    {
-                        Ok(b) => b,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Input selection failed: {}", e));
-                            self.status_message =
-                                "CT transfer failed: insufficient funds".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Get the selected input cells for signing
-                    let input_cells = builder.inputs.clone();
-
-                    let built_tx = match builder.build(account) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Build failed: {}", e));
-                            self.status_message = "CT transfer failed: build error".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Sign the transaction using provided passphrase
+                    // Validate passphrase and get spend key (quick operation)
                     let wallet_meta = match self.wallet_meta.as_ref() {
-                        Some(meta) => meta,
+                        Some(meta) => meta.clone(),
                         None => {
                             self.passphrase_popup_error =
                                 Some("Wallet not initialized".to_string());
@@ -1446,7 +1413,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.passphrase_popup_error =
@@ -1457,65 +1424,91 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
-                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
-
-                    let funding_lock_args = funding_input
-                        .as_ref()
-                        .map(|f| f.lock_script_args.as_slice());
-                    let signed_tx = match CtTxBuilder::sign(
-                        built_tx.clone(),
-                        account,
-                        &spend_key,
-                        &input_cells,
-                        funding_lock_args,
-                    ) {
-                        Ok(tx) => tx,
+                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                        Ok(key) => key,
                         Err(e) => {
                             self.tokens_component.error_message =
-                                Some(format!("Signing failed: {}", e));
-                            self.status_message = "CT transfer failed: signing error".to_string();
+                                Some(format!("Invalid spend key: {}", e));
+                            self.status_message = "CT transfer failed: key error".to_string();
                             return Ok(());
                         }
                     };
 
-                    // Submit the transaction
-                    match self.scanner.rpc().send_transaction(signed_tx) {
-                        Ok(tx_hash) => {
-                            self.tokens_component.success_message = Some(format!(
-                                "CT Transfer sent! Hash: {}...{}",
-                                &hex::encode(&tx_hash.0[..4]),
-                                &hex::encode(&tx_hash.0[28..])
-                            ));
-                            self.status_message = format!("Transferred {} CT tokens", amount_value);
+                    // Show progress spinner and start background transaction
+                    self.action_tx.send(Action::ShowTxProgress)?;
 
-                            // Note: Don't remove spent cells here - let BlockScanner handle it.
-                            // Removing cells before scan causes incorrect delta calculation.
+                    // Clone values for the background thread
+                    let config = self.config.clone();
+                    let account = account.clone();
+                    let action_tx = self.action_tx.clone();
+                    let type_script_args = token_balance.type_script_args.clone();
 
-                            // Refresh CT balances
-                            if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                                let ct_info_cells =
-                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                                let balances = aggregate_ct_balances_with_info(
-                                    &ct_cells,
-                                    &ct_info_cells,
-                                    &self.config,
-                                );
-                                self.tokens_component.set_balances(balances);
-                                self.tokens_component.set_ct_cells(ct_cells);
+                    std::thread::spawn(move || {
+                        // Build the CT transaction
+                        let mut builder = CtTxBuilder::new(config.clone(), type_script_args);
+
+                        // Add funding cell if available
+                        if let Some(ref funding) = funding_input {
+                            builder = builder.funding_cell(funding.clone());
+                        }
+
+                        let builder = match builder
+                            .add_output(stealth_addr, amount_value)
+                            .select_inputs(&matching_ct_cells, amount_value)
+                        {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Input selection failed: {}", e)));
+                                return;
                             }
+                        };
 
-                            // Clear transfer form
-                            self.tokens_component.clear_transfer();
-                            self.tokens_component.mode =
-                                crate::components::tokens::TokensMode::List;
+                        let input_cells = builder.inputs.clone();
+
+                        let built_tx = match builder.build(&account) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Build failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        let funding_lock_args = funding_input
+                            .as_ref()
+                            .map(|f| f.lock_script_args.clone());
+                        let signed_tx = match CtTxBuilder::sign(
+                            built_tx.clone(),
+                            &account,
+                            &spend_key,
+                            &input_cells,
+                            funding_lock_args.as_deref(),
+                        ) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Signing failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        // Submit the transaction
+                        let rpc = RpcClient::new(config);
+                        match rpc.send_transaction(signed_tx) {
+                            Ok(tx_hash) => {
+                                let _ = action_tx.send(Action::TxSuccess(format!(
+                                    "CT Transfer sent! Hash: {}...{}",
+                                    &hex::encode(&tx_hash.0[..4]),
+                                    &hex::encode(&tx_hash.0[28..])
+                                )));
+                            }
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
+                            }
                         }
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Submission failed: {}", e));
-                            self.status_message = "CT transfer failed: RPC error".to_string();
-                        }
-                    }
+                    });
+
+                    // Clear transfer form (success will be shown via TxSuccess action)
+                    self.tokens_component.clear_transfer();
+                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
                 } else {
                     self.tokens_component.error_message = Some(
                         "No account selected, invalid amount, or no token selected".to_string(),
@@ -1536,7 +1529,7 @@ impl App {
                     amount,
                     selected_balance,
                 ) {
-                    // Parse the recipient stealth address
+                    // Parse the recipient stealth address (quick validation)
                     let stealth_addr = match parse_stealth_address(&recipient) {
                         Ok(addr) => addr,
                         Err(e) => {
@@ -1584,8 +1577,7 @@ impl App {
                     };
 
                     // Find a suitable funding cell from the account's stealth cells
-                    // Need at least 255 CKB (MIN_CT_CELL_CAPACITY) + fees
-                    let min_funding_capacity = 256_00000000u64; // 256 CKB (255 for CT cell + 1 for fees)
+                    let min_funding_capacity = 256_00000000u64; // 256 CKB
                     let stealth_cells = match self.store.get_stealth_cells(account.id) {
                         Ok(cells) => cells,
                         Err(e) => {
@@ -1596,11 +1588,10 @@ impl App {
                         }
                     };
 
-                    let funding_cell = stealth_cells
+                    let funding_cell = match stealth_cells
                         .iter()
-                        .find(|c| c.capacity >= min_funding_capacity);
-
-                    let funding_cell = match funding_cell {
+                        .find(|c| c.capacity >= min_funding_capacity)
+                    {
                         Some(cell) => cell,
                         None => {
                             self.tokens_component.error_message = Some(format!(
@@ -1619,28 +1610,9 @@ impl App {
                         lock_script_args: funding_cell.stealth_script_args.clone(),
                     };
 
-                    let mint_params = MintParams {
-                        ct_info_cell: ct_info_input,
-                        token_id: token_balance.token_id,
-                        mint_amount: amount_value,
-                        recipient_stealth_address: stealth_addr.clone(),
-                        funding_cell: funding_input.clone(),
-                    };
-
-                    // Build the mint transaction
-                    let built_tx = match build_mint_transaction(&self.config, mint_params) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Mint build failed: {}", e));
-                            self.status_message = "CT mint failed: build error".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Sign the transaction using provided passphrase
+                    // Validate passphrase and get spend key (quick operation)
                     let wallet_meta = match self.wallet_meta.as_ref() {
-                        Some(meta) => meta,
+                        Some(meta) => meta.clone(),
                         None => {
                             self.passphrase_popup_error =
                                 Some("Wallet not initialized".to_string());
@@ -1649,7 +1621,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.passphrase_popup_error =
@@ -1660,59 +1632,86 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
-                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
-
-                    let signed_tx = match sign_mint_transaction(
-                        built_tx,
-                        account,
-                        &spend_key,
-                        &ct_info_cell.lock_script_args,
-                        &funding_input.lock_script_args,
-                    ) {
-                        Ok(tx) => tx,
+                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                        Ok(key) => key,
                         Err(e) => {
                             self.tokens_component.error_message =
-                                Some(format!("Mint signing failed: {}", e));
-                            self.status_message = "CT mint failed: signing error".to_string();
+                                Some(format!("Invalid spend key: {}", e));
+                            self.status_message = "CT mint failed: key error".to_string();
                             return Ok(());
                         }
                     };
 
-                    // Submit the signed transaction
-                    match self.scanner.rpc().send_transaction(signed_tx) {
-                        Ok(tx_hash) => {
-                            self.tokens_component.success_message = Some(format!(
-                                "CT Mint sent! Hash: {}...{}",
-                                &hex::encode(&tx_hash.0[..4]),
-                                &hex::encode(&tx_hash.0[28..])
-                            ));
-                            self.status_message = format!("Minted {} CT tokens", amount_value);
+                    // Show progress spinner and start background transaction
+                    self.action_tx.send(Action::ShowTxProgress)?;
 
-                            // Note: Don't remove spent cells here - let BlockScanner handle it.
-                            // Removing cells before scan causes incorrect delta calculation.
+                    // Clone values for the background thread
+                    let config = self.config.clone();
+                    let account = account.clone();
+                    let action_tx = self.action_tx.clone();
+                    let ct_info_lock_args = ct_info_cell.lock_script_args.clone();
+                    let token_id = token_balance.token_id;
 
-                            // Clear mint form
-                            self.tokens_component.clear_mint();
-                            self.tokens_component.mode =
-                                crate::components::tokens::TokensMode::List;
+                    std::thread::spawn(move || {
+                        let mint_params = MintParams {
+                            ct_info_cell: ct_info_input,
+                            token_id,
+                            mint_amount: amount_value,
+                            recipient_stealth_address: stealth_addr,
+                            funding_cell: funding_input.clone(),
+                        };
+
+                        // Build the mint transaction
+                        let built_tx = match build_mint_transaction(&config, mint_params) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Mint build failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        let signed_tx = match sign_mint_transaction(
+                            built_tx,
+                            &account,
+                            &spend_key,
+                            &ct_info_lock_args,
+                            &funding_input.lock_script_args,
+                        ) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Mint signing failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        // Submit the signed transaction
+                        let rpc = RpcClient::new(config);
+                        match rpc.send_transaction(signed_tx) {
+                            Ok(tx_hash) => {
+                                let _ = action_tx.send(Action::TxSuccess(format!(
+                                    "CT Mint sent! Hash: {}...{}",
+                                    &hex::encode(&tx_hash.0[..4]),
+                                    &hex::encode(&tx_hash.0[28..])
+                                )));
+                            }
+                            Err(e) => {
+                                // Enhanced error logging for troubleshooting
+                                tracing::error!(
+                                    "CT mint submission failed: {}\n  \
+                                     Hint: If this is 'InvalidRangeProof' (error 9), possible causes:\n  \
+                                     - Contract version mismatch (redeploy contracts or check config)\n  \
+                                     - Bulletproofs library version mismatch\n  \
+                                     Run with RUST_LOG=debug for detailed diagnostics.",
+                                    e
+                                );
+                                let _ = action_tx.send(Action::TxError(format!("Mint submission failed: {}", e)));
+                            }
                         }
-                        Err(e) => {
-                            // Enhanced error logging for troubleshooting
-                            let error_str = format!("{}", e);
-                            tracing::error!(
-                                "CT mint submission failed: {}\n  \
-                                 Hint: If this is 'InvalidRangeProof' (error 9), possible causes:\n  \
-                                 - Contract version mismatch (redeploy contracts or check config)\n  \
-                                 - Bulletproofs library version mismatch\n  \
-                                 Run with RUST_LOG=debug for detailed diagnostics.",
-                                error_str
-                            );
-                            self.tokens_component.error_message =
-                                Some(format!("Mint submission failed: {}", e));
-                            self.status_message = "CT mint failed: RPC error".to_string();
-                        }
-                    }
+                    });
+
+                    // Clear mint form (success will be shown via TxSuccess action)
+                    self.tokens_component.clear_mint();
+                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
                 } else {
                     self.tokens_component.error_message = Some(
                         "No account selected, invalid amount, or no token selected".to_string(),
@@ -1754,9 +1753,7 @@ impl App {
 
                     // Need at least 230 CKB for ct-info cell
                     let min_capacity = 230_00000000u64;
-                    let funding_cell = stealth_cells.iter().find(|c| c.capacity >= min_capacity);
-
-                    let funding_cell = match funding_cell {
+                    let funding_cell = match stealth_cells.iter().find(|c| c.capacity >= min_capacity) {
                         Some(cell) => cell,
                         None => {
                             self.tokens_component.error_message = Some(format!(
@@ -1768,13 +1765,6 @@ impl App {
                         }
                     };
 
-                    // Build genesis params
-                    let genesis_params = GenesisParams {
-                        supply_cap,
-                        flags: MINTABLE,
-                        issuer_stealth_address: stealth_address,
-                    };
-
                     // Build funding cell input
                     let funding_input = FundingCell {
                         out_point: funding_cell.out_point.clone(),
@@ -1782,27 +1772,9 @@ impl App {
                         lock_script_args: funding_cell.stealth_script_args.clone(),
                     };
 
-                    // Build the genesis transaction
-                    let built_tx = match build_genesis_transaction(
-                        &self.config,
-                        genesis_params,
-                        funding_input,
-                    ) {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Genesis build failed: {}", e));
-                            self.status_message = "Genesis failed: build error".to_string();
-                            return Ok(());
-                        }
-                    };
-
-                    // Remember the token ID and ct-info lock args for later use
-                    let token_id = built_tx.token_id;
-
-                    // Sign the transaction using provided passphrase
+                    // Validate passphrase and get spend key (quick operation)
                     let wallet_meta = match self.wallet_meta.as_ref() {
-                        Some(meta) => meta,
+                        Some(meta) => meta.clone(),
                         None => {
                             self.passphrase_popup_error =
                                 Some("Wallet not initialized".to_string());
@@ -1811,7 +1783,7 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
+                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.passphrase_popup_error =
@@ -1822,68 +1794,81 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key = secp256k1::SecretKey::from_slice(&*spend_key_bytes)
-                        .map_err(|e| color_eyre::eyre::eyre!("Invalid spend key: {}", e))?;
-
-                    let signed_tx = match sign_genesis_transaction(
-                        built_tx,
-                        account,
-                        &spend_key,
-                        &funding_cell.stealth_script_args,
-                    ) {
-                        Ok(tx) => tx,
+                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                        Ok(key) => key,
                         Err(e) => {
                             self.tokens_component.error_message =
-                                Some(format!("Genesis signing failed: {}", e));
-                            self.status_message = "Genesis failed: signing error".to_string();
+                                Some(format!("Invalid spend key: {}", e));
+                            self.status_message = "Genesis failed: key error".to_string();
                             return Ok(());
                         }
                     };
 
-                    // Submit the transaction
-                    match self.scanner.rpc().send_transaction(signed_tx) {
-                        Ok(tx_hash) => {
-                            self.tokens_component.success_message = Some(format!(
-                                "Token created! Hash: {}...{}\nToken ID: {}...{}",
-                                &hex::encode(&tx_hash.0[..4]),
-                                &hex::encode(&tx_hash.0[28..]),
-                                &hex::encode(&token_id[..4]),
-                                &hex::encode(&token_id[28..])
-                            ));
-                            self.status_message = format!(
-                                "Created new token {}...{}",
-                                &hex::encode(&token_id[..4]),
-                                &hex::encode(&token_id[28..])
-                            );
+                    // Show progress spinner and start background transaction
+                    self.action_tx.send(Action::ShowTxProgress)?;
 
-                            // Note: Don't remove spent cells here - let BlockScanner handle it.
-                            // Removing cells before scan causes incorrect delta calculation.
-                            // The new ct-info cell will be detected by incremental scan automatically.
+                    // Clone values for the background thread
+                    let config = self.config.clone();
+                    let account = account.clone();
+                    let action_tx = self.action_tx.clone();
 
-                            // Refresh CT balances to show updated state
-                            if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
-                                let ct_info_cells =
-                                    self.store.get_ct_info_cells(account.id).unwrap_or_default();
-                                let balances = aggregate_ct_balances_with_info(
-                                    &ct_cells,
-                                    &ct_info_cells,
-                                    &self.config,
-                                );
-                                self.tokens_component.set_balances(balances);
-                                self.tokens_component.set_ct_cells(ct_cells);
+                    std::thread::spawn(move || {
+                        // Build genesis params
+                        let genesis_params = GenesisParams {
+                            supply_cap,
+                            flags: MINTABLE,
+                            issuer_stealth_address: stealth_address,
+                        };
+
+                        // Build the genesis transaction
+                        let built_tx = match build_genesis_transaction(
+                            &config,
+                            genesis_params,
+                            funding_input.clone(),
+                        ) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Genesis build failed: {}", e)));
+                                return;
                             }
+                        };
 
-                            // Clear genesis form and return to list
-                            self.tokens_component.clear_genesis();
-                            self.tokens_component.mode =
-                                crate::components::tokens::TokensMode::List;
+                        let token_id = built_tx.token_id;
+
+                        let signed_tx = match sign_genesis_transaction(
+                            built_tx,
+                            &account,
+                            &spend_key,
+                            &funding_input.lock_script_args,
+                        ) {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Genesis signing failed: {}", e)));
+                                return;
+                            }
+                        };
+
+                        // Submit the transaction
+                        let rpc = RpcClient::new(config);
+                        match rpc.send_transaction(signed_tx) {
+                            Ok(tx_hash) => {
+                                let _ = action_tx.send(Action::TxSuccess(format!(
+                                    "Token created! Hash: {}...{}\nToken ID: {}...{}",
+                                    &hex::encode(&tx_hash.0[..4]),
+                                    &hex::encode(&tx_hash.0[28..]),
+                                    &hex::encode(&token_id[..4]),
+                                    &hex::encode(&token_id[28..])
+                                )));
+                            }
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Genesis submission failed: {}", e)));
+                            }
                         }
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Genesis submission failed: {}", e));
-                            self.status_message = "Genesis failed: RPC error".to_string();
-                        }
-                    }
+                    });
+
+                    // Clear genesis form (success will be shown via TxSuccess action)
+                    self.tokens_component.clear_genesis();
+                    self.tokens_component.mode = crate::components::tokens::TokensMode::List;
                 } else {
                     self.tokens_component.error_message = Some("No account selected".to_string());
                     self.status_message = "Genesis failed: no account".to_string();
@@ -2668,6 +2653,10 @@ impl App {
         let passphrase_popup_input = self.passphrase_popup_input.clone();
         let passphrase_popup_error = self.passphrase_popup_error.clone();
 
+        // Transaction progress spinner state
+        let tx_progress_visible = self.tx_progress_visible;
+        let tx_progress_frame = self.tx_progress_frame;
+
         // Pre-compute layout to save tab area for mouse click detection
         let size = self.tui.terminal.size()?;
         let terminal_area = Rect::new(0, 0, size.width, size.height);
@@ -2990,6 +2979,48 @@ impl App {
                 };
                 let hint = Paragraph::new(vec![hint_text]);
                 f.render_widget(hint, overlay_chunks[2]);
+            }
+
+            // Draw transaction progress spinner if active
+            if tx_progress_visible {
+                // Spinner frames using braille pattern for smooth animation
+                const SPINNER_FRAMES: &[&str] = &[
+                    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+                ];
+                let spinner_char = SPINNER_FRAMES[tx_progress_frame % SPINNER_FRAMES.len()];
+
+                // Calculate centered popup area
+                let area = f.area();
+                let popup_width = 30u16.min(area.width.saturating_sub(4));
+                let popup_height = 5u16.min(area.height.saturating_sub(4));
+                let x = (area.width.saturating_sub(popup_width)) / 2;
+                let y = (area.height.saturating_sub(popup_height)) / 2;
+                let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+                // Clear background
+                f.render_widget(ratatui::widgets::Clear, popup_area);
+
+                let block = Block::default()
+                    .title("Processing")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan));
+
+                let inner = block.inner(popup_area);
+                f.render_widget(block, popup_area);
+
+                // Spinner and message
+                let content = Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("  {}  ", spinner_char),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::styled("Please wait...", Style::default().fg(Color::White)),
+                    ]),
+                ])
+                .alignment(ratatui::layout::Alignment::Center);
+                f.render_widget(content, inner);
             }
         })?;
         Ok(())

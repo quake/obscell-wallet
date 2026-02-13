@@ -206,6 +206,7 @@ impl SettingsComponent {
     }
 
     /// Static draw method for use in App's draw_ui
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_static(
         f: &mut Frame,
         area: Rect,

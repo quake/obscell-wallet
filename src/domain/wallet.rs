@@ -6,12 +6,12 @@
 //!   - For each account, derive view_key and spend_key from child keys.
 
 use bip32::{Language, Mnemonic, XPrv};
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::domain::crypto::{
-    SALT_SIZE, decrypt, decrypt_secret_key, encrypt, encrypt_secret_key, generate_salt,
+    decrypt, decrypt_secret_key, encrypt, encrypt_secret_key, generate_salt, SALT_SIZE,
 };
 
 /// CKB coin type for BIP44 derivation.
@@ -147,6 +147,7 @@ pub fn derive_account_keys(
 /// Derive keys for a new account and encrypt spend_key.
 ///
 /// Returns (view_key, spend_public_key, encrypted_spend_key).
+#[allow(clippy::type_complexity)]
 pub fn derive_and_encrypt_account_keys(
     meta: &WalletMeta,
     account_index: u32,

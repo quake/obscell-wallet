@@ -98,6 +98,16 @@ pub enum Action {
     /// Confirm the passphrase (triggered by Enter in popup)
     ConfirmPassphrase(String),
 
+    // Transaction progress popup actions
+    /// Show the transaction progress spinner
+    ShowTxProgress,
+    /// Hide the transaction progress spinner
+    HideTxProgress,
+    /// Transaction completed successfully (with optional message)
+    TxSuccess(String),
+    /// Transaction failed with error message
+    TxError(String),
+
     // Scrolling
     ScrollUp,
     ScrollDown,

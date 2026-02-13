@@ -283,6 +283,7 @@ impl Store {
     // even after cells are spent. This enables full history reconstruction on rescan.
 
     /// Get the set of all tx_hashes for an account's history index.
+    #[allow(clippy::type_complexity)]
     pub fn get_tx_history_index(&self, account_id: u64) -> Result<Vec<[u8; 32]>> {
         let rtxn = self.env.read_txn()?;
         let db: Option<Database<U64<BE>, SerdeRmp<Vec<[u8; 32]>>>> =

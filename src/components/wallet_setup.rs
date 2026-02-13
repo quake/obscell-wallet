@@ -341,6 +341,7 @@ impl WalletSetupComponent {
     }
 
     /// Draw static version for data extraction pattern
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_static(
         f: &mut Frame,
         area: Rect,
