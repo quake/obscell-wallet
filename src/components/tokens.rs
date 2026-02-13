@@ -777,8 +777,8 @@ impl TokensComponent {
             vec![
                 Line::from("No tokens found"),
                 Line::from(""),
-                Line::from("Select an operation from the menu"),
-                Line::from("to create a new token or rescan."),
+                Line::from("Select 'Create New Token' to issue"),
+                Line::from("a new CT token."),
             ]
         };
 
