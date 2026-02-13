@@ -4,6 +4,7 @@
 //! This eliminates the need for rich-indexer and simplifies deployment.
 //! Uses packed block format for more efficient network transfer.
 
+use ckb_hash::blake2b_256;
 use ckb_types::{packed, prelude::*};
 use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,12 @@ use crate::{
     },
     infra::{rpc::RpcClient, store::Store},
 };
+
+/// Calculate the script hash of a packed::Script.
+/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
+fn calc_packed_script_hash(script: &packed::Script) -> [u8; 32] {
+    blake2b_256(script.as_slice())
+}
 
 /// Updates sent from background scanner to the main app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -336,12 +343,10 @@ impl BlockScanner {
                                 .or_default()
                                 .push(ct_cell);
 
-                            // Track CT delta - use last 32 bytes as token_id
-                            // (type_script_args = ct_info_code_hash || token_id)
+                            // Track CT delta - type_script_args is ct_info_script_hash (32 bytes)
                             let mut token_id = [0u8; 32];
-                            if type_script_args.len() >= 32 {
-                                let start = type_script_args.len() - 32;
-                                token_id.copy_from_slice(&type_script_args[start..]);
+                            if type_script_args.len() == 32 {
+                                token_id.copy_from_slice(&type_script_args);
                             }
                             *account_ct_delta
                                 .entry(*account_id)
@@ -356,19 +361,23 @@ impl BlockScanner {
                             .map(|d| d.raw_data().to_vec())
                             .unwrap_or_default();
 
-                        if let Ok(ct_info_data) = CtInfoData::from_bytes(&output_data) {
-                            let type_args = type_script_opt
-                                .as_ref()
-                                .map(|ts| ts.args().raw_data().to_vec())
-                                .unwrap_or_default();
+                        if let Ok(ct_info_data) = CtInfoData::from_bytes(&output_data)
+                            && let Some(type_script) = type_script_opt.as_ref()
+                        {
+                            let type_args = type_script.args().raw_data();
 
                             if type_args.len() >= 32 {
-                                let mut token_id = [0u8; 32];
-                                token_id.copy_from_slice(&type_args[0..32]);
+                                // Extract type_id from type script args (first 32 bytes)
+                                let mut type_id = [0u8; 32];
+                                type_id.copy_from_slice(&type_args[0..32]);
+
+                                // Calculate ct_info_script_hash
+                                let ct_info_script_hash = calc_packed_script_hash(type_script);
 
                                 let ct_info_cell = CtInfoCell::new(
                                     out_point.clone(),
-                                    token_id,
+                                    type_id,
+                                    ct_info_script_hash,
                                     ct_info_data.total_supply,
                                     ct_info_data.supply_cap,
                                     ct_info_data.flags,
@@ -383,10 +392,11 @@ impl BlockScanner {
                                     .push(ct_info_cell);
 
                                 // Record genesis tx and mark account
+                                // Use ct_info_script_hash as token_id for consistency
                                 account_genesis.insert(*account_id);
                                 let record = TxRecord::ct_genesis(
                                     tx_hash_bytes,
-                                    token_id,
+                                    ct_info_script_hash,
                                     timestamp,
                                     block_number,
                                 );
@@ -1219,14 +1229,18 @@ mod tests {
 
         // Start with a cell in the store
         let original_cell = StealthCell::new(vec![1, 2, 3], 5000, vec![4, 5, 6]);
-        store.add_stealth_cells(account_id, &[original_cell.clone()]).unwrap();
+        store
+            .add_stealth_cells(account_id, &[original_cell.clone()])
+            .unwrap();
 
         // Verify cell exists
         let cells_before = store.get_stealth_cells(account_id).unwrap();
         assert_eq!(cells_before.len(), 1);
 
         // Simulate spending the cell (remove it from store)
-        store.remove_spent_cells(account_id, &[vec![1, 2, 3]]).unwrap();
+        store
+            .remove_spent_cells(account_id, &[vec![1, 2, 3]])
+            .unwrap();
 
         // Verify cell is gone
         let cells_after_spend = store.get_stealth_cells(account_id).unwrap();
@@ -1260,7 +1274,9 @@ mod tests {
 
         // Start with a cell that was created in a block
         let new_cell = StealthCell::new(vec![10, 11, 12], 3000, vec![13, 14, 15]);
-        store.add_stealth_cells(account_id, &[new_cell.clone()]).unwrap();
+        store
+            .add_stealth_cells(account_id, &[new_cell.clone()])
+            .unwrap();
 
         // Verify cell exists
         let cells_before = store.get_stealth_cells(account_id).unwrap();

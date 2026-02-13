@@ -24,7 +24,8 @@ use crate::{
 };
 
 /// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
-/// CT cell needs: capacity (8B) + lock (stealth 86B) + type (97B) + data (64B) = 255 bytes
+/// CT cell needs: capacity (8B) + lock (stealth 86B) + type (65B) + data (64B) = 223 bytes
+/// Using 255 CKB for safety margin.
 const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
 
 /// Minimum cell capacity for a plain stealth cell (no type script).
@@ -57,7 +58,7 @@ pub struct CtTxOutput {
 #[derive(Debug, Clone)]
 pub struct CtTxBuilder {
     config: Config,
-    /// The full type script args: ct_info_code_hash (32) || token_id (32) = 64 bytes
+    /// The full type script args: ct_info_script_hash (32 bytes)
     ct_token_type_args: Vec<u8>,
     pub inputs: Vec<CtCell>,
     outputs: Vec<CtTxOutput>,
@@ -70,7 +71,7 @@ impl CtTxBuilder {
     ///
     /// # Arguments
     /// * `config` - Application configuration
-    /// * `ct_token_type_args` - Full type script args: ct_info_code_hash (32) || token_id (32) = 64 bytes
+    /// * `ct_token_type_args` - Full type script args: ct_info_script_hash (32 bytes)
     pub fn new(config: Config, ct_token_type_args: Vec<u8>) -> Self {
         Self {
             config,

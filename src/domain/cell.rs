@@ -156,10 +156,12 @@ pub struct StealthCell {
 pub struct CtCell {
     /// Transaction output point.
     pub out_point: Vec<u8>,
-    /// Token type script args (ct_info_code_hash || token_id = 64 bytes).
+    /// Token type script args (ct_info_script_hash = 32 bytes).
+    /// This is the script hash of the ct-info type script.
     /// Used for building transactions with matching type scripts.
     pub type_script_args: Vec<u8>,
-    /// Token ID (last 32 bytes of type_script_args).
+    /// Token ID = ct_info_script_hash (32 bytes).
+    /// This uniquely identifies the token type.
     /// Used for grouping and display.
     pub token_id: [u8; 32],
     /// Pedersen commitment (compressed Ristretto point).
@@ -194,11 +196,11 @@ impl CtCell {
         amount: u64,
         lock_script_args: Vec<u8>,
     ) -> Self {
-        // Extract token_id from the last 32 bytes of type_script_args
-        let token_id = if type_script_args.len() >= 32 {
+        // In the new format, type_script_args is ct_info_script_hash (32 bytes)
+        // which serves as the token_id
+        let token_id = if type_script_args.len() == 32 {
             let mut id = [0u8; 32];
-            let start = type_script_args.len() - 32;
-            id.copy_from_slice(&type_script_args[start..]);
+            id.copy_from_slice(&type_script_args);
             id
         } else {
             [0u8; 32]
@@ -225,8 +227,13 @@ impl CtCell {
 pub struct CtInfoCell {
     /// Transaction output point (tx_hash || index as 36 bytes).
     pub out_point: Vec<u8>,
-    /// Token ID (32 bytes, from type script args).
-    pub token_id: [u8; 32],
+    /// Type ID (32 bytes, from type script args[0..32]).
+    /// This is the unique identifier in the ct-info type script args.
+    pub type_id: [u8; 32],
+    /// ct_info_script_hash = blake2b(ct_info_type_script) (32 bytes).
+    /// This is used as the token_id to match ct-token cells.
+    /// ct-token cells store this value in their type_script_args.
+    pub ct_info_script_hash: [u8; 32],
     /// Current total supply.
     pub total_supply: u128,
     /// Maximum supply (0 = unlimited).
@@ -240,9 +247,11 @@ pub struct CtInfoCell {
 }
 
 impl CtInfoCell {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         out_point: Vec<u8>,
-        token_id: [u8; 32],
+        type_id: [u8; 32],
+        ct_info_script_hash: [u8; 32],
         total_supply: u128,
         supply_cap: u128,
         flags: u8,
@@ -251,13 +260,20 @@ impl CtInfoCell {
     ) -> Self {
         Self {
             out_point,
-            token_id,
+            type_id,
+            ct_info_script_hash,
             total_supply,
             supply_cap,
             flags,
             capacity,
             lock_script_args,
         }
+    }
+
+    /// Get the token_id (alias for ct_info_script_hash).
+    /// This is used for matching with CtCell.token_id.
+    pub fn token_id(&self) -> [u8; 32] {
+        self.ct_info_script_hash
     }
 
     /// Check if this token is mintable.
@@ -284,11 +300,8 @@ impl CtInfoCell {
 
     /// Get short token ID for display.
     pub fn short_token_id(&self) -> String {
-        format!(
-            "{}...{}",
-            hex::encode(&self.token_id[..4]),
-            hex::encode(&self.token_id[28..])
-        )
+        let tid = self.token_id();
+        format!("{}...{}", hex::encode(&tid[..4]), hex::encode(&tid[28..]))
     }
 }
 
@@ -364,25 +377,21 @@ pub fn aggregate_ct_balances(cells: &[CtCell]) -> Vec<CtBalance> {
 pub fn aggregate_ct_balances_with_info(
     ct_cells: &[CtCell],
     ct_info_cells: &[CtInfoCell],
-    config: &crate::config::Config,
+    _config: &crate::config::Config,
 ) -> Vec<CtBalance> {
     use std::collections::HashMap;
 
     let mut balances: HashMap<[u8; 32], CtBalance> = HashMap::new();
 
     // First, add all ct-info cells (tokens you can mint) with 0 balance
-    // Build the full type script args from ct_info_code_hash || token_id
-    let ct_info_code_hash = config.contracts.ct_info_code_hash.trim_start_matches("0x");
-    let ct_info_code_hash_bytes = hex::decode(ct_info_code_hash).unwrap_or_else(|_| vec![0u8; 32]);
-
+    // Use ct_info_script_hash as the token_id and type_script_args
     for info in ct_info_cells {
-        let mut type_args = Vec::with_capacity(64);
-        type_args.extend_from_slice(&ct_info_code_hash_bytes);
-        type_args.extend_from_slice(&info.token_id);
+        let token_id = info.token_id();
+        let type_args = token_id.to_vec(); // ct_info_script_hash is the type args
 
         balances
-            .entry(info.token_id)
-            .or_insert_with(|| CtBalance::new(info.token_id, type_args, None));
+            .entry(token_id)
+            .or_insert_with(|| CtBalance::new(token_id, type_args, None));
     }
 
     // Then add actual balances from ct-token cells

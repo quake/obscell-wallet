@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
-use heed::{byteorder::BE, types::*, Database, Env, EnvOpenOptions};
+use heed::{Database, Env, EnvOpenOptions, byteorder::BE, types::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -437,14 +437,14 @@ impl Store {
         Ok(())
     }
 
-    /// Get ct-info cell by token ID.
+    /// Get ct-info cell by token ID (ct_info_script_hash).
     pub fn get_ct_info_by_token_id(
         &self,
         account_id: u64,
         token_id: &[u8; 32],
     ) -> Result<Option<CtInfoCell>> {
         let cells = self.get_ct_info_cells(account_id)?;
-        Ok(cells.into_iter().find(|c| &c.token_id == token_id))
+        Ok(cells.into_iter().find(|c| &c.token_id() == token_id))
     }
 
     /// Remove spent ct-info cells from an account's stored cells.

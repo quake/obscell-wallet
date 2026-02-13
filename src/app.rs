@@ -410,15 +410,17 @@ impl App {
 
         // Refresh send component's account balance
         if let Some(ref current_account) = self.send_component.account
-            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
-                self.send_component.set_account(Some(updated.clone()));
-            }
+            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id)
+        {
+            self.send_component.set_account(Some(updated.clone()));
+        }
 
         // Refresh receive component's account
         if let Some(ref current_account) = self.receive_component.account
-            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
-                self.receive_component.set_account(Some(updated.clone()));
-            }
+            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id)
+        {
+            self.receive_component.set_account(Some(updated.clone()));
+        }
 
         // Refresh history component
         let history_account_id = self.history_component.account.as_ref().map(|a| a.id);
@@ -1318,21 +1320,23 @@ impl App {
 
                     std::thread::spawn(move || {
                         // Validate passphrase and get spend key (CPU-intensive due to Argon2)
-                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
-                            Ok(key) => key,
-                            Err(e) => {
-                                let _ = action_tx.send(Action::PassphraseError(
-                                    crate::action::PassphrasePurpose::SendTransaction,
-                                    format!("Invalid passphrase: {}", e),
-                                ));
-                                return;
-                            }
-                        };
+                        let spend_key_bytes =
+                            match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                                Ok(key) => key,
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::PassphraseError(
+                                        crate::action::PassphrasePurpose::SendTransaction,
+                                        format!("Invalid passphrase: {}", e),
+                                    ));
+                                    return;
+                                }
+                            };
 
                         let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
                             Ok(key) => key,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Invalid spend key: {}", e)));
                                 return;
                             }
                         };
@@ -1340,34 +1344,48 @@ impl App {
                         // Build the transaction based on address type
                         let builder = StealthTxBuilder::new(config.clone());
                         let builder = match address_type {
-                            AddressType::Stealth => {
-                                match parse_stealth_address(&recipient) {
-                                    Ok(stealth_addr) => builder.add_output(stealth_addr, amount_shannon),
-                                    Err(e) => {
-                                        let _ = action_tx.send(Action::TxError(format!("Invalid stealth address: {}", e)));
-                                        return;
-                                    }
+                            AddressType::Stealth => match parse_stealth_address(&recipient) {
+                                Ok(stealth_addr) => {
+                                    builder.add_output(stealth_addr, amount_shannon)
                                 }
-                            }
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::TxError(format!(
+                                        "Invalid stealth address: {}",
+                                        e
+                                    )));
+                                    return;
+                                }
+                            },
                             AddressType::Ckb => {
-                                match builder.add_ckb_output_with_capacity(&recipient, amount_shannon) {
+                                match builder
+                                    .add_ckb_output_with_capacity(&recipient, amount_shannon)
+                                {
                                     Ok(b) => b,
                                     Err(e) => {
-                                        let _ = action_tx.send(Action::TxError(format!("Invalid CKB address: {}", e)));
+                                        let _ = action_tx.send(Action::TxError(format!(
+                                            "Invalid CKB address: {}",
+                                            e
+                                        )));
                                         return;
                                     }
                                 }
                             }
                             AddressType::Unknown => {
-                                let _ = action_tx.send(Action::TxError("Invalid recipient address format".to_string()));
+                                let _ = action_tx.send(Action::TxError(
+                                    "Invalid recipient address format".to_string(),
+                                ));
                                 return;
                             }
                         };
 
-                        let builder = match builder.select_inputs(&available_cells, amount_shannon) {
+                        let builder = match builder.select_inputs(&available_cells, amount_shannon)
+                        {
                             Ok(b) => b,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Input selection failed: {}", e)));
+                                let _ = action_tx.send(Action::TxError(format!(
+                                    "Input selection failed: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -1377,7 +1395,8 @@ impl App {
                         let built_tx = match builder.build(&account) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Build failed: {}", e)));
+                                let _ =
+                                    action_tx.send(Action::TxError(format!("Build failed: {}", e)));
                                 return;
                             }
                         };
@@ -1390,7 +1409,8 @@ impl App {
                         ) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Signing failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Signing failed: {}", e)));
                                 return;
                             }
                         };
@@ -1407,7 +1427,8 @@ impl App {
                                 ));
                             }
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Submission failed: {}", e)));
                             }
                         }
                     });
@@ -1547,20 +1568,22 @@ impl App {
 
                     std::thread::spawn(move || {
                         // Validate passphrase and get spend key (CPU-intensive due to Argon2)
-                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                let _ = action_tx.send(Action::PassphraseError(
-                                    crate::action::PassphrasePurpose::TransferToken,
-                                    format!("Invalid passphrase: {}", e),
-                                ));
-                                return;
-                            }
-                        };
+                        let spend_key_bytes =
+                            match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::PassphraseError(
+                                        crate::action::PassphrasePurpose::TransferToken,
+                                        format!("Invalid passphrase: {}", e),
+                                    ));
+                                    return;
+                                }
+                            };
                         let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
                             Ok(key) => key,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Invalid spend key: {}", e)));
                                 return;
                             }
                         };
@@ -1579,7 +1602,10 @@ impl App {
                         {
                             Ok(b) => b,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Input selection failed: {}", e)));
+                                let _ = action_tx.send(Action::TxError(format!(
+                                    "Input selection failed: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -1589,14 +1615,14 @@ impl App {
                         let built_tx = match builder.build(&account) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Build failed: {}", e)));
+                                let _ =
+                                    action_tx.send(Action::TxError(format!("Build failed: {}", e)));
                                 return;
                             }
                         };
 
-                        let funding_lock_args = funding_input
-                            .as_ref()
-                            .map(|f| f.lock_script_args.clone());
+                        let funding_lock_args =
+                            funding_input.as_ref().map(|f| f.lock_script_args.clone());
                         let signed_tx = match CtTxBuilder::sign(
                             built_tx.clone(),
                             &account,
@@ -1606,7 +1632,8 @@ impl App {
                         ) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Signing failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Signing failed: {}", e)));
                                 return;
                             }
                         };
@@ -1625,7 +1652,8 @@ impl App {
                                 ));
                             }
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Submission failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Submission failed: {}", e)));
                             }
                         }
                     });
@@ -1754,25 +1782,29 @@ impl App {
                     let account = account.clone();
                     let action_tx = self.action_tx.clone();
                     let ct_info_lock_args = ct_info_cell.lock_script_args.clone();
-                    let token_id = token_balance.token_id;
+                    // Use the ct-info cell's type_id for the MintParams
+                    // (type_id is the Type ID used in ct-info type script args)
+                    let token_id = ct_info_cell.type_id;
                     let passphrase = passphrase.clone();
 
                     std::thread::spawn(move || {
                         // Validate passphrase and get spend key (CPU-intensive due to Argon2)
-                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                let _ = action_tx.send(Action::PassphraseError(
-                                    crate::action::PassphrasePurpose::MintToken,
-                                    format!("Invalid passphrase: {}", e),
-                                ));
-                                return;
-                            }
-                        };
+                        let spend_key_bytes =
+                            match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::PassphraseError(
+                                        crate::action::PassphrasePurpose::MintToken,
+                                        format!("Invalid passphrase: {}", e),
+                                    ));
+                                    return;
+                                }
+                            };
                         let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
                             Ok(key) => key,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Invalid spend key: {}", e)));
                                 return;
                             }
                         };
@@ -1789,7 +1821,8 @@ impl App {
                         let built_tx = match build_mint_transaction(&config, mint_params) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Mint build failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Mint build failed: {}", e)));
                                 return;
                             }
                         };
@@ -1803,7 +1836,8 @@ impl App {
                         ) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Mint signing failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Mint signing failed: {}", e)));
                                 return;
                             }
                         };
@@ -1831,7 +1865,10 @@ impl App {
                                      Run with RUST_LOG=debug for detailed diagnostics.",
                                     e
                                 );
-                                let _ = action_tx.send(Action::TxError(format!("Mint submission failed: {}", e)));
+                                let _ = action_tx.send(Action::TxError(format!(
+                                    "Mint submission failed: {}",
+                                    e
+                                )));
                             }
                         }
                     });
@@ -1877,17 +1914,19 @@ impl App {
 
                     // Need at least 230 CKB for ct-info cell
                     let min_capacity = 230_00000000u64;
-                    let funding_cell = match stealth_cells.iter().find(|c| c.capacity >= min_capacity) {
-                        Some(cell) => cell,
-                        None => {
-                            self.tokens_component.error_message = Some(format!(
-                                "No cell with at least {} CKB available. Receive CKB first.",
-                                min_capacity / 100_000_000
-                            ));
-                            self.status_message = "Genesis failed: insufficient funds".to_string();
-                            return Ok(());
-                        }
-                    };
+                    let funding_cell =
+                        match stealth_cells.iter().find(|c| c.capacity >= min_capacity) {
+                            Some(cell) => cell,
+                            None => {
+                                self.tokens_component.error_message = Some(format!(
+                                    "No cell with at least {} CKB available. Receive CKB first.",
+                                    min_capacity / 100_000_000
+                                ));
+                                self.status_message =
+                                    "Genesis failed: insufficient funds".to_string();
+                                return Ok(());
+                            }
+                        };
 
                     // Build funding cell input
                     let funding_input = FundingCell {
@@ -1922,20 +1961,22 @@ impl App {
 
                     std::thread::spawn(move || {
                         // Validate passphrase and get spend key (CPU-intensive due to Argon2)
-                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                let _ = action_tx.send(Action::PassphraseError(
-                                    crate::action::PassphrasePurpose::CreateToken,
-                                    format!("Invalid passphrase: {}", e),
-                                ));
-                                return;
-                            }
-                        };
+                        let spend_key_bytes =
+                            match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::PassphraseError(
+                                        crate::action::PassphrasePurpose::CreateToken,
+                                        format!("Invalid passphrase: {}", e),
+                                    ));
+                                    return;
+                                }
+                            };
                         let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
                             Ok(key) => key,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Invalid spend key: {}", e)));
                                 return;
                             }
                         };
@@ -1955,7 +1996,8 @@ impl App {
                         ) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Genesis build failed: {}", e)));
+                                let _ = action_tx
+                                    .send(Action::TxError(format!("Genesis build failed: {}", e)));
                                 return;
                             }
                         };
@@ -1970,7 +2012,10 @@ impl App {
                         ) {
                             Ok(tx) => tx,
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Genesis signing failed: {}", e)));
+                                let _ = action_tx.send(Action::TxError(format!(
+                                    "Genesis signing failed: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -1991,7 +2036,10 @@ impl App {
                                 ));
                             }
                             Err(e) => {
-                                let _ = action_tx.send(Action::TxError(format!("Genesis submission failed: {}", e)));
+                                let _ = action_tx.send(Action::TxError(format!(
+                                    "Genesis submission failed: {}",
+                                    e
+                                )));
                             }
                         }
                     });
@@ -2230,27 +2278,32 @@ impl App {
 
                         std::thread::spawn(move || {
                             // Verify passphrase by decrypting mnemonic (CPU-intensive due to Argon2)
-                            let mnemonic =
-                                match crate::domain::wallet::decrypt_mnemonic(&wallet_meta, &passphrase) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        let _ = action_tx.send(Action::BackupError(format!(
-                                            "Invalid passphrase: {}",
-                                            e
-                                        )));
-                                        return;
-                                    }
-                                };
+                            let mnemonic = match crate::domain::wallet::decrypt_mnemonic(
+                                &wallet_meta,
+                                &passphrase,
+                            ) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    let _ = action_tx.send(Action::BackupError(format!(
+                                        "Invalid passphrase: {}",
+                                        e
+                                    )));
+                                    return;
+                                }
+                            };
 
                             // Export wallet (CPU-intensive due to Argon2)
-                            match crate::domain::wallet::export_wallet(&mnemonic, account_count, &passphrase)
-                            {
+                            match crate::domain::wallet::export_wallet(
+                                &mnemonic,
+                                account_count,
+                                &passphrase,
+                            ) {
                                 Ok(backup_string) => {
                                     let _ = action_tx.send(Action::BackupReady(backup_string));
                                 }
                                 Err(e) => {
-                                    let _ =
-                                        action_tx.send(Action::BackupError(format!("Export failed: {}", e)));
+                                    let _ = action_tx
+                                        .send(Action::BackupError(format!("Export failed: {}", e)));
                                 }
                             }
                         });
@@ -2272,7 +2325,8 @@ impl App {
                 self.passphrase_popup_error = None;
 
                 // Show backup string in settings component
-                self.settings_component.set_backup_string(backup_string.clone());
+                self.settings_component
+                    .set_backup_string(backup_string.clone());
                 self.settings_component.error_message = None;
             }
             Action::BackupError(ref msg) => {
@@ -2281,7 +2335,8 @@ impl App {
 
                 // Show error in passphrase popup and keep it open
                 self.passphrase_popup_error = Some(msg.clone());
-                self.passphrase_popup_purpose = Some(crate::action::PassphrasePurpose::ExportBackup);
+                self.passphrase_popup_purpose =
+                    Some(crate::action::PassphrasePurpose::ExportBackup);
                 self.passphrase_popup_input.clear();
             }
             Action::SaveBackupToFile(ref backup_string) => {
@@ -2456,20 +2511,31 @@ impl App {
 
                 std::thread::spawn(move || {
                     // Create wallet meta (CPU-intensive due to Argon2)
-                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            let _ = action_tx.send(Action::WalletError(format!("Failed to create wallet: {}", e)));
-                            return;
-                        }
-                    };
+                    let mut meta =
+                        match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to create wallet: {}",
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
                     // Derive keys for first account (CPU-intensive due to Argon2)
                     let (view_key, spend_public_key, encrypted_spend_key) =
-                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(
+                            &meta,
+                            0,
+                            &passphrase,
+                        ) {
                             Ok(keys) => keys,
                             Err(e) => {
-                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to create account: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -2519,20 +2585,31 @@ impl App {
 
                 std::thread::spawn(move || {
                     // Create wallet meta (CPU-intensive due to Argon2)
-                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            let _ = action_tx.send(Action::WalletError(format!("Failed to restore wallet: {}", e)));
-                            return;
-                        }
-                    };
+                    let mut meta =
+                        match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to restore wallet: {}",
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
                     // Derive keys for first account (CPU-intensive due to Argon2)
                     let (view_key, spend_public_key, encrypted_spend_key) =
-                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(
+                            &meta,
+                            0,
+                            &passphrase,
+                        ) {
                             Ok(keys) => keys,
                             Err(e) => {
-                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to create account: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -2572,29 +2649,44 @@ impl App {
 
                 std::thread::spawn(move || {
                     // Import wallet (CPU-intensive due to Argon2 decryption)
-                    let mnemonic = match crate::domain::wallet::import_wallet(&backup_string, &passphrase) {
-                        Ok((m, _account_count)) => m,
-                        Err(e) => {
-                            let _ = action_tx.send(Action::WalletError(format!("Failed to restore from backup: {}", e)));
-                            return;
-                        }
-                    };
+                    let mnemonic =
+                        match crate::domain::wallet::import_wallet(&backup_string, &passphrase) {
+                            Ok((m, _account_count)) => m,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to restore from backup: {}",
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
                     // Create wallet meta (CPU-intensive due to Argon2)
-                    let mut meta = match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            let _ = action_tx.send(Action::WalletError(format!("Failed to create wallet from import: {}", e)));
-                            return;
-                        }
-                    };
+                    let mut meta =
+                        match crate::domain::wallet::create_wallet_meta(&mnemonic, &passphrase) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to create wallet from import: {}",
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
                     // Derive keys for first account (CPU-intensive due to Argon2)
                     let (view_key, spend_public_key, encrypted_spend_key) =
-                        match crate::domain::wallet::derive_and_encrypt_account_keys(&meta, 0, &passphrase) {
+                        match crate::domain::wallet::derive_and_encrypt_account_keys(
+                            &meta,
+                            0,
+                            &passphrase,
+                        ) {
                             Ok(keys) => keys,
                             Err(e) => {
-                                let _ = action_tx.send(Action::WalletError(format!("Failed to create account: {}", e)));
+                                let _ = action_tx.send(Action::WalletError(format!(
+                                    "Failed to create account: {}",
+                                    e
+                                )));
                                 return;
                             }
                         };
@@ -3151,9 +3243,7 @@ impl App {
             // Draw transaction progress spinner if active
             if tx_progress_visible {
                 // Spinner frames using braille pattern for smooth animation
-                const SPINNER_FRAMES: &[&str] = &[
-                    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-                ];
+                const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                 let spinner_char = SPINNER_FRAMES[tx_progress_frame % SPINNER_FRAMES.len()];
 
                 // Calculate centered popup area
@@ -3196,8 +3286,10 @@ impl App {
                 // Calculate popup size based on message length
                 let lines: Vec<&str> = result.message.lines().collect();
                 let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(20);
-                let popup_width = ((max_line_len + 6) as u16).clamp(30, area.width.saturating_sub(4));
-                let popup_height = ((lines.len() + 5) as u16).clamp(7, area.height.saturating_sub(4));
+                let popup_width =
+                    ((max_line_len + 6) as u16).clamp(30, area.width.saturating_sub(4));
+                let popup_height =
+                    ((lines.len() + 5) as u16).clamp(7, area.height.saturating_sub(4));
                 let x = (area.width.saturating_sub(popup_width)) / 2;
                 let y = (area.height.saturating_sub(popup_height)) / 2;
                 let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -3222,12 +3314,12 @@ impl App {
                 // Build content lines
                 let mut content_lines = vec![
                     Line::from(""),
-                    Line::from(vec![
-                        Span::styled(
-                            format!(" {} ", icon),
-                            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        format!(" {} ", icon),
+                        Style::default()
+                            .fg(border_color)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
                 ];
 
                 // Add message lines
@@ -3245,8 +3337,8 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 )));
 
-                let content = Paragraph::new(content_lines)
-                    .alignment(ratatui::layout::Alignment::Center);
+                let content =
+                    Paragraph::new(content_lines).alignment(ratatui::layout::Alignment::Center);
                 f.render_widget(content, inner);
             }
         })?;

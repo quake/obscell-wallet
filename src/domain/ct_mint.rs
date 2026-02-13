@@ -32,10 +32,10 @@ use crate::{
 /// Calculation:
 /// - Base: 8 bytes (capacity field)
 /// - Lock (stealth-lock): code_hash (32) + hash_type (1) + args (53 = eph_pub 33 + pubkey_hash 20) = 86 bytes
-/// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (64 = ct_info_hash 32 + token_id 32) = 97 bytes
+/// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (32 = ct_info_script_hash) = 65 bytes
 /// - Data: commitment (32) + encrypted_amount (32) = 64 bytes
 ///
-/// Total: 8 + 86 + 97 + 64 = 255 bytes → 255 CKB
+/// Total: 8 + 86 + 65 + 64 = 223 bytes → 223 CKB (keeping 255 for safety margin)
 const MIN_CT_CELL_CAPACITY: u64 = 255_00000000;
 
 /// Default transaction fee in shannons (0.001 CKB = 100,000 shannons).
@@ -263,19 +263,19 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     )?;
 
     // Build ct-token type script
-    // Args: ct_info_code_hash (32) || token_id (32) = 64 bytes
-    // The ct-token-type verifies that ct-info-type exists in inputs using the code_hash
+    // Args: ct_info_script_hash (32 bytes)
+    // The ct-token-type verifies that ct-info-type with matching script hash exists in inputs
+    // This prevents token ID spoofing attacks by binding to the exact ct-info cell
     let ct_token_code_hash = config.contracts.ct_token_code_hash.trim_start_matches("0x");
     let ct_token_code_hash_bytes = hex::decode(ct_token_code_hash)?;
 
-    let mut ct_token_type_args = Vec::with_capacity(64);
-    ct_token_type_args.extend_from_slice(&ct_info_code_hash_bytes); // ct-info-type code_hash
-    ct_token_type_args.extend_from_slice(&params.token_id); // token_id
+    // Calculate ct-info type script hash (blake2b of the packed script)
+    let ct_info_script_hash = calc_script_hash(&ct_info_type_script);
 
     let ct_token_type_script = Script {
         code_hash: H256::from_slice(&ct_token_code_hash_bytes)?,
         hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-        args: JsonBytes::from_vec(ct_token_type_args),
+        args: JsonBytes::from_vec(ct_info_script_hash.to_vec()),
     };
 
     // Build cell deps
@@ -763,6 +763,31 @@ fn calculate_tx_hash(tx: &Transaction) -> H256 {
 
     let hash = blake2b_256(raw_tx.as_slice());
     H256::from_slice(&hash).unwrap()
+}
+
+/// Calculate the script hash of a ckb_jsonrpc_types::Script.
+/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
+fn calc_script_hash(script: &Script) -> [u8; 32] {
+    use ckb_types::packed;
+    use ckb_types::prelude::*;
+
+    let code_hash = packed::Byte32::from_slice(script.code_hash.as_bytes()).unwrap();
+    let args: packed::Bytes = script.args.as_bytes().to_vec().pack();
+    let hash_type = match script.hash_type {
+        ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
+        ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
+        ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
+        ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
+        _ => packed::Byte::new(1),
+    };
+
+    let packed_script = packed::Script::new_builder()
+        .code_hash(code_hash)
+        .hash_type(hash_type)
+        .args(args)
+        .build();
+
+    blake2b_256(packed_script.as_slice())
 }
 
 // ============================================================================

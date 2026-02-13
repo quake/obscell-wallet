@@ -3,7 +3,9 @@
 //! Scans the CKB blockchain for cells that belong to the wallet's accounts
 //! using the stealth address protocol.
 
-use ckb_jsonrpc_types::{Either, JsonBytes};
+use ckb_hash::blake2b_256;
+use ckb_jsonrpc_types::{Either, JsonBytes, Script};
+use ckb_types::{packed, prelude::*};
 use color_eyre::eyre::Result;
 use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,28 @@ use crate::{
     },
     infra::{rpc::RpcClient, store::Store},
 };
+
+/// Calculate the script hash of a ckb_jsonrpc_types::Script.
+/// This is blake2b_256(packed_script.as_slice()), matching CKB's script hash calculation.
+fn calc_script_hash(script: &Script) -> [u8; 32] {
+    let code_hash = packed::Byte32::from_slice(script.code_hash.as_bytes()).unwrap();
+    let args: packed::Bytes = script.args.as_bytes().to_vec().pack();
+    let hash_type = match script.hash_type {
+        ckb_jsonrpc_types::ScriptHashType::Data => packed::Byte::new(0),
+        ckb_jsonrpc_types::ScriptHashType::Type => packed::Byte::new(1),
+        ckb_jsonrpc_types::ScriptHashType::Data1 => packed::Byte::new(2),
+        ckb_jsonrpc_types::ScriptHashType::Data2 => packed::Byte::new(4),
+        _ => packed::Byte::new(1),
+    };
+
+    let packed_script = packed::Script::new_builder()
+        .code_hash(code_hash)
+        .hash_type(hash_type)
+        .args(args)
+        .build();
+
+    blake2b_256(packed_script.as_slice())
+}
 
 /// Scan cursor stored in LMDB for resuming scans.
 const SCAN_CURSOR_KEY: &str = "scan_cursor";
@@ -649,7 +673,7 @@ impl Scanner {
                     // For now, we use zero blinding factor as placeholder
                     let blinding_factor = [0u8; 32];
 
-                    // Extract full type script args (ct_info_code_hash || token_id = 64 bytes)
+                    // Extract type script args (ct_info_script_hash = 32 bytes)
                     let type_script_args: Vec<u8> = cell
                         .output
                         .type_
@@ -1006,26 +1030,33 @@ impl Scanner {
                             }
                         };
 
-                        let type_args = cell
-                            .output
-                            .type_
-                            .as_ref()
-                            .map(|t| t.args.as_bytes().to_vec())
-                            .unwrap_or_default();
+                        let type_script = match cell.output.type_.as_ref() {
+                            Some(ts) => ts,
+                            None => {
+                                debug!("ct-info cell missing type script");
+                                break;
+                            }
+                        };
 
+                        let type_args = type_script.args.as_bytes();
                         if type_args.len() < 32 {
                             debug!("Invalid ct-info type args length: {}", type_args.len());
                             break;
                         }
 
-                        let mut token_id = [0u8; 32];
-                        token_id.copy_from_slice(&type_args[0..32]);
+                        // Extract type_id from type script args (first 32 bytes)
+                        let mut type_id = [0u8; 32];
+                        type_id.copy_from_slice(&type_args[0..32]);
+
+                        // Calculate ct_info_script_hash
+                        let ct_info_script_hash = calc_script_hash(type_script);
 
                         let capacity: u64 = cell.output.capacity.into();
 
                         let ct_info_cell = CtInfoCell::new(
                             out_point_bytes.clone(),
-                            token_id,
+                            type_id,
+                            ct_info_script_hash,
                             ct_info_data.total_supply,
                             ct_info_data.supply_cap,
                             ct_info_data.flags,
@@ -1303,21 +1334,28 @@ impl Scanner {
                         }
                     };
 
-                    // Extract token_id from type script args
-                    let type_args = cell
-                        .output
-                        .type_
-                        .as_ref()
-                        .map(|t| t.args.as_bytes().to_vec())
-                        .unwrap_or_default();
+                    // Extract type_id from type script args and calculate ct_info_script_hash
+                    let type_script = match cell.output.type_.as_ref() {
+                        Some(t) => t,
+                        None => {
+                            debug!("ct-info cell missing type script");
+                            continue;
+                        }
+                    };
 
+                    let type_args = type_script.args.as_bytes();
                     if type_args.len() < 32 {
                         debug!("Invalid ct-info type args length: {}", type_args.len());
                         continue;
                     }
 
-                    let mut token_id = [0u8; 32];
-                    token_id.copy_from_slice(&type_args[0..32]);
+                    // type_id is the Type ID from ct-info type script args
+                    let mut type_id = [0u8; 32];
+                    type_id.copy_from_slice(&type_args[0..32]);
+
+                    // ct_info_script_hash = blake2b(ct_info_type_script.as_slice())
+                    // This is the new token_id used by ct-token-type to match ct-info cells
+                    let ct_info_script_hash = calc_script_hash(type_script);
 
                     let capacity: u64 = cell.output.capacity.into();
 
@@ -1328,7 +1366,8 @@ impl Scanner {
 
                     let ct_info_cell = CtInfoCell::new(
                         out_point_bytes.clone(),
-                        token_id,
+                        type_id,
+                        ct_info_script_hash,
                         ct_info_data.total_supply,
                         ct_info_data.supply_cap,
                         ct_info_data.flags,
@@ -1580,8 +1619,12 @@ impl Scanner {
 
                             // Record CKB delta if non-zero
                             if ckb_delta != 0 {
-                                let record =
-                                    TxRecord::ckb(tx_hash_bytes, ckb_delta, timestamp, block_number);
+                                let record = TxRecord::ckb(
+                                    tx_hash_bytes,
+                                    ckb_delta,
+                                    timestamp,
+                                    block_number,
+                                );
                                 ad.records.push(record);
                                 total_records_found += 1;
                                 batch_has_new_records = true;
@@ -1757,18 +1800,19 @@ impl Scanner {
 
             // Check if the spent output was ours
             if let Some(prev_output) = prev_tx_view.inner.outputs.get(prev_index as usize)
-                && prev_output.lock.code_hash.as_bytes() == stealth_code_hash {
-                    let lock_args = prev_output.lock.args.as_bytes();
-                    if matches_key(lock_args, view_key, spend_pub) {
-                        involves = true;
+                && prev_output.lock.code_hash.as_bytes() == stealth_code_hash
+            {
+                let lock_args = prev_output.lock.args.as_bytes();
+                if matches_key(lock_args, view_key, spend_pub) {
+                    involves = true;
 
-                        // Build the out_point (tx_hash || index_le)
-                        let mut out_point = Vec::with_capacity(36);
-                        out_point.extend_from_slice(prev_tx_hash_h256.as_bytes());
-                        out_point.extend_from_slice(&prev_index.to_le_bytes());
-                        spent_out_points.push(out_point);
-                    }
+                    // Build the out_point (tx_hash || index_le)
+                    let mut out_point = Vec::with_capacity(36);
+                    out_point.extend_from_slice(prev_tx_hash_h256.as_bytes());
+                    out_point.extend_from_slice(&prev_index.to_le_bytes());
+                    spent_out_points.push(out_point);
                 }
+            }
         }
 
         Ok((involves, spent_out_points))
@@ -1927,26 +1971,24 @@ impl Scanner {
                 continue;
             }
 
-            // Extract token_id from type args (last 32 bytes)
-            // Type args format: ct_info_code_hash (32) || token_id (32)
+            // Extract token_id from type args (ct_info_script_hash = 32 bytes)
             let type_args = type_script.args.as_bytes();
-            if type_args.len() < 32 {
+            if type_args.len() != 32 {
                 continue;
             }
             let mut token_id = [0u8; 32];
-            let start = type_args.len() - 32;
-            token_id.copy_from_slice(&type_args[start..]);
+            token_id.copy_from_slice(type_args);
 
             // Decrypt the amount from output_data
             if let Some(output_data) = outputs_data.get(i)
                 && let Some((_, encrypted_amount)) =
                     Self::parse_ct_cell_data(output_data.as_bytes())
-                    && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
-                        && let Some(amount) =
-                            crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
-                        {
-                            *deltas.entry(token_id).or_insert(0) += amount as i64;
-                        }
+                && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                && let Some(amount) =
+                    crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
+            {
+                *deltas.entry(token_id).or_insert(0) += amount as i64;
+            }
         }
 
         // Calculate input amounts (tokens we spend)
@@ -1999,26 +2041,24 @@ impl Scanner {
                 continue;
             }
 
-            // Extract token_id from type args (last 32 bytes)
-            // Type args format: ct_info_code_hash (32) || token_id (32)
+            // Extract token_id from type args (ct_info_script_hash = 32 bytes)
             let type_args = type_script.args.as_bytes();
-            if type_args.len() < 32 {
+            if type_args.len() != 32 {
                 continue;
             }
             let mut token_id = [0u8; 32];
-            let start = type_args.len() - 32;
-            token_id.copy_from_slice(&type_args[start..]);
+            token_id.copy_from_slice(type_args);
 
             // Decrypt the amount from output_data
             if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize)
                 && let Some((_, encrypted_amount)) =
                     Self::parse_ct_cell_data(prev_output_data.as_bytes())
-                    && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
-                        && let Some(amount) =
-                            crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
-                        {
-                            *deltas.entry(token_id).or_insert(0) -= amount as i64;
-                        }
+                && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                && let Some(amount) =
+                    crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
+            {
+                *deltas.entry(token_id).or_insert(0) -= amount as i64;
+            }
         }
 
         Ok(deltas)
