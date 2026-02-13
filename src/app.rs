@@ -972,6 +972,13 @@ impl App {
                     message: msg.clone(),
                 });
             }
+            Action::PassphraseError(ref purpose, ref msg) => {
+                // Hide spinner and re-show passphrase popup with error
+                self.tx_progress_visible = false;
+                self.passphrase_popup_purpose = Some(purpose.clone());
+                self.passphrase_popup_error = Some(msg.clone());
+                self.passphrase_popup_input.clear();
+            }
             Action::Quit => {
                 self.should_quit = true;
             }
@@ -1180,7 +1187,7 @@ impl App {
                 if let (Some(ref account), Some(amount_shannon)) =
                     (self.send_component.account.clone(), amount)
                 {
-                    // Get available cells for this account
+                    // Get available cells for this account (quick database read)
                     let available_cells = match self.store.get_stealth_cells(account.id) {
                         Ok(cells) => cells,
                         Err(e) => {
@@ -1198,7 +1205,7 @@ impl App {
                         return Ok(());
                     }
 
-                    // Validate passphrase and get spend key (quick operation)
+                    // Check wallet is initialized (quick check)
                     let wallet_meta = match &self.wallet_meta {
                         Some(meta) => meta.clone(),
                         None => {
@@ -1211,29 +1218,8 @@ impl App {
                         }
                     };
 
-                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            self.passphrase_popup_error =
-                                Some(format!("Invalid passphrase: {}", e));
-                            self.passphrase_popup_purpose =
-                                Some(crate::action::PassphrasePurpose::SendTransaction);
-                            self.passphrase_popup_input.clear();
-                            return Ok(());
-                        }
-                    };
-
-                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            self.send_component.error_message =
-                                Some(format!("Invalid spend key: {}", e));
-                            self.status_message = "Send failed: key error".to_string();
-                            return Ok(());
-                        }
-                    };
-
                     // Show progress spinner immediately and render before starting background work
+                    // (passphrase verification with Argon2 is CPU-intensive)
                     self.tx_progress_visible = true;
                     self.tx_progress_frame = 0;
                     self.draw_ui()?;
@@ -1242,8 +1228,29 @@ impl App {
                     let config = self.config.clone();
                     let account = account.clone();
                     let action_tx = self.action_tx.clone();
+                    let passphrase = passphrase.clone();
 
                     std::thread::spawn(move || {
+                        // Validate passphrase and get spend key (CPU-intensive due to Argon2)
+                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::PassphraseError(
+                                    crate::action::PassphrasePurpose::SendTransaction,
+                                    format!("Invalid passphrase: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                return;
+                            }
+                        };
+
                         // Build the transaction based on address type
                         let builder = StealthTxBuilder::new(config.clone());
                         let builder = match address_type {
@@ -1434,7 +1441,7 @@ impl App {
                             lock_script_args: fc.stealth_script_args.clone(),
                         });
 
-                    // Validate passphrase and get spend key (quick operation)
+                    // Check wallet is initialized (quick check)
                     let wallet_meta = match self.wallet_meta.as_ref() {
                         Some(meta) => meta.clone(),
                         None => {
@@ -1445,28 +1452,9 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            self.passphrase_popup_error =
-                                Some(format!("Invalid passphrase: {}", e));
-                            self.passphrase_popup_purpose =
-                                Some(crate::action::PassphrasePurpose::TransferToken);
-                            self.passphrase_popup_input.clear();
-                            return Ok(());
-                        }
-                    };
-                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Invalid spend key: {}", e));
-                            self.status_message = "CT transfer failed: key error".to_string();
-                            return Ok(());
-                        }
-                    };
 
                     // Show progress spinner immediately and render before starting background work
+                    // (passphrase verification with Argon2 is CPU-intensive)
                     self.tx_progress_visible = true;
                     self.tx_progress_frame = 0;
                     self.draw_ui()?;
@@ -1476,8 +1464,28 @@ impl App {
                     let account = account.clone();
                     let action_tx = self.action_tx.clone();
                     let type_script_args = token_balance.type_script_args.clone();
+                    let passphrase = passphrase.clone();
 
                     std::thread::spawn(move || {
+                        // Validate passphrase and get spend key (CPU-intensive due to Argon2)
+                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::PassphraseError(
+                                    crate::action::PassphrasePurpose::TransferToken,
+                                    format!("Invalid passphrase: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+                        let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                return;
+                            }
+                        };
+
                         // Build the CT transaction
                         let mut builder = CtTxBuilder::new(config.clone(), type_script_args);
 
@@ -1644,7 +1652,7 @@ impl App {
                         lock_script_args: funding_cell.stealth_script_args.clone(),
                     };
 
-                    // Validate passphrase and get spend key (quick operation)
+                    // Check wallet is initialized (quick check)
                     let wallet_meta = match self.wallet_meta.as_ref() {
                         Some(meta) => meta.clone(),
                         None => {
@@ -1655,28 +1663,9 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            self.passphrase_popup_error =
-                                Some(format!("Invalid passphrase: {}", e));
-                            self.passphrase_popup_purpose =
-                                Some(crate::action::PassphrasePurpose::MintToken);
-                            self.passphrase_popup_input.clear();
-                            return Ok(());
-                        }
-                    };
-                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Invalid spend key: {}", e));
-                            self.status_message = "CT mint failed: key error".to_string();
-                            return Ok(());
-                        }
-                    };
 
                     // Show progress spinner immediately and render before starting background work
+                    // (passphrase verification with Argon2 is CPU-intensive)
                     self.tx_progress_visible = true;
                     self.tx_progress_frame = 0;
                     self.draw_ui()?;
@@ -1687,8 +1676,28 @@ impl App {
                     let action_tx = self.action_tx.clone();
                     let ct_info_lock_args = ct_info_cell.lock_script_args.clone();
                     let token_id = token_balance.token_id;
+                    let passphrase = passphrase.clone();
 
                     std::thread::spawn(move || {
+                        // Validate passphrase and get spend key (CPU-intensive due to Argon2)
+                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::PassphraseError(
+                                    crate::action::PassphrasePurpose::MintToken,
+                                    format!("Invalid passphrase: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+                        let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                return;
+                            }
+                        };
+
                         let mint_params = MintParams {
                             ct_info_cell: ct_info_input,
                             token_id,
@@ -1808,7 +1817,7 @@ impl App {
                         lock_script_args: funding_cell.stealth_script_args.clone(),
                     };
 
-                    // Validate passphrase and get spend key (quick operation)
+                    // Check wallet is initialized (quick check)
                     let wallet_meta = match self.wallet_meta.as_ref() {
                         Some(meta) => meta.clone(),
                         None => {
@@ -1819,28 +1828,9 @@ impl App {
                             return Ok(());
                         }
                     };
-                    let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, passphrase) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            self.passphrase_popup_error =
-                                Some(format!("Invalid passphrase: {}", e));
-                            self.passphrase_popup_purpose =
-                                Some(crate::action::PassphrasePurpose::CreateToken);
-                            self.passphrase_popup_input.clear();
-                            return Ok(());
-                        }
-                    };
-                    let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            self.tokens_component.error_message =
-                                Some(format!("Invalid spend key: {}", e));
-                            self.status_message = "Genesis failed: key error".to_string();
-                            return Ok(());
-                        }
-                    };
 
                     // Show progress spinner immediately and render before starting background work
+                    // (passphrase verification with Argon2 is CPU-intensive)
                     self.tx_progress_visible = true;
                     self.tx_progress_frame = 0;
                     self.draw_ui()?;
@@ -1849,8 +1839,28 @@ impl App {
                     let config = self.config.clone();
                     let account = account.clone();
                     let action_tx = self.action_tx.clone();
+                    let passphrase = passphrase.clone();
 
                     std::thread::spawn(move || {
+                        // Validate passphrase and get spend key (CPU-intensive due to Argon2)
+                        let spend_key_bytes = match account.decrypt_spend_key(&wallet_meta, &passphrase) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::PassphraseError(
+                                    crate::action::PassphrasePurpose::CreateToken,
+                                    format!("Invalid passphrase: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+                        let spend_key = match secp256k1::SecretKey::from_slice(&*spend_key_bytes) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                let _ = action_tx.send(Action::TxError(format!("Invalid spend key: {}", e)));
+                                return;
+                            }
+                        };
+
                         // Build genesis params
                         let genesis_params = GenesisParams {
                             supply_cap,

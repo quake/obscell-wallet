@@ -107,6 +107,8 @@ pub enum Action {
     TxSuccess(String),
     /// Transaction failed with error message
     TxError(String),
+    /// Passphrase verification failed (re-show popup with error)
+    PassphraseError(PassphrasePurpose, String),
 
     // Scrolling
     ScrollUp,
