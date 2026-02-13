@@ -522,6 +522,15 @@ impl BlockScanner {
             );
         } else {
             debug!("Already synced to tip {}, no new blocks to scan", tip);
+            // Send a progress update with current tip even when already synced
+            if let Some(tx) = update_tx {
+                let last_scanned = state.last_scanned_block.unwrap_or(start_block);
+                let _ = tx.send(BlockScanUpdate::Progress {
+                    current_block: last_scanned,
+                    tip_block: tip,
+                    cells_found: 0,
+                });
+            }
         }
 
         while current <= tip {
