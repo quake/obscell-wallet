@@ -160,7 +160,7 @@ impl AccountsComponent {
         let details = if let Some(acc) = accounts.get(selected_index) {
             let stealth_addr = truncate(&acc.stealth_address());
             let ckb_addr = one_time_address
-                .map(|a| truncate(a))
+                .map(truncate)
                 .unwrap_or_else(|| "(generating...)".to_string());
 
             vec![

@@ -1089,17 +1089,15 @@ impl Scanner {
 
         // Persist new cells to store (incrementally) and recalculate total_capacity
         for result in &mut stealth_results {
-            if !result.new_cells.is_empty() {
-                if let Err(e) = self
+            if !result.new_cells.is_empty()
+                && let Err(e) = self
                     .store
                     .add_stealth_cells(result.account_id, &result.new_cells)
-                {
-                    info!(
-                        "Failed to add stealth cells for account {}: {}",
-                        result.account_id, e
-                    );
-                }
-
+            {
+                info!(
+                    "Failed to add stealth cells for account {}: {}",
+                    result.account_id, e
+                );
                 // Note: Transaction history is now derived from on-chain data
                 // using scan_tx_history(), not recorded during cell scanning.
             }
@@ -1110,17 +1108,15 @@ impl Scanner {
         }
 
         for result in &mut ct_results {
-            if !result.new_cells.is_empty() {
-                if let Err(e) = self
+            if !result.new_cells.is_empty()
+                && let Err(e) = self
                     .store
                     .add_ct_cells(result.account_id, &result.new_cells)
-                {
-                    info!(
-                        "Failed to add CT cells for account {}: {}",
-                        result.account_id, e
-                    );
-                }
-
+            {
+                info!(
+                    "Failed to add CT cells for account {}: {}",
+                    result.account_id, e
+                );
                 // Note: Transaction history is now derived from on-chain data
                 // using scan_tx_history(), not recorded during cell scanning.
             }
@@ -1697,7 +1693,7 @@ impl Scanner {
     /// Incremental scan that uses cursor for resumable scanning.
     /// This is now just a wrapper around scan_tx_history_all.
     pub fn scan_tx_history(&self, account: &Account) -> Result<Vec<TxRecord>> {
-        self.scan_tx_history_all(&[account.clone()], None)?;
+        self.scan_tx_history_all(std::slice::from_ref(account), None)?;
         self.store.get_tx_history(account.id)
     }
 
@@ -1755,8 +1751,8 @@ impl Scanner {
             };
 
             // Check if the spent output was ours
-            if let Some(prev_output) = prev_tx_view.inner.outputs.get(prev_index as usize) {
-                if prev_output.lock.code_hash.as_bytes() == stealth_code_hash {
+            if let Some(prev_output) = prev_tx_view.inner.outputs.get(prev_index as usize)
+                && prev_output.lock.code_hash.as_bytes() == stealth_code_hash {
                     let lock_args = prev_output.lock.args.as_bytes();
                     if matches_key(lock_args, view_key, spend_pub) {
                         involves = true;
@@ -1768,7 +1764,6 @@ impl Scanner {
                         spent_out_points.push(out_point);
                     }
                 }
-            }
         }
 
         Ok((involves, spent_out_points))
@@ -1938,20 +1933,15 @@ impl Scanner {
             token_id.copy_from_slice(&type_args[start..]);
 
             // Decrypt the amount from output_data
-            if let Some(output_data) = outputs_data.get(i) {
-                if let Some((_, encrypted_amount)) =
+            if let Some(output_data) = outputs_data.get(i)
+                && let Some((_, encrypted_amount)) =
                     Self::parse_ct_cell_data(output_data.as_bytes())
-                {
-                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
-                    {
-                        if let Some(amount) =
+                    && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                        && let Some(amount) =
                             crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
                         {
                             *deltas.entry(token_id).or_insert(0) += amount as i64;
                         }
-                    }
-                }
-            }
         }
 
         // Calculate input amounts (tokens we spend)
@@ -2016,20 +2006,14 @@ impl Scanner {
 
             // Decrypt the amount from output_data
             if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize)
-            {
-                if let Some((_, encrypted_amount)) =
+                && let Some((_, encrypted_amount)) =
                     Self::parse_ct_cell_data(prev_output_data.as_bytes())
-                {
-                    if let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
-                    {
-                        if let Some(amount) =
+                    && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
+                        && let Some(amount) =
                             crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
                         {
                             *deltas.entry(token_id).or_insert(0) -= amount as i64;
                         }
-                    }
-                }
-            }
         }
 
         Ok(deltas)

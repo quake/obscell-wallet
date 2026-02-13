@@ -708,7 +708,7 @@ impl BlockScanner {
             }
         }
 
-        while current <= tip {
+        'scan_loop: while current <= tip {
             // Fetch the block with retry on transient errors
             let block = match self.get_block_with_retry(current) {
                 Ok(Some(b)) => b,
@@ -773,7 +773,7 @@ impl BlockScanner {
                                 state.clear();
                                 self.store.save_scan_state(&state)?;
                                 current = start_block;
-                                continue;
+                                continue 'scan_loop;
                             }
                         }
                     }

@@ -120,9 +120,7 @@ impl BlockChanges {
 
     /// Get or create changes for an account.
     pub fn get_or_create_account(&mut self, account_id: u64) -> &mut AccountBlockChanges {
-        self.accounts
-            .entry(account_id)
-            .or_insert_with(AccountBlockChanges::new)
+        self.accounts.entry(account_id).or_default()
     }
 
     /// Check if there are any changes.

@@ -392,18 +392,16 @@ impl App {
             .set_accounts(updated_accounts.clone());
 
         // Refresh send component's account balance
-        if let Some(ref current_account) = self.send_component.account {
-            if let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
+        if let Some(ref current_account) = self.send_component.account
+            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
                 self.send_component.set_account(Some(updated.clone()));
             }
-        }
 
         // Refresh receive component's account
-        if let Some(ref current_account) = self.receive_component.account {
-            if let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
+        if let Some(ref current_account) = self.receive_component.account
+            && let Some(updated) = updated_accounts.iter().find(|a| a.id == current_account.id) {
                 self.receive_component.set_account(Some(updated.clone()));
             }
-        }
 
         // Refresh history component
         let history_account_id = self.history_component.account.as_ref().map(|a| a.id);
@@ -1254,7 +1252,7 @@ impl App {
                     match self.scanner.rpc().send_transaction(signed_tx) {
                         Ok(tx_hash) => {
                             let amount_ckb = amount_shannon as f64 / 100_000_000.0;
-                            let tx_hash_hex = hex::encode(&tx_hash.0);
+                            let tx_hash_hex = hex::encode(tx_hash.0);
                             self.send_component.success_message =
                                 Some(format!("Sent {:.8} CKB! Tx: 0x{}", amount_ckb, tx_hash_hex));
                             self.status_message = format!(
