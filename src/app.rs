@@ -1858,10 +1858,7 @@ impl App {
 
                             // Note: Don't remove spent cells here - let BlockScanner handle it.
                             // Removing cells before scan causes incorrect delta calculation.
-
-                            // Trigger a rescan to detect the new ct-info cell
-                            self.status_message
-                                .push_str(" - Press 'r' to rescan after confirmation");
+                            // The new ct-info cell will be detected by incremental scan automatically.
 
                             // Refresh CT balances to show updated state
                             if let Ok(ct_cells) = self.store.get_ct_cells(account.id) {
