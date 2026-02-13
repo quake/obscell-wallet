@@ -110,6 +110,15 @@ pub enum Action {
     /// Passphrase verification failed (re-show popup with error)
     PassphraseError(PassphrasePurpose, String),
 
+    // Account creation (background thread results)
+    /// Account keys derived successfully: (view_key, spend_public_key, encrypted_spend_key, derivation_index)
+    AccountKeysReady {
+        view_key: [u8; 32],
+        spend_public_key: Vec<u8>,
+        encrypted_spend_key: Vec<u8>,
+        derivation_index: u32,
+    },
+
     // Scrolling
     ScrollUp,
     ScrollDown,

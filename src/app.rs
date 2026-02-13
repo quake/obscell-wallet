@@ -1015,8 +1015,8 @@ impl App {
             }
             Action::CreateAccountWithPassphrase(ref passphrase) => {
                 // Wallet should already exist at this point
-                let wallet_meta = match &mut self.wallet_meta {
-                    Some(meta) => meta,
+                let wallet_meta = match &self.wallet_meta {
+                    Some(meta) => meta.clone(),
                     None => {
                         self.passphrase_popup_error = Some("Wallet not initialized".to_string());
                         self.passphrase_popup_purpose =
@@ -1026,23 +1026,85 @@ impl App {
                     }
                 };
 
-                let account = match self.account_manager.create_account(
-                    format!(
-                        "Account {}",
-                        self.account_manager.list_accounts()?.len() + 1
-                    ),
-                    wallet_meta,
-                    passphrase,
-                ) {
-                    Ok(acc) => acc,
-                    Err(e) => {
-                        self.passphrase_popup_error = Some(format!("Invalid passphrase: {}", e));
-                        self.passphrase_popup_purpose =
-                            Some(crate::action::PassphrasePurpose::CreateAccount);
-                        self.passphrase_popup_input.clear();
+                let derivation_index = wallet_meta.account_count;
+
+                // Show progress spinner immediately and render before starting background work
+                self.tx_progress_visible = true;
+                self.tx_progress_frame = 0;
+                self.draw_ui()?;
+
+                // Clone values for the background thread
+                let action_tx = self.action_tx.clone();
+                let passphrase = passphrase.clone();
+
+                std::thread::spawn(move || {
+                    // Derive keys (CPU-intensive due to Argon2 decrypt + encrypt)
+                    match crate::domain::wallet::derive_and_encrypt_account_keys(
+                        &wallet_meta,
+                        derivation_index,
+                        &passphrase,
+                    ) {
+                        Ok((view_key, spend_public_key, encrypted_spend_key)) => {
+                            let _ = action_tx.send(Action::AccountKeysReady {
+                                view_key,
+                                spend_public_key,
+                                encrypted_spend_key,
+                                derivation_index,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = action_tx.send(Action::PassphraseError(
+                                crate::action::PassphrasePurpose::CreateAccount,
+                                format!("Invalid passphrase: {}", e),
+                            ));
+                        }
+                    }
+                });
+            }
+            Action::AccountKeysReady {
+                ref view_key,
+                ref spend_public_key,
+                ref encrypted_spend_key,
+                derivation_index,
+            } => {
+                // Hide spinner
+                self.tx_progress_visible = false;
+
+                // Get wallet_meta to update account_count
+                let wallet_meta = match &mut self.wallet_meta {
+                    Some(meta) => meta,
+                    None => {
+                        self.status_message = "Error: Wallet not initialized".to_string();
                         return Ok(());
                     }
                 };
+
+                // Create the account
+                let accounts = self.account_manager.list_accounts()?;
+                let id = accounts.len() as u64;
+                let name = format!("Account {}", id + 1);
+
+                let account = crate::domain::account::Account::new(
+                    id,
+                    name.clone(),
+                    derivation_index,
+                    *view_key,
+                    spend_public_key.clone(),
+                    encrypted_spend_key.clone(),
+                );
+
+                // Save account
+                if let Err(e) = self.store.save_account(&account) {
+                    self.status_message = format!("Failed to save account: {}", e);
+                    return Ok(());
+                }
+
+                // Increment account count and save wallet meta
+                wallet_meta.account_count += 1;
+                if let Err(e) = self.store.save_wallet_meta(wallet_meta) {
+                    self.status_message = format!("Failed to save wallet meta: {}", e);
+                    return Ok(());
+                }
 
                 // Clear passphrase state
                 self.passphrase_popup_purpose = None;
@@ -1067,7 +1129,7 @@ impl App {
                 }
 
                 self.switch_tab(Tab::Accounts);
-                self.status_message = format!("Created account: {}", account.name);
+                self.status_message = format!("Created account: {}", name);
             }
             Action::SelectAccount(index) => {
                 self.account_manager.set_active_account(index)?;
