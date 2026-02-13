@@ -18,7 +18,7 @@ use crate::{
         dev::DevComponent,
         history::HistoryComponent,
         receive::ReceiveComponent,
-        send::{AddressType, SendComponent, SendMode},
+        send::{AddressType, SendComponent},
         settings::SettingsComponent,
         settings::SettingsMode,
         tokens::TokensComponent,
@@ -38,9 +38,9 @@ use crate::{
         wallet::WalletMeta,
     },
     infra::{
+        block_scanner::BlockScanner,
         devnet::DevNet,
         faucet::Faucet,
-        block_scanner::BlockScanner,
         store::{SELECTED_NETWORK_KEY, Store},
     },
     tui::{Event, Tui},
@@ -168,6 +168,10 @@ pub struct App {
     // Rescan height input
     pub entering_rescan_height: bool,
     pub rescan_height_input: String,
+    // Passphrase popup state
+    pub passphrase_popup_purpose: Option<crate::action::PassphrasePurpose>,
+    pub passphrase_popup_input: String,
+    pub passphrase_popup_error: Option<String>,
 }
 
 impl App {
@@ -277,6 +281,10 @@ impl App {
             // Rescan height input
             entering_rescan_height: false,
             rescan_height_input: String::new(),
+            // Passphrase popup
+            passphrase_popup_purpose: None,
+            passphrase_popup_input: String::new(),
+            passphrase_popup_error: None,
         })
     }
 
@@ -301,7 +309,10 @@ impl App {
     }
 
     /// Handle background scan progress updates.
-    fn handle_scan_update(&mut self, update: crate::infra::block_scanner::BlockScanUpdate) -> Result<()> {
+    fn handle_scan_update(
+        &mut self,
+        update: crate::infra::block_scanner::BlockScanUpdate,
+    ) -> Result<()> {
         use crate::infra::block_scanner::BlockScanUpdate;
 
         match update {
@@ -321,7 +332,10 @@ impl App {
                 self.tip_block_number = Some(tip_block);
                 self.status_message = "Scanning...".to_string();
             }
-            BlockScanUpdate::ReorgDetected { fork_block, new_tip } => {
+            BlockScanUpdate::ReorgDetected {
+                fork_block,
+                new_tip,
+            } => {
                 self.status_message = format!(
                     "Reorg detected at block {}, rescanning to tip {}...",
                     fork_block, new_tip
@@ -538,6 +552,35 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle passphrase popup input mode
+        if self.passphrase_popup_purpose.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel and close popup
+                    self.passphrase_popup_purpose = None;
+                    self.passphrase_popup_input.clear();
+                    self.passphrase_popup_error = None;
+                }
+                KeyCode::Enter => {
+                    if !self.passphrase_popup_input.is_empty() {
+                        // Send the confirm action with the passphrase
+                        let passphrase = self.passphrase_popup_input.clone();
+                        self.action_tx.send(Action::ConfirmPassphrase(passphrase))?;
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.passphrase_popup_input.pop();
+                    self.passphrase_popup_error = None;
+                }
+                KeyCode::Char(c) => {
+                    self.passphrase_popup_input.push(c);
+                    self.passphrase_popup_error = None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         // Handle rescan height input mode
         if self.entering_rescan_height {
             match key.code {
@@ -586,13 +629,9 @@ impl App {
         // Normal mode
         // Check if we're in an input mode that should capture all keystrokes
         let is_editing = match self.active_tab {
-            Tab::Send => {
-                self.send_component.is_editing
-                    || self.send_component.mode == SendMode::EnteringPassphrase
-            }
+            Tab::Send => self.send_component.is_editing,
             Tab::Settings => {
-                self.settings_component.mode == SettingsMode::EnteringPassphraseForExport
-                    || self.settings_component.mode == SettingsMode::EnteringPassphraseForCreate
+                false // Settings no longer has internal input modes
             }
             Tab::Tokens => self.tokens_component.is_editing(),
             Tab::Dev => self
@@ -840,10 +879,50 @@ impl App {
                         }
                     }
                 }
-
             }
             Action::ScanProgress(update) => {
                 self.handle_scan_update(update)?;
+            }
+            Action::ShowPassphrasePopup(purpose) => {
+                self.passphrase_popup_purpose = Some(purpose);
+                self.passphrase_popup_input.clear();
+                self.passphrase_popup_error = None;
+            }
+            Action::CancelPassphrasePopup => {
+                self.passphrase_popup_purpose = None;
+                self.passphrase_popup_input.clear();
+                self.passphrase_popup_error = None;
+            }
+            Action::ConfirmPassphrase(ref passphrase) => {
+                if let Some(ref purpose) = self.passphrase_popup_purpose.clone() {
+                    use crate::action::PassphrasePurpose;
+                    let result = match purpose {
+                        PassphrasePurpose::SendTransaction => self
+                            .action_tx
+                            .send(Action::SendTransactionWithPassphrase(passphrase.clone())),
+                        PassphrasePurpose::CreateAccount => self
+                            .action_tx
+                            .send(Action::CreateAccountWithPassphrase(passphrase.clone())),
+                        PassphrasePurpose::ExportBackup => self
+                            .action_tx
+                            .send(Action::ExportWalletBackupWithPassphrase(passphrase.clone())),
+                        PassphrasePurpose::TransferToken => self
+                            .action_tx
+                            .send(Action::TransferTokenWithPassphrase(passphrase.clone())),
+                        PassphrasePurpose::MintToken => self
+                            .action_tx
+                            .send(Action::MintTokenWithPassphrase(passphrase.clone())),
+                        PassphrasePurpose::CreateToken => self
+                            .action_tx
+                            .send(Action::CreateTokenWithPassphrase(passphrase.clone())),
+                    };
+                    if result.is_ok() {
+                        // Close popup on success (actual action will handle errors)
+                        self.passphrase_popup_purpose = None;
+                        self.passphrase_popup_input.clear();
+                        self.passphrase_popup_error = None;
+                    }
+                }
             }
             Action::Quit => {
                 self.should_quit = true;
@@ -860,8 +939,9 @@ impl App {
                 let wallet_meta = match &mut self.wallet_meta {
                     Some(meta) => meta,
                     None => {
-                        self.settings_component.error_message =
-                            Some("Wallet not initialized".to_string());
+                        self.passphrase_popup_error = Some("Wallet not initialized".to_string());
+                        self.passphrase_popup_purpose =
+                            Some(crate::action::PassphrasePurpose::CreateAccount);
                         self.status_message = "Error: Wallet not initialized".to_string();
                         return Ok(());
                     }
@@ -877,16 +957,18 @@ impl App {
                 ) {
                     Ok(acc) => acc,
                     Err(e) => {
-                        self.settings_component.error_message =
-                            Some(format!("Invalid passphrase: {}", e));
+                        self.passphrase_popup_error = Some(format!("Invalid passphrase: {}", e));
+                        self.passphrase_popup_purpose =
+                            Some(crate::action::PassphrasePurpose::CreateAccount);
+                        self.passphrase_popup_input.clear();
                         return Ok(());
                     }
                 };
 
-                // Clear passphrase input and return to menu mode
-                self.settings_component.passphrase_input.clear();
-                self.settings_component.mode =
-                    crate::components::settings::SettingsMode::Menu;
+                // Clear passphrase state
+                self.passphrase_popup_purpose = None;
+                self.passphrase_popup_input.clear();
+                self.passphrase_popup_error = None;
 
                 let accounts = self.account_manager.list_accounts()?;
                 let new_index = accounts.len().saturating_sub(1);
@@ -1122,8 +1204,10 @@ impl App {
                     let wallet_meta = match &self.wallet_meta {
                         Some(meta) => meta,
                         None => {
-                            self.send_component.error_message =
+                            self.passphrase_popup_error =
                                 Some("Wallet not initialized".to_string());
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::SendTransaction);
                             self.status_message = "Send failed: no wallet".to_string();
                             return Ok(());
                         }
@@ -1132,8 +1216,11 @@ impl App {
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(key) => key,
                         Err(e) => {
-                            self.send_component.error_message =
+                            self.passphrase_popup_error =
                                 Some(format!("Invalid passphrase: {}", e));
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::SendTransaction);
+                            self.passphrase_popup_input.clear();
                             return Ok(());
                         }
                     };
@@ -1196,8 +1283,6 @@ impl App {
                                 crate::components::send::SendField::Recipient;
                             self.send_component.is_editing = false;
                             self.send_component.error_message = None;
-                            self.send_component.mode = SendMode::Form;
-                            self.send_component.passphrase_input.clear();
                             // Note: success_message is kept to show the tx hash to user
                         }
                         Err(e) => {
@@ -1357,17 +1442,24 @@ impl App {
                     };
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self
-                        .wallet_meta
-                        .as_ref()
-                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
+                    let wallet_meta = match self.wallet_meta.as_ref() {
+                        Some(meta) => meta,
+                        None => {
+                            self.passphrase_popup_error =
+                                Some("Wallet not initialized".to_string());
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::TransferToken);
+                            return Ok(());
+                        }
+                    };
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
-                            self.tokens_component.error_message =
+                            self.passphrase_popup_error =
                                 Some(format!("Invalid passphrase: {}", e));
-                            self.status_message =
-                                "CT transfer failed: invalid passphrase".to_string();
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::TransferToken);
+                            self.passphrase_popup_input.clear();
                             return Ok(());
                         }
                     };
@@ -1436,10 +1528,8 @@ impl App {
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
 
-                            // Clear transfer form and passphrase
+                            // Clear transfer form
                             self.tokens_component.clear_transfer();
-                            self.tokens_component.passphrase_input.clear();
-                            self.tokens_component.pending_action = None;
                             self.tokens_component.mode =
                                 crate::components::tokens::TokensMode::List;
                         }
@@ -1572,16 +1662,24 @@ impl App {
                     };
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self
-                        .wallet_meta
-                        .as_ref()
-                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
+                    let wallet_meta = match self.wallet_meta.as_ref() {
+                        Some(meta) => meta,
+                        None => {
+                            self.passphrase_popup_error =
+                                Some("Wallet not initialized".to_string());
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::MintToken);
+                            return Ok(());
+                        }
+                    };
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
-                            self.tokens_component.error_message =
+                            self.passphrase_popup_error =
                                 Some(format!("Invalid passphrase: {}", e));
-                            self.status_message = "CT mint failed: invalid passphrase".to_string();
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::MintToken);
+                            self.passphrase_popup_input.clear();
                             return Ok(());
                         }
                     };
@@ -1622,10 +1720,8 @@ impl App {
                                 info!("Failed to remove spent funding cell: {}", e);
                             }
 
-                            // Clear mint form and passphrase
+                            // Clear mint form
                             self.tokens_component.clear_mint();
-                            self.tokens_component.passphrase_input.clear();
-                            self.tokens_component.pending_action = None;
                             self.tokens_component.mode =
                                 crate::components::tokens::TokensMode::List;
                         }
@@ -1733,16 +1829,24 @@ impl App {
                     let token_id = built_tx.token_id;
 
                     // Sign the transaction using provided passphrase
-                    let wallet_meta = self
-                        .wallet_meta
-                        .as_ref()
-                        .ok_or_else(|| color_eyre::eyre::eyre!("Wallet not initialized"))?;
+                    let wallet_meta = match self.wallet_meta.as_ref() {
+                        Some(meta) => meta,
+                        None => {
+                            self.passphrase_popup_error =
+                                Some("Wallet not initialized".to_string());
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::CreateToken);
+                            return Ok(());
+                        }
+                    };
                     let spend_key_bytes = match account.decrypt_spend_key(wallet_meta, passphrase) {
                         Ok(bytes) => bytes,
                         Err(e) => {
-                            self.tokens_component.error_message =
+                            self.passphrase_popup_error =
                                 Some(format!("Invalid passphrase: {}", e));
-                            self.status_message = "Genesis failed: invalid passphrase".to_string();
+                            self.passphrase_popup_purpose =
+                                Some(crate::action::PassphrasePurpose::CreateToken);
+                            self.passphrase_popup_input.clear();
                             return Ok(());
                         }
                     };
@@ -1805,10 +1909,8 @@ impl App {
                                 self.tokens_component.set_ct_cells(ct_cells);
                             }
 
-                            // Clear genesis form, passphrase, and return to list
+                            // Clear genesis form and return to list
                             self.tokens_component.clear_genesis();
-                            self.tokens_component.passphrase_input.clear();
-                            self.tokens_component.pending_action = None;
                             self.tokens_component.mode =
                                 crate::components::tokens::TokensMode::List;
                         }
@@ -2049,25 +2151,35 @@ impl App {
                                     passphrase,
                                 ) {
                                     Ok(backup_string) => {
-                                        self.settings_component.passphrase_input.clear();
+                                        // Clear passphrase state
+                                        self.passphrase_popup_purpose = None;
+                                        self.passphrase_popup_input.clear();
+                                        self.passphrase_popup_error = None;
                                         self.settings_component.set_backup_string(backup_string);
                                         self.settings_component.error_message = None;
                                     }
                                     Err(e) => {
-                                        self.settings_component.error_message =
+                                        self.passphrase_popup_error =
                                             Some(format!("Export failed: {}", e));
+                                        self.passphrase_popup_purpose =
+                                            Some(crate::action::PassphrasePurpose::ExportBackup);
+                                        self.passphrase_popup_input.clear();
                                     }
                                 }
                             }
                             Err(e) => {
-                                self.settings_component.error_message =
+                                self.passphrase_popup_error =
                                     Some(format!("Invalid passphrase: {}", e));
+                                self.passphrase_popup_purpose =
+                                    Some(crate::action::PassphrasePurpose::ExportBackup);
+                                self.passphrase_popup_input.clear();
                             }
                         }
                     }
                     None => {
-                        self.settings_component.error_message =
-                            Some("Wallet not initialized".to_string());
+                        self.passphrase_popup_error = Some("Wallet not initialized".to_string());
+                        self.passphrase_popup_purpose =
+                            Some(crate::action::PassphrasePurpose::ExportBackup);
                     }
                 }
             }
@@ -2514,8 +2626,6 @@ impl App {
         let send_is_editing = self.send_component.is_editing;
         let send_error_message = self.send_component.error_message.clone();
         let send_success_message = self.send_component.success_message.clone();
-        let send_mode = self.send_component.mode;
-        let send_passphrase_input = self.send_component.passphrase_input.clone();
         // Settings component data
         let settings_current_network = self.settings_component.current_network.clone();
         let settings_mode = self.settings_component.mode;
@@ -2525,7 +2635,6 @@ impl App {
         let settings_backup_string = self.settings_component.backup_string.clone();
         let settings_error_message = self.settings_component.error_message.clone();
         let settings_success_message = self.settings_component.success_message.clone();
-        let settings_passphrase_input = self.settings_component.passphrase_input.clone();
         // Tokens component data
         let tokens_account = self.tokens_component.account.clone();
         let tokens_balances = self.tokens_component.balances.clone();
@@ -2545,8 +2654,6 @@ impl App {
         let tokens_is_editing = self.tokens_component.is_editing;
         let tokens_error_message = self.tokens_component.error_message.clone();
         let tokens_success_message = self.tokens_component.success_message.clone();
-        let tokens_passphrase_input = self.tokens_component.passphrase_input.clone();
-        let tokens_pending_action = self.tokens_component.pending_action;
         // History component data
         let history_transactions = self.history_component.transactions.clone();
         let history_selected_index = self.history_component.selected_index;
@@ -2594,6 +2701,11 @@ impl App {
         let entering_rescan_height = self.entering_rescan_height;
         let rescan_height_input = self.rescan_height_input.clone();
         let config_scan_start_block = self.config.network.scan_start_block;
+
+        // Passphrase popup state
+        let passphrase_popup_purpose = self.passphrase_popup_purpose.clone();
+        let passphrase_popup_input = self.passphrase_popup_input.clone();
+        let passphrase_popup_error = self.passphrase_popup_error.clone();
 
         // Pre-compute layout to save tab area for mouse click detection
         let size = self.tui.terminal.size()?;
@@ -2677,7 +2789,6 @@ impl App {
                         settings_backup_string.as_deref(),
                         settings_error_message.as_deref(),
                         settings_success_message.as_deref(),
-                        &settings_passphrase_input,
                     );
                 }
                 Tab::Accounts => {
@@ -2701,8 +2812,6 @@ impl App {
                         send_is_editing,
                         send_error_message.as_deref(),
                         send_success_message.as_deref(),
-                        send_mode,
-                        &send_passphrase_input,
                     );
                 }
                 Tab::Receive => {
@@ -2736,8 +2845,6 @@ impl App {
                         tokens_is_editing,
                         tokens_error_message.as_deref(),
                         tokens_success_message.as_deref(),
-                        &tokens_passphrase_input,
-                        tokens_pending_action,
                     );
                 }
                 Tab::History => {
@@ -2835,14 +2942,12 @@ impl App {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                let input_widget = Paragraph::new(display_value)
-                    .style(input_style)
-                    .block(
-                        Block::default()
-                            .title("Block Height")
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Yellow)),
-                    );
+                let input_widget = Paragraph::new(display_value).style(input_style).block(
+                    Block::default()
+                        .title("Block Height")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Yellow)),
+                );
                 f.render_widget(input_widget, overlay_chunks[1]);
 
                 // Hint text
@@ -2850,6 +2955,87 @@ impl App {
                     "[Enter] Start    [Esc] Cancel    [0-9] Input",
                     Style::default().fg(Color::DarkGray),
                 )])]);
+                f.render_widget(hint, overlay_chunks[2]);
+            }
+
+            // Draw passphrase popup if active
+            if let Some(ref purpose) = passphrase_popup_purpose {
+                use crate::action::PassphrasePurpose;
+
+                // Determine title based on purpose
+                let title = match purpose {
+                    PassphrasePurpose::SendTransaction => "Sign Transaction",
+                    PassphrasePurpose::CreateAccount => "Create Account",
+                    PassphrasePurpose::ExportBackup => "Export Backup",
+                    PassphrasePurpose::TransferToken => "Transfer Token",
+                    PassphrasePurpose::MintToken => "Mint Token",
+                    PassphrasePurpose::CreateToken => "Create Token",
+                };
+
+                // Calculate centered popup area
+                let area = f.area();
+                let popup_width = 55u16.min(area.width.saturating_sub(4));
+                let popup_height = 9u16.min(area.height.saturating_sub(4));
+                let x = (area.width.saturating_sub(popup_width)) / 2;
+                let y = (area.height.saturating_sub(popup_height)) / 2;
+                let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+                // Clear background
+                f.render_widget(ratatui::widgets::Clear, popup_area);
+
+                let block = Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan));
+
+                let inner = block.inner(popup_area);
+                f.render_widget(block, popup_area);
+
+                let overlay_chunks = Layout::vertical([
+                    Constraint::Length(2), // Instruction
+                    Constraint::Length(3), // Input field
+                    Constraint::Length(2), // Hint/Error
+                    Constraint::Min(0),    // Padding
+                ])
+                .split(inner);
+
+                // Instruction text
+                let instruction = Paragraph::new(vec![Line::from(vec![Span::styled(
+                    "Enter your wallet passphrase to continue:",
+                    Style::default().fg(Color::Gray),
+                )])]);
+                f.render_widget(instruction, overlay_chunks[0]);
+
+                // Passphrase input (masked)
+                let masked: String = "*".repeat(passphrase_popup_input.len());
+                let display_value = if masked.is_empty() {
+                    "_".to_string()
+                } else {
+                    format!("{}_", masked)
+                };
+                let input_widget = Paragraph::new(display_value)
+                    .style(Style::default().fg(Color::White))
+                    .block(
+                        Block::default()
+                            .title("Passphrase")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow)),
+                    );
+                f.render_widget(input_widget, overlay_chunks[1]);
+
+                // Error message or hint
+                let hint_text = if let Some(ref err) = passphrase_popup_error {
+                    Line::from(vec![Span::styled(
+                        format!("Error: {}", err),
+                        Style::default().fg(Color::Red),
+                    )])
+                } else {
+                    Line::from(vec![Span::styled(
+                        "[Enter] Confirm    [Esc] Cancel",
+                        Style::default().fg(Color::DarkGray),
+                    )])
+                };
+                let hint = Paragraph::new(vec![hint_text]);
                 f.render_widget(hint, overlay_chunks[2]);
             }
         })?;

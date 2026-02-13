@@ -5,8 +5,8 @@
 
 use tempfile::TempDir;
 
-use super::devnet::DevNet;
 use super::TestEnv;
+use super::devnet::DevNet;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,

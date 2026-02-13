@@ -5,7 +5,7 @@
 //! Uses packed block format for more efficient network transfer.
 
 use ckb_types::{packed, prelude::*};
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -244,7 +244,10 @@ impl BlockScanner {
                 let lock_script = output.lock();
 
                 // Check if this output uses stealth-lock
-                let lock_code_hash: [u8; 32] = lock_script.code_hash().as_slice().try_into()
+                let lock_code_hash: [u8; 32] = lock_script
+                    .code_hash()
+                    .as_slice()
+                    .try_into()
                     .map_err(|_| eyre!("Invalid lock code hash length"))?;
                 if lock_code_hash != stealth_code_hash {
                     continue;
@@ -270,7 +273,10 @@ impl BlockScanner {
                     // Determine cell type
                     let type_script_opt = output.type_().to_opt();
                     let (is_ct, is_ct_info) = if let Some(ref ts) = type_script_opt {
-                        let type_code_hash: [u8; 32] = ts.code_hash().as_slice().try_into()
+                        let type_code_hash: [u8; 32] = ts
+                            .code_hash()
+                            .as_slice()
+                            .try_into()
                             .map_err(|_| eyre!("Invalid type code hash length"))?;
                         let is_ct = ct_code_hash
                             .as_ref()
@@ -295,8 +301,10 @@ impl BlockScanner {
 
                         if let Some((commitment, encrypted_amount)) =
                             Self::parse_ct_cell_data(output_data_bytes)
-                            && let Some(shared_secret) = derive_shared_secret(lock_args_bytes, view_key)
-                            && let Some(amount) = ct::decrypt_amount(&encrypted_amount, &shared_secret)
+                            && let Some(shared_secret) =
+                                derive_shared_secret(lock_args_bytes, view_key)
+                            && let Some(amount) =
+                                ct::decrypt_amount(&encrypted_amount, &shared_secret)
                         {
                             let type_script_args = type_script_opt
                                 .as_ref()
@@ -465,8 +473,13 @@ impl BlockScanner {
                 if let Some(ct_deltas) = account_ct_delta.get(&account_id) {
                     for (&token_id, &delta) in ct_deltas {
                         if delta != 0 {
-                            let record =
-                                TxRecord::ct(tx_hash_bytes, token_id, delta, timestamp, block_number);
+                            let record = TxRecord::ct(
+                                tx_hash_bytes,
+                                token_id,
+                                delta,
+                                timestamp,
+                                block_number,
+                            );
                             result
                                 .tx_records
                                 .entry(account_id)
@@ -528,10 +541,7 @@ impl BlockScanner {
 
         // Only log if there are blocks to scan
         if current <= tip {
-            info!(
-                "Starting block scan from {} to {} (tip)",
-                current, tip
-            );
+            info!("Starting block scan from {} to {} (tip)", current, tip);
         } else {
             debug!("Already synced to tip {}, no new blocks to scan", tip);
             // Send a progress update with current tip even when already synced
@@ -647,7 +657,8 @@ impl BlockScanner {
                 if !out_points.is_empty() {
                     self.store.remove_spent_cells(*account_id, out_points)?;
                     self.store.remove_spent_ct_cells(*account_id, out_points)?;
-                    self.store.remove_spent_ct_info_cells(*account_id, out_points)?;
+                    self.store
+                        .remove_spent_ct_info_cells(*account_id, out_points)?;
                 }
             }
             for (account_id, records) in &result.tx_records {
@@ -710,7 +721,9 @@ impl BlockScanner {
 
         // Notify
         if let Some(tx) = update_tx {
-            let _ = tx.send(BlockScanUpdate::Started { is_full_rescan: true });
+            let _ = tx.send(BlockScanUpdate::Started {
+                is_full_rescan: true,
+            });
         }
 
         // Run scan from specified height
@@ -783,10 +796,8 @@ impl BlockScanner {
                 }
                 Err(e) => {
                     // Task panicked
-                    let _ = update_tx_final.send(BlockScanUpdate::Error(format!(
-                        "Scan task panicked: {}",
-                        e
-                    )));
+                    let _ = update_tx_final
+                        .send(BlockScanUpdate::Error(format!("Scan task panicked: {}", e)));
                 }
             }
         });
@@ -887,7 +898,10 @@ mod tests {
             new_tip: 600,
         };
         match update {
-            BlockScanUpdate::ReorgDetected { fork_block, new_tip } => {
+            BlockScanUpdate::ReorgDetected {
+                fork_block,
+                new_tip,
+            } => {
                 assert_eq!(fork_block, 500);
                 assert_eq!(new_tip, 600);
             }

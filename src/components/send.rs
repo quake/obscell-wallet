@@ -10,7 +10,11 @@ use ratatui::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{action::Action, domain::account::Account, tui::Frame};
+use crate::{
+    action::{Action, PassphrasePurpose},
+    domain::account::Account,
+    tui::Frame,
+};
 
 use super::Component;
 
@@ -33,15 +37,6 @@ pub enum AddressType {
     Unknown,
 }
 
-/// Send mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SendMode {
-    /// Normal form input
-    Form,
-    /// Entering passphrase for signing
-    EnteringPassphrase,
-}
-
 /// Component for sending CKB to stealth addresses or CKB addresses.
 pub struct SendComponent {
     action_tx: UnboundedSender<Action>,
@@ -52,8 +47,6 @@ pub struct SendComponent {
     pub is_editing: bool,
     pub error_message: Option<String>,
     pub success_message: Option<String>,
-    pub mode: SendMode,
-    pub passphrase_input: String,
 }
 
 impl SendComponent {
@@ -67,8 +60,6 @@ impl SendComponent {
             is_editing: false,
             error_message: None,
             success_message: None,
-            mode: SendMode::Form,
-            passphrase_input: String::new(),
         }
     }
 
@@ -85,15 +76,14 @@ impl SendComponent {
         self.is_editing = false;
         self.error_message = None;
         self.success_message = None;
-        self.mode = SendMode::Form;
-        self.passphrase_input.clear();
     }
 
-    /// Start passphrase input mode for signing
+    /// Request passphrase popup for signing transaction
     pub fn start_passphrase_input(&mut self) {
-        self.passphrase_input.clear();
         self.error_message = None;
-        self.mode = SendMode::EnteringPassphrase;
+        let _ = self.action_tx.send(Action::ShowPassphrasePopup(
+            PassphrasePurpose::SendTransaction,
+        ));
     }
 
     /// Detect the type of address from recipient string.
@@ -264,15 +254,7 @@ impl SendComponent {
         is_editing: bool,
         error_message: Option<&str>,
         success_message: Option<&str>,
-        mode: SendMode,
-        passphrase_input: &str,
     ) {
-        // Show passphrase input overlay if in EnteringPassphrase mode
-        if mode == SendMode::EnteringPassphrase {
-            Self::draw_passphrase_overlay(f, area, passphrase_input, error_message);
-            return;
-        }
-
         let chunks = Layout::vertical([
             Constraint::Length(5), // Account info
             Constraint::Length(5), // Recipient
@@ -487,94 +469,11 @@ impl SendComponent {
         );
         f.render_widget(status_widget, chunks[4]);
     }
-
-    fn draw_passphrase_overlay(
-        f: &mut Frame,
-        area: Rect,
-        passphrase_input: &str,
-        error_message: Option<&str>,
-    ) {
-        let block = Block::default()
-            .title("Sign Transaction")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let chunks = Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Length(3),
-            Constraint::Length(2),
-            Constraint::Min(0),
-        ])
-        .split(inner);
-
-        // Instructions
-        let instructions = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "Enter your wallet passphrase to sign and send the transaction:",
-            Style::default().fg(Color::Gray),
-        )])]);
-        f.render_widget(instructions, chunks[0]);
-
-        // Passphrase input (show masked)
-        let masked: String = "*".repeat(passphrase_input.len());
-        let input_widget = Paragraph::new(masked)
-            .style(Style::default().fg(Color::White))
-            .block(
-                Block::default()
-                    .title("Passphrase")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
-        f.render_widget(input_widget, chunks[1]);
-
-        // Error message or hint
-        let hint_text = if let Some(err) = error_message {
-            Line::from(vec![Span::styled(
-                format!("Error: {}", err),
-                Style::default().fg(Color::Red),
-            )])
-        } else {
-            Line::from(vec![Span::styled(
-                "[Enter] Sign & Send    [Esc] Cancel",
-                Style::default().fg(Color::DarkGray),
-            )])
-        };
-        let hint = Paragraph::new(vec![hint_text]);
-        f.render_widget(hint, chunks[2]);
-    }
 }
 
 impl Component for SendComponent {
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         self.error_message = None;
-
-        // Handle passphrase input mode
-        if self.mode == SendMode::EnteringPassphrase {
-            match key.code {
-                KeyCode::Esc => {
-                    self.mode = SendMode::Form;
-                    self.passphrase_input.clear();
-                }
-                KeyCode::Enter => {
-                    if !self.passphrase_input.is_empty() {
-                        // Send action to sign and send with the entered passphrase
-                        self.action_tx.send(Action::SendTransactionWithPassphrase(
-                            self.passphrase_input.clone(),
-                        ))?;
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.passphrase_input.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.passphrase_input.push(c);
-                }
-                _ => {}
-            }
-            return Ok(());
-        }
 
         let on_input_field =
             self.focused_field == SendField::Recipient || self.focused_field == SendField::Amount;
@@ -638,8 +537,6 @@ impl Component for SendComponent {
             self.is_editing,
             self.error_message.as_deref(),
             self.success_message.as_deref(),
-            self.mode,
-            &self.passphrase_input,
         );
     }
 }

@@ -5,7 +5,7 @@ rpc_url = "https://testnet-rich-indexer.ckbapp.dev"
 scan_start_block = 20101200
 
 [contracts]
-stealth_lock_code_hash = "0x1d7f12a173ed22df9de1180a0b11e2a4368568017d9cfdfb5658b50c147549d6"
+stealth_lock_code_hash = "0x0dc965b5bfb6db2759275ad7d92ee502e10955cca789d001af03e3576cfe3f1c"
 ct_token_code_hash = "0x708185bddbd4b22b456449235c230f74e85a26aaa720ec3eb1299843300ff34a"
 ct_info_code_hash = "0x150fdb31620455e6b2a1c2bdb44fa3b97474aedf0480c3acf8558d90e9ae156b"
 ckb_auth_code_hash = "0x0915983bb31584df4566e0946fd00ef1e9a75ad37a39ce70fec9b5cbf3b87021"

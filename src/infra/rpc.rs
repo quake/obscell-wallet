@@ -1,9 +1,9 @@
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_sdk::{
-    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
     CkbRpcClient,
+    rpc::ckb_indexer::{Order, ScriptType, SearchKey, SearchMode, Tx},
 };
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use tracing::{debug, warn};
 
 use std::time::Instant;

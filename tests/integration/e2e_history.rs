@@ -7,8 +7,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::devnet::DevNet;
 use super::TestEnv;
+use super::devnet::DevNet;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::cell::{TxRecord, TxType};
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
-    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
+    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
+    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::domain::tx_builder::StealthTxBuilder;

@@ -3,6 +3,23 @@ use strum::Display;
 
 use crate::infra::block_scanner::BlockScanUpdate;
 
+/// Purpose of the passphrase popup - determines what action to take after passphrase is entered
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PassphrasePurpose {
+    /// Sign and send a CKB transaction
+    SendTransaction,
+    /// Create a new account
+    CreateAccount,
+    /// Export wallet backup
+    ExportBackup,
+    /// Transfer token
+    TransferToken,
+    /// Mint token
+    MintToken,
+    /// Create (genesis) token
+    CreateToken,
+}
+
 /// Actions that can be triggered by user input or internal events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Display)]
 #[strum(serialize_all = "snake_case")]
@@ -71,6 +88,14 @@ pub enum Action {
     InputChar(char),
     InputBackspace,
     InputDelete,
+
+    // Passphrase popup actions
+    /// Show the passphrase popup for a specific purpose
+    ShowPassphrasePopup(PassphrasePurpose),
+    /// Cancel and close the passphrase popup
+    CancelPassphrasePopup,
+    /// Confirm the passphrase (triggered by Enter in popup)
+    ConfirmPassphrase(String),
 
     // Scrolling
     ScrollUp,
