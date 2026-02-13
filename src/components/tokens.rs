@@ -63,7 +63,7 @@ impl TokenOperation {
     fn label(&self) -> &'static str {
         match self {
             TokenOperation::Transfer => "Transfer",
-            TokenOperation::Mint => "Mint (Issuer)",
+            TokenOperation::Mint => "Mint",
             TokenOperation::Genesis => "Create New Token",
         }
     }
