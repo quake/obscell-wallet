@@ -25,7 +25,7 @@ use crate::{
 
 /// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
 /// CT cell needs: capacity (8B) + lock (stealth 86B) + type (65B) + data (72B) = 231 bytes
-/// Data format v2: commitment (32B) + encrypted(amount 8B + blinding 32B) = 72B
+/// Data format: commitment (32B) + encrypted(amount 8B + blinding 32B) = 72B
 const MIN_CT_CELL_CAPACITY: u64 = 231_00000000;
 
 /// Minimum cell capacity for a plain stealth cell (no type script).
@@ -680,7 +680,7 @@ impl CtTxBuilder {
             args: JsonBytes::from_vec(script_args.clone()),
         };
 
-        // Encrypt amount AND blinding using shared secret (72B format v2)
+        // Encrypt amount AND blinding using shared secret
         let encrypted = encrypt_amount_and_blinding(amount, blinding, &shared_secret);
 
         // Build output data: commitment (32B) || encrypted(amount + blinding) (40B) = 72B
@@ -723,7 +723,7 @@ impl CtTxBuilder {
             args: JsonBytes::from_vec(script_args),
         };
 
-        // Encrypt amount AND blinding for ourselves using shared secret (72B format v2)
+        // Encrypt amount AND blinding for ourselves using shared secret
         let encrypted = encrypt_amount_and_blinding(amount, blinding, &shared_secret);
 
         // Build output data: commitment (32B) || encrypted(amount + blinding) (40B) = 72B
@@ -898,8 +898,7 @@ mod tests {
     #[test]
     fn test_min_ct_cell_capacity() {
         // 231 CKB minimum for CT cell with stealth-lock
-        // Data format v2: commitment (32B) + encrypted(amount 8B + blinding 32B) = 72B
-        // (increased from 223 CKB after data changed from 64B to 72B)
+        // Data format: commitment (32B) + encrypted(amount 8B + blinding 32B) = 72B
         assert_eq!(MIN_CT_CELL_CAPACITY, 231_00000000);
     }
 }

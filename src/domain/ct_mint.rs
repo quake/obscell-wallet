@@ -19,7 +19,7 @@ use crate::{
     config::Config,
     domain::{
         account::Account,
-        ct::{encrypt_amount, prove_range},
+        ct::{encrypt_amount_and_blinding, prove_range},
         ct_info::{CtInfoData, MINTABLE},
         stealth::{
             derive_stealth_secret, generate_ephemeral_key,
@@ -33,10 +33,10 @@ use crate::{
 /// - Base: 8 bytes (capacity field)
 /// - Lock (stealth-lock): code_hash (32) + hash_type (1) + args (53 = eph_pub 33 + pubkey_hash 20) = 86 bytes
 /// - Type (ct-token-type): code_hash (32) + hash_type (1) + args (32 = ct_info_script_hash) = 65 bytes
-/// - Data: commitment (32) + encrypted_amount (32) = 64 bytes
+/// - Data: commitment (32) + encrypted(amount 8 + blinding 32) = 72 bytes
 ///
-/// Total: 8 + 86 + 65 + 64 = 223 bytes → 223 CKB
-const MIN_CT_CELL_CAPACITY: u64 = 223_00000000;
+/// Total: 8 + 86 + 65 + 72 = 231 bytes → 231 CKB
+const MIN_CT_CELL_CAPACITY: u64 = 231_00000000;
 
 /// Default transaction fee in shannons (0.001 CKB = 100,000 shannons).
 /// This covers the minimum fee rate of 1000 shannons/KB for typical tx sizes.
@@ -569,12 +569,13 @@ fn build_ct_token_output(
         args: JsonBytes::from_vec(script_args),
     };
 
-    // Encrypt amount using the shared secret from ECDH
+    // Encrypt amount and blinding using the shared secret from ECDH
     // This allows the recipient to decrypt using their view key
-    let encrypted = encrypt_amount(amount, &shared_secret);
+    // For mint, blinding is always zero (enforced by ct-info-type contract)
+    let encrypted = encrypt_amount_and_blinding(amount, &Scalar::ZERO, &shared_secret);
 
-    // Build output data: commitment (32B) || encrypted_amount (32B)
-    let mut output_data = Vec::with_capacity(64);
+    // Build output data: commitment (32B) || encrypted(amount 8B || blinding 32B) = 72B
+    let mut output_data = Vec::with_capacity(72);
     output_data.extend_from_slice(commitment.as_bytes());
     output_data.extend_from_slice(&encrypted);
 
@@ -1081,8 +1082,8 @@ mod tests {
 
     #[test]
     fn test_min_capacities() {
-        // 223 CKB for CT cell (reduced from 255 after type args changed from 64B to 32B)
-        assert_eq!(MIN_CT_CELL_CAPACITY, 223_00000000);
+        // 231 CKB for CT cell (72 bytes data = commitment 32B + encrypted_data 40B)
+        assert_eq!(MIN_CT_CELL_CAPACITY, 231_00000000);
         assert_eq!(MIN_CT_INFO_CELL_CAPACITY, 230_00000000);
     }
 }

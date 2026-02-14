@@ -507,24 +507,18 @@ impl Scanner {
 
     /// Extract CT cell data from output_data.
     ///
-    /// Supports two formats:
-    /// - v1 (64 bytes): commitment (32B) || encrypted_amount (32B) - for mint cells
-    /// - v2 (72 bytes): commitment (32B) || encrypted(amount 8B + blinding 32B) - for transfer cells
+    /// Format: commitment (32B) || encrypted(amount 8B + blinding 32B) = 72 bytes
+    /// Both mint and transfer cells use this unified format.
+    /// For mint cells, blinding is zero.
     ///
-    /// Returns (commitment, encrypted_data, is_v2_format)
-    fn parse_ct_cell_data(data: &[u8]) -> Option<([u8; 32], Vec<u8>, bool)> {
+    /// Returns (commitment, encrypted_data) where encrypted_data is 40 bytes.
+    fn parse_ct_cell_data(data: &[u8]) -> Option<([u8; 32], [u8; 40])> {
         if data.len() >= 72 {
-            // v2 format: 72 bytes
             let mut commitment = [0u8; 32];
             commitment.copy_from_slice(&data[0..32]);
-            let encrypted = data[32..72].to_vec();
-            Some((commitment, encrypted, true))
-        } else if data.len() >= 64 {
-            // v1 format: 64 bytes
-            let mut commitment = [0u8; 32];
-            commitment.copy_from_slice(&data[0..32]);
-            let encrypted = data[32..64].to_vec();
-            Some((commitment, encrypted, false))
+            let mut encrypted = [0u8; 40];
+            encrypted.copy_from_slice(&data[32..72]);
+            Some((commitment, encrypted))
         } else {
             None
         }
@@ -630,15 +624,15 @@ impl Scanner {
                         .as_ref()
                         .map(|d| d.as_bytes())
                         .unwrap_or(&[]);
-                    let (commitment, encrypted, is_v2) = match Self::parse_ct_cell_data(cell_data) {
+                    let (commitment, encrypted) = match Self::parse_ct_cell_data(cell_data) {
                         Some(data) => data,
                         None => {
-                            debug!("Invalid CT cell data format");
+                            debug!("Invalid CT cell data format (expected 72 bytes)");
                             continue;
                         }
                     };
 
-                    // Derive shared secret and decrypt amount (and blinding for v2)
+                    // Derive shared secret and decrypt amount and blinding
                     let shared_secret = match Self::derive_ct_shared_secret(lock_args, view_key) {
                         Some(s) => s,
                         None => {
@@ -647,8 +641,7 @@ impl Scanner {
                         }
                     };
 
-                    let (amount, blinding_factor, encrypted_for_storage) = if is_v2 {
-                        // v2 format: decrypt both amount and blinding
+                    let (amount, blinding_factor) =
                         match ct::decrypt_amount_and_blinding(&encrypted, &shared_secret) {
                             Some((amt, blinding)) => {
                                 // Verify decryption using commitment
@@ -659,34 +652,17 @@ impl Scanner {
                                     .ok();
                                 if let Some(cp) = commitment_point {
                                     if !ct::verify_decryption(amt, &blinding, &cp) {
-                                        debug!("CT commitment verification failed for v2 cell");
+                                        debug!("CT commitment verification failed");
                                         continue;
                                     }
                                 }
-                                // For storage, keep first 32 bytes
-                                let storage: [u8; 32] = if encrypted.len() >= 32 {
-                                    encrypted[..32].try_into().unwrap()
-                                } else {
-                                    [0u8; 32]
-                                };
-                                (amt, blinding.to_bytes(), storage)
+                                (amt, blinding.to_bytes())
                             }
                             None => {
-                                debug!("Failed to decrypt CT amount/blinding (v2)");
+                                debug!("Failed to decrypt CT amount/blinding");
                                 continue;
                             }
-                        }
-                    } else {
-                        // v1 format: only amount encrypted, blinding is zero (mint cells)
-                        let encrypted_amount: [u8; 32] = encrypted.try_into().unwrap_or([0u8; 32]);
-                        match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
-                            Some(amt) => (amt, [0u8; 32], encrypted_amount),
-                            None => {
-                                debug!("Failed to decrypt CT amount (v1)");
-                                continue;
-                            }
-                        }
-                    };
+                        };
 
                     // Extract type script args (ct_info_script_hash = 32 bytes)
                     let type_script_args: Vec<u8> = cell
@@ -705,7 +681,7 @@ impl Scanner {
                         out_point_bytes.clone(),
                         type_script_args,
                         commitment,
-                        encrypted_for_storage,
+                        encrypted.to_vec(),
                         blinding_factor,
                         amount,
                         lock_args.to_vec(),
@@ -953,11 +929,11 @@ impl Scanner {
                             .as_ref()
                             .map(|d| d.as_bytes())
                             .unwrap_or(&[]);
-                        let (commitment, encrypted, is_v2) =
+                        let (commitment, encrypted) =
                             match Self::parse_ct_cell_data(cell_data) {
                                 Some(data) => data,
                                 None => {
-                                    debug!("Invalid CT cell data format");
+                                    debug!("Invalid CT cell data format (expected 72 bytes)");
                                     break;
                                 }
                             };
@@ -971,8 +947,7 @@ impl Scanner {
                             }
                         };
 
-                        let (amount, blinding_factor, encrypted_for_storage) = if is_v2 {
-                            // v2 format: decrypt both amount and blinding
+                        let (amount, blinding_factor) =
                             match ct::decrypt_amount_and_blinding(&encrypted, &shared_secret) {
                                 Some((amt, blinding)) => {
                                     // Verify decryption using commitment
@@ -983,35 +958,17 @@ impl Scanner {
                                         .ok();
                                     if let Some(cp) = commitment_point {
                                         if !ct::verify_decryption(amt, &blinding, &cp) {
-                                            debug!("CT commitment verification failed for v2 cell");
+                                            debug!("CT commitment verification failed");
                                             break;
                                         }
                                     }
-                                    // For storage, keep first 32 bytes
-                                    let storage: [u8; 32] = if encrypted.len() >= 32 {
-                                        encrypted[..32].try_into().unwrap()
-                                    } else {
-                                        [0u8; 32]
-                                    };
-                                    (amt, blinding.to_bytes(), storage)
+                                    (amt, blinding.to_bytes())
                                 }
                                 None => {
-                                    debug!("Failed to decrypt CT amount/blinding (v2)");
+                                    debug!("Failed to decrypt CT amount/blinding");
                                     break;
                                 }
-                            }
-                        } else {
-                            // v1 format: only amount encrypted, blinding is zero (mint cells)
-                            let encrypted_amount: [u8; 32] =
-                                encrypted.try_into().unwrap_or([0u8; 32]);
-                            match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
-                                Some(amt) => (amt, [0u8; 32], encrypted_amount),
-                                None => {
-                                    debug!("Failed to decrypt CT amount (v1)");
-                                    break;
-                                }
-                            }
-                        };
+                            };
 
                         let type_script_args: Vec<u8> = cell
                             .output
@@ -1024,7 +981,7 @@ impl Scanner {
                             out_point_bytes.clone(),
                             type_script_args,
                             commitment,
-                            encrypted_for_storage,
+                            encrypted.to_vec(),
                             blinding_factor,
                             amount,
                             lock_args.to_vec(),
@@ -2035,17 +1992,13 @@ impl Scanner {
 
             // Decrypt the amount from output_data
             if let Some(output_data) = outputs_data.get(i)
-                && let Some((_, encrypted, is_v2)) =
+                && let Some((_, encrypted)) =
                     Self::parse_ct_cell_data(output_data.as_bytes())
                 && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
             {
-                let amount = if is_v2 {
+                let amount =
                     crate::domain::ct::decrypt_amount_and_blinding(&encrypted, &shared_secret)
-                        .map(|(amt, _)| amt)
-                } else {
-                    let encrypted_amount: [u8; 32] = encrypted.try_into().unwrap_or([0u8; 32]);
-                    crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
-                };
+                        .map(|(amt, _)| amt);
                 if let Some(amt) = amount {
                     *deltas.entry(token_id).or_insert(0) += amt as i64;
                 }
@@ -2112,17 +2065,13 @@ impl Scanner {
 
             // Decrypt the amount from output_data
             if let Some(prev_output_data) = prev_tx_view.inner.outputs_data.get(prev_index as usize)
-                && let Some((_, encrypted, is_v2)) =
+                && let Some((_, encrypted)) =
                     Self::parse_ct_cell_data(prev_output_data.as_bytes())
                 && let Some(shared_secret) = Self::derive_ct_shared_secret(lock_args, view_key)
             {
-                let amount = if is_v2 {
+                let amount =
                     crate::domain::ct::decrypt_amount_and_blinding(&encrypted, &shared_secret)
-                        .map(|(amt, _)| amt)
-                } else {
-                    let encrypted_amount: [u8; 32] = encrypted.try_into().unwrap_or([0u8; 32]);
-                    crate::domain::ct::decrypt_amount(&encrypted_amount, &shared_secret)
-                };
+                        .map(|(amt, _)| amt);
                 if let Some(amt) = amount {
                     *deltas.entry(token_id).or_insert(0) -= amt as i64;
                 }

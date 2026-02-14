@@ -192,8 +192,8 @@ pub struct CtCell {
     pub token_id: [u8; 32],
     /// Pedersen commitment (compressed Ristretto point).
     pub commitment: [u8; 32],
-    /// Encrypted amount (encrypted with receiver's key).
-    pub encrypted_amount: [u8; 32],
+    /// Encrypted data: amount (8B) || blinding (32B) = 40 bytes.
+    pub encrypted_data: Vec<u8>,
     /// Blinding factor for this commitment (local storage only).
     pub blinding_factor: [u8; 32],
     /// Decrypted amount (local storage only).
@@ -217,7 +217,7 @@ impl CtCell {
         out_point: Vec<u8>,
         type_script_args: Vec<u8>,
         commitment: [u8; 32],
-        encrypted_amount: [u8; 32],
+        encrypted_data: Vec<u8>,
         blinding_factor: [u8; 32],
         amount: u64,
         lock_script_args: Vec<u8>,
@@ -237,7 +237,7 @@ impl CtCell {
             type_script_args,
             token_id,
             commitment,
-            encrypted_amount,
+            encrypted_data,
             blinding_factor,
             amount,
             lock_script_args,

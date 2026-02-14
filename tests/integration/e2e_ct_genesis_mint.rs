@@ -8,8 +8,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::config::{
 use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
-    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
+    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::infra::scanner::Scanner;
@@ -2196,4 +2196,398 @@ fn test_mint_then_transfer_uses_separate_funding() {
         recipient_results[0].cells[0].amount
     );
     println!("\n=== Mint-then-transfer test PASSED ===");
+}
+
+/// Test CT token multiple consecutive transfers after mint.
+///
+/// This test validates the 72-byte cell data format fix for the blinding factor
+/// propagation issue. The core problem was:
+/// - Mint cells have blinding = 0 (enforced by ct-info-type contract)
+/// - Transfer creates change cells with non-zero blinding factors
+/// - Scanner was incorrectly hardcoding blinding = 0 for ALL cells
+/// - Second transfer failed because sum(C_in) != sum(C_out) when blinding mismatched
+///
+/// With the 72-byte format, change cells now store encrypted(amount || blinding),
+/// allowing the scanner to correctly recover the blinding factor for subsequent transfers.
+///
+/// Flow:
+/// 1. Issuer mints 1000 tokens to Alice
+/// 2. Alice transfers 300 to Bob (creates 700 change for Alice)
+/// 3. Alice transfers 200 to Carol using her change cell (creates 500 change)
+/// 4. Verify final balances: Alice=500, Bob=300, Carol=200
+#[test]
+fn test_ct_multiple_transfers_after_mint() {
+    let env = TestEnv::get();
+    let config = create_test_config(env);
+    let (alice_store, _alice_temp) = create_temp_store();
+    let (bob_store, _bob_temp) = create_temp_store();
+    let (carol_store, _carol_temp) = create_temp_store();
+
+    // Create accounts
+    let issuer = Account::new_random(0, "Issuer".to_string());
+    let alice = Account::new_random(1, "Alice".to_string());
+    let bob = Account::new_random(2, "Bob".to_string());
+    let carol = Account::new_random(3, "Carol".to_string());
+
+    println!("=== Testing Multiple Consecutive Transfers After Mint ===");
+    println!("This test validates the 72-byte format fix for blinding factor propagation.");
+    println!("Issuer: {}", &issuer.stealth_address()[..32]);
+    println!("Alice: {}", &alice.stealth_address()[..32]);
+    println!("Bob: {}", &bob.stealth_address()[..32]);
+    println!("Carol: {}", &carol.stealth_address()[..32]);
+
+    // ========================================================================
+    // Step 1: Create token and mint to Alice
+    // ========================================================================
+    println!("\nStep 1: Creating token and minting 1000 tokens to Alice...");
+
+    let funding_cell =
+        fund_account_with_stealth(env, &issuer, 350_00000000u64).expect("Funding should succeed");
+
+    let issuer_stealth_address = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    let genesis_params = GenesisParams {
+        supply_cap: 10_000,
+        flags: MINTABLE,
+        issuer_stealth_address,
+    };
+
+    let genesis_tx = build_genesis_transaction(&config, genesis_params, funding_cell.clone())
+        .expect("Genesis should succeed");
+
+    let token_id = genesis_tx.token_id;
+    let ct_info_lock_args = genesis_tx.ct_info_lock_args.clone();
+
+    let signed_genesis = sign_genesis_transaction(
+        genesis_tx,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &funding_cell.lock_script_args,
+    )
+    .expect("Signing genesis should succeed");
+
+    let client = CkbRpcClient::new(DevNet::RPC_URL);
+    let genesis_hash = client
+        .send_transaction(signed_genesis, None)
+        .expect("Genesis should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    // Mint 1000 tokens to Alice
+    let mint_amount = 1000u64;
+
+    let mint_funding_cell = fund_account_with_stealth(env, &issuer, 350_00000000u64)
+        .expect("Mint funding should succeed");
+
+    let mut ct_info_out_point = Vec::with_capacity(36);
+    ct_info_out_point.extend_from_slice(genesis_hash.as_bytes());
+    ct_info_out_point.extend_from_slice(&0u32.to_le_bytes());
+
+    let alice_stealth_address = {
+        let view_pub = alice.view_public_key().serialize();
+        let spend_pub = alice.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    let mint_params = MintParams {
+        ct_info_cell: CtInfoCellInput {
+            out_point: ct_info_out_point,
+            lock_script_args: ct_info_lock_args.clone(),
+            data: obscell_wallet::domain::ct_info::CtInfoData::new(0, 10_000, MINTABLE),
+            capacity: 230_00000000,
+        },
+        token_id,
+        mint_amount,
+        recipient_stealth_address: alice_stealth_address,
+        funding_cell: mint_funding_cell.clone(),
+    };
+
+    let built_mint = build_mint_transaction(&config, mint_params).expect("Mint should succeed");
+
+    let signed_mint = sign_mint_transaction(
+        built_mint,
+        &issuer,
+        &issuer.spend_secret_key_for_test(),
+        &ct_info_lock_args,
+        &mint_funding_cell.lock_script_args,
+    )
+    .expect("Signing mint should succeed");
+
+    let mint_hash = client
+        .send_transaction(signed_mint, None)
+        .expect("Mint should succeed");
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    println!(
+        "Alice received {} tokens, mint_tx=0x{}",
+        mint_amount,
+        hex::encode(mint_hash.as_bytes())
+    );
+
+    // ========================================================================
+    // Step 2: Alice scans and finds her CT cell (from mint)
+    // ========================================================================
+    println!("\nStep 2: Alice scanning for CT cells...");
+
+    let alice_scanner = Scanner::new(config.clone(), alice_store);
+    let alice_results = alice_scanner
+        .scan_ct_cells(&[alice.clone()])
+        .expect("Alice scan should succeed");
+
+    assert_eq!(
+        alice_results[0].cells.len(),
+        1,
+        "Alice should have 1 CT cell"
+    );
+    let alice_mint_cell = alice_results[0].cells[0].clone();
+
+    println!(
+        "Alice found CT cell from mint: amount={}, out_point=0x{}",
+        alice_mint_cell.amount,
+        hex::encode(&alice_mint_cell.out_point[..8])
+    );
+
+    // Verify the mint cell amount
+    assert_eq!(
+        alice_mint_cell.amount, mint_amount,
+        "Mint cell should have {} tokens",
+        mint_amount
+    );
+
+    // ========================================================================
+    // Step 3: First transfer - Alice sends 300 tokens to Bob
+    // ========================================================================
+    println!("\nStep 3: Alice transferring 300 tokens to Bob...");
+    let transfer1_amount = 300u64;
+    let expected_change1 = mint_amount - transfer1_amount; // 700
+
+    let transfer1_funding = fund_account_with_stealth(env, &alice, 350_00000000u64)
+        .expect("Transfer1 funding should succeed");
+
+    use obscell_wallet::domain::ct_tx_builder::CtTxBuilder;
+
+    let bob_stealth_address = {
+        let view_pub = bob.view_public_key().serialize();
+        let spend_pub = bob.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    let built_transfer1 =
+        CtTxBuilder::new(config.clone(), alice_mint_cell.type_script_args.clone())
+            .add_input(alice_mint_cell.clone())
+            .add_output(bob_stealth_address, transfer1_amount)
+            .funding_cell(transfer1_funding.clone())
+            .build(&alice)
+            .expect("Building transfer1 should succeed");
+
+    let signed_transfer1 = CtTxBuilder::sign(
+        built_transfer1,
+        &alice,
+        &alice.spend_secret_key_for_test(),
+        &[alice_mint_cell.clone()],
+        Some(&transfer1_funding.lock_script_args),
+    )
+    .expect("Signing transfer1 should succeed");
+
+    let transfer1_hash = client
+        .send_transaction(signed_transfer1, None)
+        .expect("Transfer1 should succeed");
+
+    println!(
+        "Transfer1 sent: Alice -> Bob {} tokens, tx=0x{}",
+        transfer1_amount,
+        hex::encode(transfer1_hash.as_bytes())
+    );
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    // ========================================================================
+    // Step 4: Alice re-scans to find her change cell (72-byte format!)
+    // ========================================================================
+    println!("\nStep 4: Alice re-scanning for change cell...");
+
+    // Use fresh store to avoid caching issues
+    let (alice_store2, _alice_temp2) = create_temp_store();
+    let alice_scanner2 = Scanner::new(config.clone(), alice_store2);
+    let alice_results2 = alice_scanner2
+        .scan_ct_cells(&[alice.clone()])
+        .expect("Alice rescan should succeed");
+
+    assert_eq!(
+        alice_results2[0].cells.len(),
+        1,
+        "Alice should have 1 change cell"
+    );
+    let alice_change_cell = alice_results2[0].cells[0].clone();
+
+    println!(
+        "Alice found change cell: amount={}, out_point=0x{}",
+        alice_change_cell.amount,
+        hex::encode(&alice_change_cell.out_point[..8])
+    );
+
+    assert_eq!(
+        alice_change_cell.amount, expected_change1,
+        "Change cell should have {} tokens",
+        expected_change1
+    );
+
+    // ========================================================================
+    // Step 5: CRITICAL - Second transfer using the change cell!
+    // This is the transfer that was FAILING before the 72-byte format fix.
+    // ========================================================================
+    println!("\nStep 5: [CRITICAL] Alice transferring 200 tokens to Carol using change cell...");
+    println!(
+        "This transfer uses the change cell from transfer1, which has a NON-ZERO blinding factor."
+    );
+    println!("Before the 72-byte format fix, this would fail with InputOutputSumMismatch (error code 7).");
+
+    let transfer2_amount = 200u64;
+    let expected_change2 = expected_change1 - transfer2_amount; // 500
+
+    let transfer2_funding = fund_account_with_stealth(env, &alice, 350_00000000u64)
+        .expect("Transfer2 funding should succeed");
+
+    let carol_stealth_address = {
+        let view_pub = carol.view_public_key().serialize();
+        let spend_pub = carol.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
+    let built_transfer2 =
+        CtTxBuilder::new(config.clone(), alice_change_cell.type_script_args.clone())
+            .add_input(alice_change_cell.clone())
+            .add_output(carol_stealth_address, transfer2_amount)
+            .funding_cell(transfer2_funding.clone())
+            .build(&alice)
+            .expect("Building transfer2 should succeed");
+
+    let signed_transfer2 = CtTxBuilder::sign(
+        built_transfer2,
+        &alice,
+        &alice.spend_secret_key_for_test(),
+        &[alice_change_cell.clone()],
+        Some(&transfer2_funding.lock_script_args),
+    )
+    .expect("Signing transfer2 should succeed");
+
+    // THE CRITICAL ASSERTION: This transfer MUST succeed!
+    let transfer2_result = client.send_transaction(signed_transfer2, None);
+    assert!(
+        transfer2_result.is_ok(),
+        "CRITICAL: Transfer2 (using change cell) should succeed! Error: {:?}\n\
+         This failure indicates the blinding factor was not correctly propagated.\n\
+         The 72-byte format fix should ensure change cells store encrypted blinding factors.",
+        transfer2_result.err()
+    );
+
+    let transfer2_hash = transfer2_result.unwrap();
+    println!(
+        "Transfer2 SUCCESS: Alice -> Carol {} tokens, tx=0x{}",
+        transfer2_amount,
+        hex::encode(transfer2_hash.as_bytes())
+    );
+
+    env.generate_blocks(10).expect("Should generate blocks");
+    env.wait_for_indexer_sync().expect("Should sync");
+
+    // ========================================================================
+    // Step 6: Verify all final balances
+    // ========================================================================
+    println!("\nStep 6: Verifying final balances...");
+
+    // Verify Bob received 300 tokens
+    let bob_scanner = Scanner::new(config.clone(), bob_store);
+    let bob_results = bob_scanner
+        .scan_ct_cells(&[bob.clone()])
+        .expect("Bob scan should succeed");
+
+    assert_eq!(bob_results[0].cells.len(), 1, "Bob should have 1 CT cell");
+    assert_eq!(
+        bob_results[0].cells[0].amount, transfer1_amount,
+        "Bob should have {} tokens",
+        transfer1_amount
+    );
+
+    println!(
+        "Bob verified: {} tokens (from transfer1)",
+        bob_results[0].cells[0].amount
+    );
+
+    // Verify Carol received 200 tokens
+    let carol_scanner = Scanner::new(config.clone(), carol_store);
+    let carol_results = carol_scanner
+        .scan_ct_cells(&[carol.clone()])
+        .expect("Carol scan should succeed");
+
+    assert_eq!(
+        carol_results[0].cells.len(),
+        1,
+        "Carol should have 1 CT cell"
+    );
+    assert_eq!(
+        carol_results[0].cells[0].amount, transfer2_amount,
+        "Carol should have {} tokens",
+        transfer2_amount
+    );
+
+    println!(
+        "Carol verified: {} tokens (from transfer2)",
+        carol_results[0].cells[0].amount
+    );
+
+    // Verify Alice has final change (500 tokens)
+    let (alice_store3, _alice_temp3) = create_temp_store();
+    let alice_scanner3 = Scanner::new(config.clone(), alice_store3);
+    let alice_results3 = alice_scanner3
+        .scan_ct_cells(&[alice.clone()])
+        .expect("Alice final scan should succeed");
+
+    assert_eq!(
+        alice_results3[0].cells.len(),
+        1,
+        "Alice should have 1 final change cell"
+    );
+    assert_eq!(
+        alice_results3[0].cells[0].amount, expected_change2,
+        "Alice should have {} tokens remaining",
+        expected_change2
+    );
+
+    println!(
+        "Alice verified: {} tokens (final change)",
+        alice_results3[0].cells[0].amount
+    );
+
+    // ========================================================================
+    // Summary
+    // ========================================================================
+    println!("\n=== Multiple Transfers After Mint Test PASSED ===");
+    println!("Token ID: 0x{}", hex::encode(&token_id[..8]));
+    println!("Flow:");
+    println!("  1. Mint: {} tokens to Alice", mint_amount);
+    println!(
+        "  2. Transfer1: Alice -> Bob {} tokens (Alice change: {})",
+        transfer1_amount, expected_change1
+    );
+    println!(
+        "  3. Transfer2: Alice -> Carol {} tokens (Alice change: {})",
+        transfer2_amount, expected_change2
+    );
+    println!("Final balances:");
+    println!("  - Alice: {} tokens", expected_change2);
+    println!("  - Bob: {} tokens", transfer1_amount);
+    println!("  - Carol: {} tokens", transfer2_amount);
+    println!(
+        "  - Total: {} tokens (matches mint amount)",
+        expected_change2 + transfer1_amount + transfer2_amount
+    );
 }
