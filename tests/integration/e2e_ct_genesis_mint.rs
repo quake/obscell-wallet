@@ -1735,11 +1735,13 @@ fn test_ct_mint_unlimited_supply() {
             let ct_token_data = ct_token_cell.data.unwrap();
             assert_eq!(
                 ct_token_data.content.as_bytes().len(),
-                64,
-                "CT token data should be 64 bytes"
+                72,
+                "CT token data should be 72 bytes"
             );
 
-            println!("CT token cell verified: 64 bytes of data (commitment + encrypted amount)");
+            println!(
+                "CT token cell verified: 72 bytes of data (commitment + encrypted amount/blinding)"
+            );
             println!("\n=== UNLIMITED supply mint test PASSED! ===");
         }
         Err(e) => {
