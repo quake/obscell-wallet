@@ -29,6 +29,24 @@ pub fn random_blinding() -> Scalar {
     Scalar::random(&mut OsRng)
 }
 
+/// Derive a deterministic blinding factor from a shared secret.
+///
+/// This allows both sender and receiver to compute the same blinding factor
+/// for a CT output, enabling the receiver to spend the cell later.
+///
+/// The blinding is derived as: SHA256("ct-blinding" || shared_secret)
+/// converted to a Scalar via from_bytes_mod_order.
+pub fn derive_blinding(shared_secret: &[u8]) -> Scalar {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"ct-blinding");
+    hasher.update(shared_secret);
+    let hash: [u8; 32] = hasher.finalize().into();
+
+    Scalar::from_bytes_mod_order(hash)
+}
+
 /// Generate a Bulletproof range proof for multiple values.
 pub fn prove_range(
     values: &[u64],
@@ -124,6 +142,69 @@ pub fn decrypt_amount(encrypted: &[u8; 32], shared_secret: &[u8]) -> Option<u64>
     }
 
     Some(u64::from_le_bytes(amount_bytes))
+}
+
+/// Encrypt amount and blinding factor using a shared secret.
+///
+/// This allows the receiver to recover both the amount and blinding factor,
+/// which is essential for spending the CT cell later.
+///
+/// Format: XOR encryption of (amount || blinding) with derived key material.
+/// Returns 40 bytes: encrypted(amount 8B || blinding 32B).
+pub fn encrypt_amount_and_blinding(
+    amount: u64,
+    blinding: &Scalar,
+    shared_secret: &[u8],
+) -> [u8; 40] {
+    use sha2::{Digest, Sha512};
+
+    // Use SHA-512 for 64 bytes of key material (we need 40)
+    let mut hasher = Sha512::new();
+    hasher.update(b"ct-amount-blinding-encryption-v2");
+    hasher.update(shared_secret);
+    let key: [u8; 64] = hasher.finalize().into();
+
+    let mut plaintext = [0u8; 40];
+    plaintext[0..8].copy_from_slice(&amount.to_le_bytes());
+    plaintext[8..40].copy_from_slice(&blinding.to_bytes());
+
+    let mut result = [0u8; 40];
+    for i in 0..40 {
+        result[i] = plaintext[i] ^ key[i];
+    }
+
+    result
+}
+
+/// Decrypt amount and blinding factor using a shared secret.
+///
+/// Returns (amount, blinding) if successful, None otherwise.
+pub fn decrypt_amount_and_blinding(
+    encrypted: &[u8],
+    shared_secret: &[u8],
+) -> Option<(u64, Scalar)> {
+    use sha2::{Digest, Sha512};
+
+    if encrypted.len() < 40 {
+        return None;
+    }
+
+    let mut hasher = Sha512::new();
+    hasher.update(b"ct-amount-blinding-encryption-v2");
+    hasher.update(shared_secret);
+    let key: [u8; 64] = hasher.finalize().into();
+
+    let mut plaintext = [0u8; 40];
+    for i in 0..40 {
+        plaintext[i] = encrypted[i] ^ key[i];
+    }
+
+    let amount = u64::from_le_bytes(plaintext[0..8].try_into().ok()?);
+    let mut blinding_bytes = [0u8; 32];
+    blinding_bytes.copy_from_slice(&plaintext[8..40]);
+    let blinding = Scalar::from_bytes_mod_order(blinding_bytes);
+
+    Some((amount, blinding))
 }
 
 #[cfg(test)]
@@ -333,5 +414,44 @@ mod tests {
         println!("  Range proof size: {} bytes", range_proof_bytes.len());
         println!("  Contract-style verification: PASSED");
         println!("  Deserialized proof verification: PASSED");
+    }
+
+    #[test]
+    fn test_amount_and_blinding_encryption() {
+        let amount = 12345678u64;
+        let blinding = random_blinding();
+        let shared_secret = b"test shared secret for v2 encryption";
+
+        let encrypted = encrypt_amount_and_blinding(amount, &blinding, shared_secret);
+        assert_eq!(encrypted.len(), 40);
+
+        let decrypted = decrypt_amount_and_blinding(&encrypted, shared_secret);
+        assert!(decrypted.is_some());
+
+        let (dec_amount, dec_blinding) = decrypted.unwrap();
+        assert_eq!(dec_amount, amount);
+        assert_eq!(dec_blinding, blinding);
+
+        // Wrong secret should give wrong values (XOR encryption doesn't fail, just gives garbage)
+        let wrong = decrypt_amount_and_blinding(&encrypted, b"wrong secret");
+        if let Some((wrong_amount, _)) = wrong {
+            assert_ne!(wrong_amount, amount);
+        }
+    }
+
+    #[test]
+    fn test_derive_blinding() {
+        let secret1 = b"shared secret 1";
+        let secret2 = b"shared secret 2";
+
+        let blinding1 = derive_blinding(secret1);
+        let blinding1_again = derive_blinding(secret1);
+        let blinding2 = derive_blinding(secret2);
+
+        // Same secret produces same blinding
+        assert_eq!(blinding1, blinding1_again);
+
+        // Different secrets produce different blindings
+        assert_ne!(blinding1, blinding2);
     }
 }
