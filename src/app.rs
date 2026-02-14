@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -148,8 +148,6 @@ pub struct App {
     pub scanned_block_number: Option<u64>,
     pub is_scanning: bool,
     pub last_auto_scan: Option<u64>,
-    /// Saved tab bar area for mouse click detection.
-    pub tab_area: Rect,
     // Dev mode fields
     pub dev_mode: bool,
     pub dev_component: Option<DevComponent>,
@@ -214,7 +212,6 @@ impl App {
         let tui = Tui::new()?
             .tick_rate(args.tick_rate)
             .frame_rate(args.frame_rate)
-            .mouse(true)
             .paste(true);
 
         // Dev mode is enabled when network is "devnet"
@@ -275,7 +272,6 @@ impl App {
             scanned_block_number: None,
             is_scanning: false,
             last_auto_scan: None,
-            tab_area: Rect::default(),
             // Dev mode
             dev_mode,
             dev_component,
@@ -555,11 +551,6 @@ impl App {
             Event::Quit => {
                 self.should_quit = true;
             }
-            Event::Mouse(mouse_event) => {
-                if mouse_event.kind == MouseEventKind::Down(MouseButton::Left) {
-                    self.handle_mouse_click(mouse_event.column, mouse_event.row)?;
-                }
-            }
             Event::Paste(text) => {
                 self.handle_paste(&text)?;
             }
@@ -793,38 +784,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_mouse_click(&mut self, col: u16, row: u16) -> Result<()> {
-        let area = self.tab_area;
-        // Check if click is within the tab bar (excluding borders)
-        if row < area.y + 1 || row > area.y + area.height.saturating_sub(2) {
-            return Ok(());
-        }
-        if col < area.x + 1 || col >= area.x + area.width.saturating_sub(1) {
-            return Ok(());
-        }
-
-        // Calculate which tab was clicked.
-        // Ratatui Tabs renders as: ` Title1 │ Title2 │ Title3 `
-        // Each tab takes: 1 (pad) + title_width + 1 (pad) + 1 (divider)
-        // except the last tab has no trailing divider.
-        let tabs = Tab::all(self.dev_mode);
-        let rel_x = (col - area.x - 1) as usize; // relative x within inner area
-        let mut offset = 0usize;
-        for (i, tab) in tabs.iter().enumerate() {
-            let title_width = tab.title().width();
-            let tab_width = 1 + title_width + 1; // space + title + space
-            if rel_x < offset + tab_width {
-                self.switch_tab(*tab);
-                return Ok(());
-            }
-            offset += tab_width;
-            if i < tabs.len() - 1 {
-                offset += 1; // divider "│" is 1 column wide (in ratatui default)
-            }
         }
         Ok(())
     }
@@ -2911,18 +2870,6 @@ impl App {
 
         // Transaction result popup state
         let tx_result_popup = self.tx_result_popup.clone();
-
-        // Pre-compute layout to save tab area for mouse click detection
-        let size = self.tui.terminal.size()?;
-        let terminal_area = Rect::new(0, 0, size.width, size.height);
-        let layout_chunks = Layout::vertical([
-            Constraint::Length(3), // Header
-            Constraint::Length(3), // Tabs
-            Constraint::Min(0),    // Content
-            Constraint::Length(3), // Status
-        ])
-        .split(terminal_area);
-        self.tab_area = layout_chunks[1];
 
         self.tui.draw(|f| {
             let chunks = Layout::vertical([

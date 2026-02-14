@@ -325,10 +325,10 @@ impl BlockScanner {
                                                 &commitment,
                                             )
                                             .ok();
-                                        if let Some(cp) = commitment_point {
-                                            if !ct::verify_decryption(amt, &blinding, &cp) {
-                                                continue;
-                                            }
+                                        if let Some(cp) = commitment_point
+                                            && !ct::verify_decryption(amt, &blinding, &cp)
+                                        {
+                                            continue;
                                         }
                                         (amt, blinding.to_bytes())
                                     }

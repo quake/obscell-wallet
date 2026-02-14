@@ -2729,7 +2729,6 @@ dependencies = [
  "rand 0.8.5",
  "rand_core 0.6.4",
  "ratatui",
- "ratatui-interact",
  "secp256k1 0.28.2",
  "serde",
  "serde_json",
@@ -3320,19 +3319,6 @@ dependencies = [
  "crossterm",
  "instability",
  "ratatui-core",
-]
-
-[[package]]
-name = "ratatui-interact"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d7ffbbfa81465795a6f67e365a4f94675902b56d1cabfdfbfc689f17d87a61b"
-dependencies = [
- "crossterm",
- "ratatui",
- "regex",
- "thiserror 2.0.18",
- "unicode-width 0.2.0",
 ]
 
 [[package]]

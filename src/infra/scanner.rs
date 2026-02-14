@@ -650,11 +650,11 @@ impl Scanner {
                                         &commitment,
                                     )
                                     .ok();
-                                if let Some(cp) = commitment_point {
-                                    if !ct::verify_decryption(amt, &blinding, &cp) {
-                                        debug!("CT commitment verification failed");
-                                        continue;
-                                    }
+                                if let Some(cp) = commitment_point
+                                    && !ct::verify_decryption(amt, &blinding, &cp)
+                                {
+                                    debug!("CT commitment verification failed");
+                                    continue;
                                 }
                                 (amt, blinding.to_bytes())
                             }
@@ -956,11 +956,11 @@ impl Scanner {
                                             &commitment,
                                         )
                                         .ok();
-                                    if let Some(cp) = commitment_point {
-                                        if !ct::verify_decryption(amt, &blinding, &cp) {
-                                            debug!("CT commitment verification failed");
-                                            break;
-                                        }
+                                    if let Some(cp) = commitment_point
+                                        && !ct::verify_decryption(amt, &blinding, &cp)
+                                    {
+                                        debug!("CT commitment verification failed");
+                                        break;
                                     }
                                     (amt, blinding.to_bytes())
                                 }
