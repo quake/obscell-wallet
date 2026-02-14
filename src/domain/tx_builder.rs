@@ -12,7 +12,8 @@ use ckb_jsonrpc_types::{
 };
 use ckb_sdk::Address;
 use ckb_types::H256;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
+use rand::seq::SliceRandom;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{
@@ -272,6 +273,10 @@ impl StealthTxBuilder {
             // If change is too small, add it to the fee (dust collection)
             // This is fine for privacy since we're not creating a tiny output
         }
+
+        // Shuffle outputs to prevent change output position analysis
+        // This improves privacy by making it harder to identify which output is change
+        shuffle_outputs(&mut outputs, &mut outputs_data);
 
         // Build the transaction skeleton
         let tx = Transaction {
@@ -637,6 +642,39 @@ pub fn parse_stealth_address(hex_str: &str) -> Result<Vec<u8>> {
     }
     let bytes = hex::decode(hex_str)?;
     Ok(bytes)
+}
+
+/// Shuffle outputs and their corresponding data together.
+///
+/// This is a privacy measure to prevent change output position analysis.
+/// By randomizing the order of outputs, observers cannot easily determine
+/// which output is the change (belonging to the sender) based on position alone.
+pub fn shuffle_outputs(outputs: &mut [CellOutput], outputs_data: &mut [JsonBytes]) {
+    use rand::thread_rng;
+
+    assert_eq!(
+        outputs.len(),
+        outputs_data.len(),
+        "outputs and outputs_data must have the same length"
+    );
+
+    if outputs.len() <= 1 {
+        return; // Nothing to shuffle
+    }
+
+    // Create index permutation and shuffle it
+    let mut indices: Vec<usize> = (0..outputs.len()).collect();
+    indices.shuffle(&mut thread_rng());
+
+    // Apply the permutation to both arrays
+    // We need to be careful to do this in-place
+    let outputs_copy: Vec<CellOutput> = outputs.to_vec();
+    let data_copy: Vec<JsonBytes> = outputs_data.to_vec();
+
+    for (new_idx, &old_idx) in indices.iter().enumerate() {
+        outputs[new_idx] = outputs_copy[old_idx].clone();
+        outputs_data[new_idx] = data_copy[old_idx].clone();
+    }
 }
 
 #[cfg(test)]

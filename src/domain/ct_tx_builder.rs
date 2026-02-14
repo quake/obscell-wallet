@@ -10,6 +10,7 @@ use ckb_jsonrpc_types::{
 use ckb_types::H256;
 use color_eyre::eyre::{eyre, Result};
 use curve25519_dalek::scalar::Scalar;
+use rand::seq::SliceRandom;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::{
@@ -369,7 +370,14 @@ impl CtTxBuilder {
             outputs_data.push(JsonBytes::from_vec(change_data));
         }
 
+        // Shuffle CT outputs to prevent change position analysis
+        // This improves privacy by making it harder to identify which CT output is change
+        // Note: output_blindings is indexed by position, so we need to shuffle them together
+        shuffle_ct_outputs(&mut outputs, &mut outputs_data, &mut output_blindings);
+
         // Add CKB change output if there's remaining funding capacity
+        // This is added AFTER shuffling because CKB cells (no type script) are visually
+        // distinguishable from CT cells anyway, so shuffling with them provides no benefit
         if ckb_change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
             // Generate a fresh stealth address for CKB change (privacy protection)
             let ckb_change_lock = self.build_ckb_change_script(sender_account)?;
@@ -906,6 +914,46 @@ impl CtTxBuilder {
 
         let hash = blake2b_256(raw_tx.as_slice());
         H256::from_slice(&hash).unwrap()
+    }
+}
+
+/// Shuffle CT outputs, their data, and blindings together.
+///
+/// This is a privacy measure to prevent change output position analysis.
+/// All CT outputs look identical (same type script), so shuffling them
+/// makes it harder to identify which output is the change.
+fn shuffle_ct_outputs(
+    outputs: &mut [CellOutput],
+    outputs_data: &mut [JsonBytes],
+    blindings: &mut [Scalar],
+) {
+    use rand::thread_rng;
+
+    assert_eq!(
+        outputs.len(),
+        outputs_data.len(),
+        "outputs and outputs_data must have the same length"
+    );
+
+    // Only shuffle CT outputs (blindings array may be shorter if no change)
+    let ct_count = blindings.len().min(outputs.len());
+    if ct_count <= 1 {
+        return; // Nothing to shuffle
+    }
+
+    // Create index permutation for CT outputs only
+    let mut indices: Vec<usize> = (0..ct_count).collect();
+    indices.shuffle(&mut thread_rng());
+
+    // Apply the permutation
+    let outputs_copy: Vec<CellOutput> = outputs[..ct_count].to_vec();
+    let data_copy: Vec<JsonBytes> = outputs_data[..ct_count].to_vec();
+    let blindings_copy: Vec<Scalar> = blindings[..ct_count].to_vec();
+
+    for (new_idx, &old_idx) in indices.iter().enumerate() {
+        outputs[new_idx] = outputs_copy[old_idx].clone();
+        outputs_data[new_idx] = data_copy[old_idx].clone();
+        blindings[new_idx] = blindings_copy[old_idx];
     }
 }
 
