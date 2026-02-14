@@ -311,24 +311,58 @@ impl BlockScanner {
                             .unwrap_or_default();
                         let output_data_bytes = output_data.as_ref();
 
-                        if let Some((commitment, encrypted_amount)) =
+                        if let Some((commitment, encrypted, is_v2)) =
                             Self::parse_ct_cell_data(output_data_bytes)
                             && let Some(shared_secret) =
                                 derive_shared_secret(lock_args_bytes, view_key)
-                            && let Some(amount) =
-                                ct::decrypt_amount(&encrypted_amount, &shared_secret)
                         {
+                            let (amount, blinding_factor) = if is_v2 {
+                                // v2 format: decrypt both amount and blinding
+                                match ct::decrypt_amount_and_blinding(&encrypted, &shared_secret) {
+                                    Some((amt, blinding)) => {
+                                        // Verify decryption using commitment
+                                        let commitment_point =
+                                            curve25519_dalek::ristretto::CompressedRistretto::from_slice(
+                                                &commitment,
+                                            )
+                                            .ok();
+                                        if let Some(cp) = commitment_point {
+                                            if !ct::verify_decryption(amt, &blinding, &cp) {
+                                                continue;
+                                            }
+                                        }
+                                        (amt, blinding.to_bytes())
+                                    }
+                                    None => continue,
+                                }
+                            } else {
+                                // v1 format: only amount encrypted, blinding is zero
+                                let encrypted_amount: [u8; 32] =
+                                    encrypted.clone().try_into().unwrap_or([0u8; 32]);
+                                match ct::decrypt_amount(&encrypted_amount, &shared_secret) {
+                                    Some(amt) => (amt, [0u8; 32]),
+                                    None => continue,
+                                }
+                            };
+
                             let type_script_args = type_script_opt
                                 .as_ref()
                                 .map(|ts| ts.args().raw_data().to_vec())
                                 .unwrap_or_default();
 
+                            // For CtCell storage, use first 32 bytes of encrypted data
+                            let encrypted_for_storage: [u8; 32] = if encrypted.len() >= 32 {
+                                encrypted[..32].try_into().unwrap()
+                            } else {
+                                [0u8; 32]
+                            };
+
                             let ct_cell = CtCell::new(
                                 out_point.clone(),
                                 type_script_args.clone(),
                                 commitment,
-                                encrypted_amount,
-                                [0u8; 32], // blinding factor placeholder
+                                encrypted_for_storage,
+                                blinding_factor,
                                 amount,
                                 lock_args_bytes.to_vec(),
                             );
@@ -605,16 +639,29 @@ impl BlockScanner {
         Ok(result)
     }
 
-    /// Parse CT cell data (commitment || encrypted_amount).
-    fn parse_ct_cell_data(data: &[u8]) -> Option<([u8; 32], [u8; 32])> {
-        if data.len() < 64 {
-            return None;
+    /// Parse CT cell data.
+    ///
+    /// Supports two formats:
+    /// - v1 (64 bytes): commitment (32B) || encrypted_amount (32B) - for mint cells
+    /// - v2 (72 bytes): commitment (32B) || encrypted(amount 8B + blinding 32B) - for transfer cells
+    ///
+    /// Returns (commitment, encrypted_data, is_v2_format)
+    fn parse_ct_cell_data(data: &[u8]) -> Option<([u8; 32], Vec<u8>, bool)> {
+        if data.len() >= 72 {
+            // v2 format: 72 bytes
+            let mut commitment = [0u8; 32];
+            commitment.copy_from_slice(&data[0..32]);
+            let encrypted = data[32..72].to_vec();
+            Some((commitment, encrypted, true))
+        } else if data.len() >= 64 {
+            // v1 format: 64 bytes
+            let mut commitment = [0u8; 32];
+            commitment.copy_from_slice(&data[0..32]);
+            let encrypted = data[32..64].to_vec();
+            Some((commitment, encrypted, false))
+        } else {
+            None
         }
-        let mut commitment = [0u8; 32];
-        let mut encrypted_amount = [0u8; 32];
-        commitment.copy_from_slice(&data[0..32]);
-        encrypted_amount.copy_from_slice(&data[32..64]);
-        Some((commitment, encrypted_amount))
     }
 
     /// Create BlockChanges from BlockProcessResult for undo support.
@@ -1092,6 +1139,7 @@ mod tests {
 
     #[test]
     fn test_parse_ct_cell_data_valid() {
+        // v1 format: 64 bytes
         let mut data = vec![0u8; 64];
         data[0..32].copy_from_slice(&[1u8; 32]);
         data[32..64].copy_from_slice(&[2u8; 32]);
@@ -1099,9 +1147,27 @@ mod tests {
         let result = BlockScanner::parse_ct_cell_data(&data);
         assert!(result.is_some());
 
-        let (commitment, encrypted) = result.unwrap();
+        let (commitment, encrypted, is_v2) = result.unwrap();
         assert_eq!(commitment, [1u8; 32]);
-        assert_eq!(encrypted, [2u8; 32]);
+        assert_eq!(encrypted.len(), 32);
+        assert_eq!(&encrypted[..], &[2u8; 32]);
+        assert!(!is_v2); // v1 format
+    }
+
+    #[test]
+    fn test_parse_ct_cell_data_v2() {
+        // v2 format: 72 bytes
+        let mut data = vec![0u8; 72];
+        data[0..32].copy_from_slice(&[1u8; 32]);
+        data[32..72].copy_from_slice(&[2u8; 40]);
+
+        let result = BlockScanner::parse_ct_cell_data(&data);
+        assert!(result.is_some());
+
+        let (commitment, encrypted, is_v2) = result.unwrap();
+        assert_eq!(commitment, [1u8; 32]);
+        assert_eq!(encrypted.len(), 40);
+        assert!(is_v2); // v2 format
     }
 
     #[test]
@@ -1120,18 +1186,19 @@ mod tests {
 
     #[test]
     fn test_parse_ct_cell_data_extra_bytes() {
-        // Extra bytes beyond 64 should be ignored
+        // Extra bytes beyond 72 - detected as v2
         let mut data = vec![0u8; 128];
         data[0..32].copy_from_slice(&[0xaa; 32]);
-        data[32..64].copy_from_slice(&[0xbb; 32]);
-        data[64..128].copy_from_slice(&[0xff; 64]); // extra bytes
+        data[32..72].copy_from_slice(&[0xbb; 40]);
+        data[72..128].copy_from_slice(&[0xff; 56]); // extra bytes
 
         let result = BlockScanner::parse_ct_cell_data(&data);
         assert!(result.is_some());
 
-        let (commitment, encrypted) = result.unwrap();
+        let (commitment, encrypted, is_v2) = result.unwrap();
         assert_eq!(commitment, [0xaa; 32]);
-        assert_eq!(encrypted, [0xbb; 32]);
+        assert_eq!(encrypted.len(), 40);
+        assert!(is_v2); // v2 format (>= 72 bytes)
     }
 
     #[test]

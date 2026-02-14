@@ -126,6 +126,83 @@ pub fn decrypt_amount(encrypted: &[u8; 32], shared_secret: &[u8]) -> Option<u64>
     Some(u64::from_le_bytes(amount_bytes))
 }
 
+/// Encrypt amount and blinding factor using a shared secret.
+///
+/// Format: XOR(amount_8B || blinding_32B, key_stream_40B)
+/// Returns 40 bytes of encrypted data.
+///
+/// Verification is done by checking commitment = commit(amount, blinding).
+pub fn encrypt_amount_and_blinding(
+    amount: u64,
+    blinding: &Scalar,
+    shared_secret: &[u8],
+) -> [u8; 40] {
+    use sha2::{Digest, Sha512};
+
+    // Use SHA512 to get 64 bytes of key material, we need 40
+    let mut hasher = Sha512::new();
+    hasher.update(b"ct-amount-blinding-encryption");
+    hasher.update(shared_secret);
+    let key: [u8; 64] = hasher.finalize().into();
+
+    let amount_bytes = amount.to_le_bytes();
+    let blinding_bytes = blinding.to_bytes();
+
+    let mut result = [0u8; 40];
+    // Encrypt amount (8 bytes)
+    for i in 0..8 {
+        result[i] = amount_bytes[i] ^ key[i];
+    }
+    // Encrypt blinding (32 bytes)
+    for i in 0..32 {
+        result[8 + i] = blinding_bytes[i] ^ key[8 + i];
+    }
+
+    result
+}
+
+/// Decrypt amount and blinding factor using a shared secret.
+///
+/// Returns (amount, blinding) if successful.
+/// Caller should verify commitment = commit(amount, blinding) to confirm correctness.
+pub fn decrypt_amount_and_blinding(
+    encrypted: &[u8],
+    shared_secret: &[u8],
+) -> Option<(u64, Scalar)> {
+    use sha2::{Digest, Sha512};
+
+    if encrypted.len() < 40 {
+        return None;
+    }
+
+    let mut hasher = Sha512::new();
+    hasher.update(b"ct-amount-blinding-encryption");
+    hasher.update(shared_secret);
+    let key: [u8; 64] = hasher.finalize().into();
+
+    // Decrypt amount
+    let mut amount_bytes = [0u8; 8];
+    for i in 0..8 {
+        amount_bytes[i] = encrypted[i] ^ key[i];
+    }
+    let amount = u64::from_le_bytes(amount_bytes);
+
+    // Decrypt blinding
+    let mut blinding_bytes = [0u8; 32];
+    for i in 0..32 {
+        blinding_bytes[i] = encrypted[8 + i] ^ key[8 + i];
+    }
+    let blinding = Scalar::from_bytes_mod_order(blinding_bytes);
+
+    Some((amount, blinding))
+}
+
+/// Verify decrypted amount and blinding against a commitment.
+pub fn verify_decryption(amount: u64, blinding: &Scalar, commitment: &CompressedRistretto) -> bool {
+    let expected = commit(amount, blinding);
+    expected.compress() == *commitment
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +410,57 @@ mod tests {
         println!("  Range proof size: {} bytes", range_proof_bytes.len());
         println!("  Contract-style verification: PASSED");
         println!("  Deserialized proof verification: PASSED");
+    }
+
+    #[test]
+    fn test_amount_and_blinding_encryption() {
+        let amount = 12345678u64;
+        let blinding = random_blinding();
+        let shared_secret = b"test shared secret for amount and blinding";
+
+        // Encrypt
+        let encrypted = encrypt_amount_and_blinding(amount, &blinding, shared_secret);
+        assert_eq!(encrypted.len(), 40);
+
+        // Decrypt
+        let decrypted = decrypt_amount_and_blinding(&encrypted, shared_secret);
+        assert!(decrypted.is_some());
+
+        let (dec_amount, dec_blinding) = decrypted.unwrap();
+        assert_eq!(dec_amount, amount);
+        assert_eq!(dec_blinding, blinding);
+
+        // Wrong secret produces wrong values (no direct verification in decrypt)
+        let wrong = decrypt_amount_and_blinding(&encrypted, b"wrong secret");
+        assert!(wrong.is_some()); // Decryption still returns Some, but values are wrong
+        let (wrong_amount, wrong_blinding) = wrong.unwrap();
+        assert!(wrong_amount != amount || wrong_blinding != blinding);
+    }
+
+    #[test]
+    fn test_verify_decryption() {
+        let amount = 5000u64;
+        let blinding = random_blinding();
+        let shared_secret = b"verification test secret";
+
+        // Create commitment
+        let commitment = commit(amount, &blinding).compress();
+
+        // Encrypt and decrypt
+        let encrypted = encrypt_amount_and_blinding(amount, &blinding, shared_secret);
+        let (dec_amount, dec_blinding) =
+            decrypt_amount_and_blinding(&encrypted, shared_secret).unwrap();
+
+        // Verify decryption against commitment
+        assert!(verify_decryption(dec_amount, &dec_blinding, &commitment));
+
+        // Wrong secret leads to failed verification
+        let (wrong_amount, wrong_blinding) =
+            decrypt_amount_and_blinding(&encrypted, b"wrong").unwrap();
+        assert!(!verify_decryption(
+            wrong_amount,
+            &wrong_blinding,
+            &commitment
+        ));
     }
 }
