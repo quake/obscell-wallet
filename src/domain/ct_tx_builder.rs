@@ -271,22 +271,40 @@ impl CtTxBuilder {
             .collect();
 
         // Generate output blinding factors
+        // CRITICAL: For commitment balance, we need sum(r_in) == sum(r_out)
+        // This is because: sum(C_in) = sum(v_in*G + r_in*H) = sum(v_in)*G + sum(r_in)*H
+        // And:             sum(C_out) = sum(v_out)*G + sum(r_out)*H
+        // For input_sum == output_sum on the Ristretto point, we need:
+        // sum(v_in) == sum(v_out) AND sum(r_in) == sum(r_out)
         let mut output_blindings = Vec::new();
         let mut output_amounts = Vec::new();
 
-        for output in &self.outputs {
-            output_blindings.push(random_blinding());
+        // Generate random blindings for all outputs except the last one
+        let num_outputs = self.outputs.len();
+        for (i, output) in self.outputs.iter().enumerate() {
             output_amounts.push(output.amount);
+            if i < num_outputs - 1 {
+                // Random blinding for non-last outputs
+                output_blindings.push(random_blinding());
+            }
         }
 
         // Add CT change output if needed
         if has_change {
             output_amounts.push(change_amount);
+            // Last explicit output gets random blinding
+            output_blindings.push(random_blinding());
             // Change blinding: ensure sum(r_in) == sum(r_out)
             let sum_input: Scalar = input_blindings.iter().sum();
             let sum_output: Scalar = output_blindings.iter().sum();
             let change_blinding = sum_input - sum_output;
             output_blindings.push(change_blinding);
+        } else {
+            // No change: the last output's blinding must balance the sum
+            let sum_input: Scalar = input_blindings.iter().sum();
+            let sum_output: Scalar = output_blindings.iter().sum();
+            let last_blinding = sum_input - sum_output;
+            output_blindings.push(last_blinding);
         }
 
         // Generate range proof
