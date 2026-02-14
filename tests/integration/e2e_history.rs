@@ -7,8 +7,8 @@
 use ckb_sdk::CkbRpcClient;
 use tempfile::TempDir;
 
-use super::TestEnv;
 use super::devnet::DevNet;
+use super::TestEnv;
 
 use obscell_wallet::config::{
     CellDepConfig, CellDepsConfig, Config, ContractConfig, NetworkConfig,
@@ -17,8 +17,8 @@ use obscell_wallet::domain::account::Account;
 use obscell_wallet::domain::cell::{TxRecord, TxType};
 use obscell_wallet::domain::ct_info::MINTABLE;
 use obscell_wallet::domain::ct_mint::{
-    CtInfoCellInput, FundingCell, GenesisParams, MintParams, build_genesis_transaction,
-    build_mint_transaction, sign_genesis_transaction, sign_mint_transaction,
+    build_genesis_transaction, build_mint_transaction, sign_genesis_transaction,
+    sign_mint_transaction, CtInfoCellInput, FundingCell, GenesisParams, MintParams,
 };
 use obscell_wallet::domain::stealth::generate_ephemeral_key;
 use obscell_wallet::domain::tx_builder::StealthTxBuilder;
@@ -366,6 +366,12 @@ fn test_ct_transfer_history_both_parties() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth_for_mint = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     let mint_params = MintParams {
         ct_info_cell: CtInfoCellInput {
             out_point: ct_info_out_point,
@@ -377,6 +383,7 @@ fn test_ct_transfer_history_both_parties() {
         mint_amount,
         recipient_stealth_address: alice_stealth_address,
         funding_cell: mint_funding.clone(),
+        sender_stealth_address: issuer_stealth_for_mint,
     };
 
     let built_mint =

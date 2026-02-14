@@ -132,6 +132,13 @@ impl Account {
         hex::encode([view_pub.as_slice(), spend_pub.as_slice()].concat())
     }
 
+    /// Get the stealth address as raw bytes (view_pub || spend_pub, 66 bytes).
+    pub fn stealth_address_bytes(&self) -> Vec<u8> {
+        let view_pub = self.view_public_key().serialize();
+        let spend_pub = &self.spend_public_key;
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    }
+
     /// Generate a one-time CKB address for receiving.
     pub fn one_time_ckb_address(&self, is_mainnet: bool) -> String {
         let (eph_pub, stealth_pub) =

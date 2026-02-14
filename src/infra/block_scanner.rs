@@ -1333,7 +1333,7 @@ mod tests {
         // Start with a cell in the store
         let original_cell = StealthCell::new(vec![1, 2, 3], 5000, vec![4, 5, 6]);
         store
-            .add_stealth_cells(account_id, &[original_cell.clone()])
+            .add_stealth_cells(account_id, std::slice::from_ref(&original_cell))
             .unwrap();
 
         // Verify cell exists
@@ -1378,7 +1378,7 @@ mod tests {
         // Start with a cell that was created in a block
         let new_cell = StealthCell::new(vec![10, 11, 12], 3000, vec![13, 14, 15]);
         store
-            .add_stealth_cells(account_id, &[new_cell.clone()])
+            .add_stealth_cells(account_id, std::slice::from_ref(&new_cell))
             .unwrap();
 
         // Verify cell exists

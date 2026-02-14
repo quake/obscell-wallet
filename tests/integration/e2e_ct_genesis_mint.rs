@@ -341,6 +341,7 @@ fn test_ct_mint_to_stealth_address() {
         mint_amount,
         recipient_stealth_address,
         funding_cell: mint_funding_cell.clone(),
+        sender_stealth_address: issuer_stealth_address.clone(),
     };
 
     let built_mint =
@@ -495,8 +496,9 @@ fn test_ct_transfer_between_accounts() {
         },
         token_id,
         mint_amount,
-        recipient_stealth_address: alice_stealth_address,
+        recipient_stealth_address: alice_stealth_address.clone(),
         funding_cell: mint_funding_cell.clone(),
+        sender_stealth_address: alice_stealth_address,
     };
 
     let built_mint = build_mint_transaction(&config, mint_params).expect("Mint should succeed");
@@ -741,8 +743,9 @@ fn test_scanner_finds_ct_cells_multi_account() {
             },
             token_id,
             mint_amount: alice_amount,
-            recipient_stealth_address: alice_stealth,
+            recipient_stealth_address: alice_stealth.clone(),
             funding_cell: mint1_funding.clone(),
+            sender_stealth_address: alice_stealth,
         },
     )
     .expect("Mint should succeed");
@@ -781,6 +784,12 @@ fn test_scanner_finds_ct_cells_multi_account() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     let mint2 = build_mint_transaction(
         &config,
         MintParams {
@@ -798,6 +807,7 @@ fn test_scanner_finds_ct_cells_multi_account() {
             mint_amount: bob_amount,
             recipient_stealth_address: bob_stealth,
             funding_cell: mint2_funding.clone(),
+            sender_stealth_address: issuer_stealth,
         },
     )
     .expect("Mint should succeed");
@@ -1006,6 +1016,12 @@ fn test_ct_cells_persisted_to_store() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     let mint_tx = build_mint_transaction(
         &config,
         MintParams {
@@ -1019,6 +1035,7 @@ fn test_ct_cells_persisted_to_store() {
             mint_amount,
             recipient_stealth_address: alice_stealth,
             funding_cell: mint_funding.clone(),
+            sender_stealth_address: issuer_stealth,
         },
     )
     .expect("Mint should succeed");
@@ -1153,6 +1170,12 @@ fn test_ct_transfer_with_change_verification() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     let mint_tx = build_mint_transaction(
         &config,
         MintParams {
@@ -1166,6 +1189,7 @@ fn test_ct_transfer_with_change_verification() {
             mint_amount: initial_amount,
             recipient_stealth_address: alice_stealth,
             funding_cell: mint_funding.clone(),
+            sender_stealth_address: issuer_stealth,
         },
     )
     .expect("Mint should succeed");
@@ -1350,6 +1374,12 @@ fn test_ct_mint_exceeds_supply_cap_fails() {
 
     let exceed_amount = 200u64; // More than cap of 100
 
+    let issuer_stealth_for_mint = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     println!(
         "Attempting to mint {} tokens (cap is {})...",
         exceed_amount, supply_cap
@@ -1368,6 +1398,7 @@ fn test_ct_mint_exceeds_supply_cap_fails() {
             mint_amount: exceed_amount,
             recipient_stealth_address: recipient_stealth,
             funding_cell: mint_funding,
+            sender_stealth_address: issuer_stealth_for_mint,
         },
     );
 
@@ -1452,6 +1483,12 @@ fn test_ct_balance_aggregation_multiple_cells() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth_for_mint = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     for (i, &amount) in amounts.iter().enumerate() {
         println!("Mint #{}: {} tokens to Alice", i + 1, amount);
 
@@ -1480,6 +1517,7 @@ fn test_ct_balance_aggregation_multiple_cells() {
                 mint_amount: amount,
                 recipient_stealth_address: alice_stealth.clone(),
                 funding_cell: mint_funding.clone(),
+                sender_stealth_address: issuer_stealth_for_mint.clone(),
             },
         )
         .expect("Mint should succeed");
@@ -1670,6 +1708,12 @@ fn test_ct_mint_unlimited_supply() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth_for_mint = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     println!("Building mint transaction...");
     println!("  - ct_info total_supply: 0");
     println!("  - ct_info supply_cap: 0 (UNLIMITED)");
@@ -1681,6 +1725,7 @@ fn test_ct_mint_unlimited_supply() {
         mint_amount,
         recipient_stealth_address,
         funding_cell: mint_funding_cell.clone(),
+        sender_stealth_address: issuer_stealth_for_mint,
     };
 
     let built_mint =
@@ -1866,6 +1911,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
         mint_amount: mint_amount_1,
         recipient_stealth_address: issuer_stealth_address.clone(),
         funding_cell: mint_funding_1.clone(),
+        sender_stealth_address: issuer_stealth_address.clone(),
     };
 
     let built_mint_1 =
@@ -1921,6 +1967,7 @@ fn test_consecutive_mints_use_different_funding_cells() {
         mint_amount: mint_amount_2,
         recipient_stealth_address: issuer_stealth_address.clone(),
         funding_cell: mint_funding_2.clone(), // Different funding cell!
+        sender_stealth_address: issuer_stealth_address.clone(),
     };
 
     let built_mint_2 =
@@ -2079,6 +2126,7 @@ fn test_mint_then_transfer_uses_separate_funding() {
         mint_amount,
         recipient_stealth_address: issuer_stealth_address.clone(),
         funding_cell: mint_funding.clone(),
+        sender_stealth_address: issuer_stealth_address.clone(),
     };
 
     let built_mint =
@@ -2296,6 +2344,12 @@ fn test_ct_multiple_transfers_after_mint() {
         [view_pub.as_slice(), spend_pub.as_slice()].concat()
     };
 
+    let issuer_stealth_for_mint = {
+        let view_pub = issuer.view_public_key().serialize();
+        let spend_pub = issuer.spend_public_key().serialize();
+        [view_pub.as_slice(), spend_pub.as_slice()].concat()
+    };
+
     let mint_params = MintParams {
         ct_info_cell: CtInfoCellInput {
             out_point: ct_info_out_point,
@@ -2307,6 +2361,7 @@ fn test_ct_multiple_transfers_after_mint() {
         mint_amount,
         recipient_stealth_address: alice_stealth_address,
         funding_cell: mint_funding_cell.clone(),
+        sender_stealth_address: issuer_stealth_for_mint,
     };
 
     let built_mint = build_mint_transaction(&config, mint_params).expect("Mint should succeed");

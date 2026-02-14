@@ -83,6 +83,9 @@ pub struct MintParams {
     pub recipient_stealth_address: Vec<u8>,
     /// Funding cell to pay for the new ct-token cell capacity and tx fees.
     pub funding_cell: FundingCell,
+    /// Sender stealth address for CKB change (66 bytes = view_pub || spend_pub).
+    /// Used to generate a fresh stealth address for privacy protection.
+    pub sender_stealth_address: Vec<u8>,
 }
 
 /// Build a CT token mint transaction.
@@ -321,13 +324,6 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
         since: Uint64::from(0u64),
     };
 
-    // Build funding cell lock script (for change output)
-    let funding_lock_script = Script {
-        code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
-        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-        args: JsonBytes::from_vec(params.funding_cell.lock_script_args.clone()),
-    };
-
     // Calculate change
     let change_capacity = params
         .funding_cell
@@ -361,9 +357,12 @@ pub fn build_mint_transaction(config: &Config, params: MintParams) -> Result<Bui
     // Stealth-lock change needs: 8 (capacity) + 90 (lock script with 53-byte args) = 98 bytes
     const MIN_STEALTH_CHANGE_CAPACITY: u64 = 100_00000000;
     if change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
+        // Generate fresh stealth address for CKB change (privacy protection)
+        let change_lock_script = build_fresh_stealth_lock(config, &params.sender_stealth_address)?;
+
         outputs.push(CellOutput {
             capacity: Uint64::from(change_capacity),
-            lock: funding_lock_script,
+            lock: change_lock_script,
             type_: None,
         });
         outputs_data.push(JsonBytes::from_vec(vec![]));
@@ -918,13 +917,6 @@ pub fn build_genesis_transaction(
         args: JsonBytes::from_vec(ct_info_lock_args.clone()),
     };
 
-    // Build funding cell lock script (same stealth-lock pattern)
-    let funding_lock_script = Script {
-        code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
-        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-        args: JsonBytes::from_vec(funding_cell.lock_script_args.clone()),
-    };
-
     // Create ct-info data with initial supply = 0
     let ct_info_data = CtInfoData::new(0, params.supply_cap, params.flags);
 
@@ -952,9 +944,12 @@ pub fn build_genesis_transaction(
     // Stealth-lock change needs: 8 (capacity) + 90 (lock script with 53-byte args) = 98 bytes
     const MIN_STEALTH_CHANGE_CAPACITY: u64 = 100_00000000;
     if change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
+        // Generate fresh stealth address for change (privacy protection)
+        let change_lock_script = build_fresh_stealth_lock(config, &params.issuer_stealth_address)?;
+
         outputs.push(CellOutput {
             capacity: Uint64::from(change_capacity),
-            lock: funding_lock_script,
+            lock: change_lock_script,
             type_: None,
         });
         outputs_data.push(JsonBytes::from_vec(vec![]));
@@ -1056,6 +1051,43 @@ fn build_genesis_cell_deps(config: &Config) -> Result<Vec<CellDep>> {
     });
 
     Ok(deps)
+}
+
+/// Build a fresh stealth lock script for CKB change output.
+/// This generates a new one-time address to prevent tracking.
+fn build_fresh_stealth_lock(config: &Config, sender_stealth_address: &[u8]) -> Result<Script> {
+    if sender_stealth_address.len() != 66 {
+        return Err(eyre!(
+            "Invalid sender stealth address length: {} (expected 66)",
+            sender_stealth_address.len()
+        ));
+    }
+
+    // Parse view and spend public keys from stealth address
+    let view_pub = secp256k1::PublicKey::from_slice(&sender_stealth_address[0..33])
+        .map_err(|e| eyre!("Invalid view public key: {}", e))?;
+    let spend_pub = secp256k1::PublicKey::from_slice(&sender_stealth_address[33..66])
+        .map_err(|e| eyre!("Invalid spend public key: {}", e))?;
+
+    // Generate a fresh one-time address for change
+    let (eph_pub, stealth_pub) = generate_ephemeral_key(&view_pub, &spend_pub);
+    let pubkey_hash = ckb_hash::blake2b_256(stealth_pub.serialize());
+
+    let mut script_args = Vec::with_capacity(53);
+    script_args.extend_from_slice(&eph_pub.serialize());
+    script_args.extend_from_slice(&pubkey_hash[0..20]);
+
+    let code_hash = config
+        .contracts
+        .stealth_lock_code_hash
+        .trim_start_matches("0x");
+    let code_hash_bytes = hex::decode(code_hash)?;
+
+    Ok(Script {
+        code_hash: H256::from_slice(&code_hash_bytes)?,
+        hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+        args: JsonBytes::from_vec(script_args),
+    })
 }
 
 fn build_witness_args_with_lock(signature: &[u8], recovery_id: u8) -> JsonBytes {

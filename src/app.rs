@@ -1773,6 +1773,7 @@ impl App {
                             mint_amount: amount_value,
                             recipient_stealth_address: stealth_addr,
                             funding_cell: funding_input.clone(),
+                            sender_stealth_address: account.stealth_address_bytes(),
                         };
 
                         // Build the mint transaction
@@ -2797,8 +2798,7 @@ impl App {
         let tokens_balances = self.tokens_component.balances.clone();
         let tokens_selected_index = self.tokens_component.selected_index;
         let tokens_mode = self.tokens_component.mode;
-        let tokens_list_focus = self.tokens_component.list_focus;
-        let tokens_selected_operation = self.tokens_component.selected_operation;
+        let tokens_context_menu_selection = self.tokens_component.context_menu_selection;
         let tokens_transfer_recipient = self.tokens_component.transfer_recipient.clone();
         let tokens_transfer_amount = self.tokens_component.transfer_amount.clone();
         let tokens_transfer_field = self.tokens_component.transfer_field;
@@ -2976,8 +2976,7 @@ impl App {
                         &tokens_balances,
                         tokens_selected_index,
                         tokens_mode,
-                        tokens_list_focus,
-                        tokens_selected_operation,
+                        tokens_context_menu_selection,
                         &tokens_transfer_recipient,
                         &tokens_transfer_amount,
                         tokens_transfer_field,

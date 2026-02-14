@@ -19,7 +19,10 @@ use crate::{
         cell::CtCell,
         ct::{commit, encrypt_amount_and_blinding, prove_range, random_blinding},
         ct_mint::FundingCell,
-        stealth::{derive_stealth_secret, generate_ephemeral_key_with_shared_secret},
+        stealth::{
+            derive_stealth_secret, generate_ephemeral_key,
+            generate_ephemeral_key_with_shared_secret,
+        },
     },
 };
 
@@ -368,28 +371,15 @@ impl CtTxBuilder {
 
         // Add CKB change output if there's remaining funding capacity
         if ckb_change_capacity >= MIN_STEALTH_CHANGE_CAPACITY {
-            let stealth_code_hash = self
-                .config
-                .contracts
-                .stealth_lock_code_hash
-                .trim_start_matches("0x");
-            let stealth_code_hash_bytes = hex::decode(stealth_code_hash)?;
+            // Generate a fresh stealth address for CKB change (privacy protection)
+            let ckb_change_lock = self.build_ckb_change_script(sender_account)?;
 
-            // Use the funding cell's lock script for CKB change
-            if let Some(ref fc) = funding_cell {
-                let ckb_change_lock = Script {
-                    code_hash: H256::from_slice(&stealth_code_hash_bytes)?,
-                    hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
-                    args: JsonBytes::from_vec(fc.lock_script_args.clone()),
-                };
-
-                outputs.push(CellOutput {
-                    capacity: Uint64::from(ckb_change_capacity),
-                    lock: ckb_change_lock,
-                    type_: None, // Plain CKB, no type script
-                });
-                outputs_data.push(JsonBytes::from_vec(vec![])); // Empty data
-            }
+            outputs.push(CellOutput {
+                capacity: Uint64::from(ckb_change_capacity),
+                lock: ckb_change_lock,
+                type_: None, // Plain CKB, no type script
+            });
+            outputs_data.push(JsonBytes::from_vec(vec![])); // Empty data
         }
 
         // Build witnesses
@@ -746,6 +736,34 @@ impl CtTxBuilder {
             code_hash: H256::from_slice(&code_hash_bytes)?,
             hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
             args: JsonBytes::from_vec(self.ct_token_type_args.clone()),
+        })
+    }
+
+    /// Build a fresh stealth address for CKB change output.
+    /// This generates a new one-time address to prevent tracking.
+    fn build_ckb_change_script(&self, account: &Account) -> Result<Script> {
+        let view_pub = account.view_public_key();
+        let spend_pub = account.spend_public_key();
+
+        // Generate a fresh one-time address for CKB change
+        let (eph_pub, stealth_pub) = generate_ephemeral_key(&view_pub, &spend_pub);
+        let pubkey_hash = blake2b_256(stealth_pub.serialize());
+
+        let mut script_args = Vec::with_capacity(53);
+        script_args.extend_from_slice(&eph_pub.serialize());
+        script_args.extend_from_slice(&pubkey_hash[0..20]);
+
+        let code_hash = self
+            .config
+            .contracts
+            .stealth_lock_code_hash
+            .trim_start_matches("0x");
+        let code_hash_bytes = hex::decode(code_hash)?;
+
+        Ok(Script {
+            code_hash: H256::from_slice(&code_hash_bytes)?,
+            hash_type: ckb_jsonrpc_types::ScriptHashType::Type,
+            args: JsonBytes::from_vec(script_args),
         })
     }
 

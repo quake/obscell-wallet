@@ -26,6 +26,8 @@ use super::Component;
 pub enum TokensMode {
     /// List token balances.
     List,
+    /// Context menu for token operations (Transfer/Mint).
+    ContextMenu,
     /// Transfer tokens.
     Transfer,
     /// Mint tokens (issuer only).
@@ -34,56 +36,22 @@ pub enum TokensMode {
     Genesis,
 }
 
-/// Input field focus state for transfer mode.
+/// Context menu operations (shown when pressing Enter on a token).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListFocus {
-    /// Focus on token list.
-    Tokens,
-    /// Focus on operation menu.
-    Operations,
-}
-
-/// Available operations in List mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenOperation {
+pub enum ContextMenuOperation {
     Transfer,
     Mint,
-    Genesis,
 }
 
-impl TokenOperation {
-    fn all() -> &'static [TokenOperation] {
-        &[
-            TokenOperation::Transfer,
-            TokenOperation::Mint,
-            TokenOperation::Genesis,
-        ]
+impl ContextMenuOperation {
+    fn all() -> &'static [ContextMenuOperation] {
+        &[ContextMenuOperation::Transfer, ContextMenuOperation::Mint]
     }
 
     fn label(&self) -> &'static str {
         match self {
-            TokenOperation::Transfer => "Transfer",
-            TokenOperation::Mint => "Mint",
-            TokenOperation::Genesis => "Create New Token",
-        }
-    }
-
-    /// Check if this operation is enabled given the current token list state.
-    fn is_enabled(&self, has_tokens: bool) -> bool {
-        match self {
-            // Transfer and Mint require at least one token to be selected
-            TokenOperation::Transfer | TokenOperation::Mint => has_tokens,
-            // Genesis is always available
-            TokenOperation::Genesis => true,
-        }
-    }
-
-    /// Get hint text for why this operation is disabled.
-    fn disabled_hint(&self) -> &'static str {
-        match self {
-            TokenOperation::Transfer => "No tokens to transfer",
-            TokenOperation::Mint => "Select a token or Create New Token first",
-            TokenOperation::Genesis => "",
+            ContextMenuOperation::Transfer => "Transfer",
+            ContextMenuOperation::Mint => "Mint",
         }
     }
 }
@@ -110,12 +78,12 @@ pub struct TokensComponent {
     pub account: Option<Account>,
     pub balances: Vec<CtBalance>,
     pub ct_cells: Vec<CtCell>,
+    /// Selected index in the list. Index == balances.len() means "Create New Token" is selected.
     pub selected_index: usize,
     list_state: ListState,
     pub mode: TokensMode,
-    // List mode state
-    pub list_focus: ListFocus,
-    pub selected_operation: usize,
+    // Context menu state (for ContextMenu mode)
+    pub context_menu_selection: usize,
     // Transfer mode state
     pub transfer_recipient: String,
     pub transfer_amount: String,
@@ -146,8 +114,7 @@ impl TokensComponent {
             selected_index: 0,
             list_state,
             mode: TokensMode::List,
-            list_focus: ListFocus::Tokens,
-            selected_operation: 0,
+            context_menu_selection: 0,
             transfer_recipient: String::new(),
             transfer_amount: String::new(),
             transfer_field: TransferField::Recipient,
@@ -171,15 +138,12 @@ impl TokensComponent {
     /// Set token balances.
     pub fn set_balances(&mut self, balances: Vec<CtBalance>) {
         self.balances = balances;
-        if self.balances.is_empty() {
-            // Auto-focus Operations menu when list is empty
-            self.list_focus = ListFocus::Operations;
-        } else {
-            if self.selected_index >= self.balances.len() {
-                self.selected_index = self.balances.len() - 1;
-            }
-            self.list_state.select(Some(self.selected_index));
+        // Total items = tokens + 1 ("Create New Token")
+        let total_items = self.balances.len() + 1;
+        if self.selected_index >= total_items {
+            self.selected_index = total_items.saturating_sub(1);
         }
+        self.list_state.select(Some(self.selected_index));
     }
 
     /// Set CT cells.
@@ -241,11 +205,11 @@ impl TokensComponent {
         parse_token_amount(&self.mint_amount)
     }
 
+    /// Move to next item in the list.
+    /// Total items = balances.len() + 1 (for "Create New Token").
     fn next_token(&mut self) {
-        if self.balances.is_empty() {
-            return;
-        }
-        let i = if self.selected_index >= self.balances.len() - 1 {
+        let total_items = self.balances.len() + 1;
+        let i = if self.selected_index >= total_items - 1 {
             0
         } else {
             self.selected_index + 1
@@ -254,17 +218,22 @@ impl TokensComponent {
         self.list_state.select(Some(i));
     }
 
+    /// Move to previous item in the list.
+    /// Total items = balances.len() + 1 (for "Create New Token").
     fn prev_token(&mut self) {
-        if self.balances.is_empty() {
-            return;
-        }
+        let total_items = self.balances.len() + 1;
         let i = if self.selected_index == 0 {
-            self.balances.len() - 1
+            total_items - 1
         } else {
             self.selected_index - 1
         };
         self.selected_index = i;
         self.list_state.select(Some(i));
+    }
+
+    /// Check if "Create New Token" item is selected.
+    fn is_create_new_selected(&self) -> bool {
+        self.selected_index == self.balances.len()
     }
 
     fn next_field(&mut self) {
@@ -290,7 +259,7 @@ impl TokensComponent {
                     GenesisField::Confirm => GenesisField::Unlimited,
                 };
             }
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::ContextMenu => {}
         }
     }
 
@@ -317,7 +286,7 @@ impl TokensComponent {
                     GenesisField::Confirm => GenesisField::SupplyCap,
                 };
             }
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::ContextMenu => {}
         }
     }
 
@@ -353,7 +322,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::ContextMenu => {}
         }
     }
 
@@ -383,7 +352,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::ContextMenu => {}
         }
     }
 
@@ -427,7 +396,7 @@ impl TokensComponent {
                 }
                 GenesisField::Unlimited | GenesisField::Confirm => {}
             },
-            TokensMode::List => {}
+            TokensMode::List | TokensMode::ContextMenu => {}
         }
     }
 
@@ -535,8 +504,7 @@ impl TokensComponent {
         balances: &[CtBalance],
         selected_index: usize,
         mode: TokensMode,
-        list_focus: ListFocus,
-        selected_operation: usize,
+        context_menu_selection: usize,
         transfer_recipient: &str,
         transfer_amount: &str,
         transfer_field: TransferField,
@@ -552,14 +520,16 @@ impl TokensComponent {
     ) {
         match mode {
             TokensMode::List => {
-                Self::draw_list_mode(
+                Self::draw_list_mode(f, area, account, balances, selected_index, error_message);
+            }
+            TokensMode::ContextMenu => {
+                Self::draw_context_menu(
                     f,
                     area,
                     account,
                     balances,
                     selected_index,
-                    list_focus,
-                    selected_operation,
+                    context_menu_selection,
                     error_message,
                 );
             }
@@ -606,25 +576,22 @@ impl TokensComponent {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_list_mode(
         f: &mut Frame,
         area: Rect,
         account: Option<&Account>,
         balances: &[CtBalance],
         selected_index: usize,
-        list_focus: ListFocus,
-        selected_operation: usize,
         error_message: Option<&str>,
     ) {
         let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
-        // Left side: split into token list and operations menu
+        // Left side: Token list (no longer split for Operations panel)
         let left_chunks =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(8)]).split(chunks[0]);
+            Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(chunks[0]);
 
-        // Token list
-        let items: Vec<ListItem> = balances
+        // Build list items: tokens + "Create New Token"
+        let mut items: Vec<ListItem> = balances
             .iter()
             .enumerate()
             .map(|(i, bal)| {
@@ -653,22 +620,31 @@ impl TokensComponent {
             })
             .collect();
 
+        // Add "Create New Token" as the last item
+        let create_new_index = balances.len();
+        let create_new_style = if selected_index == create_new_index {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            "+ Create New Token",
+            create_new_style,
+        )])));
+
         let mut list_state = ListState::default();
         list_state.select(Some(selected_index));
 
         let account_name = account.map(|a| a.name.as_str()).unwrap_or("None");
-        let list_border_color = if list_focus == ListFocus::Tokens {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
 
         let list = List::new(items)
             .block(
                 Block::default()
                     .title(format!("Token Balances - {}", account_name))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(list_border_color)),
+                    .border_style(Style::default().fg(Color::Cyan)),
             )
             .highlight_style(
                 Style::default()
@@ -679,69 +655,25 @@ impl TokensComponent {
 
         f.render_stateful_widget(list, left_chunks[0], &mut list_state);
 
-        // Operations menu
-        let ops = TokenOperation::all();
-        let has_tokens = !balances.is_empty();
-        let op_items: Vec<ListItem> = ops
-            .iter()
-            .enumerate()
-            .map(|(i, op)| {
-                let is_enabled = op.is_enabled(has_tokens);
-                let is_selected = i == selected_operation && list_focus == ListFocus::Operations;
-
-                let style = if !is_enabled {
-                    // Disabled: dark gray
-                    Style::default().fg(Color::DarkGray)
-                } else if is_selected {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-
-                let label = if !is_enabled {
-                    format!("{} (disabled)", op.label())
-                } else {
-                    op.label().to_string()
-                };
-
-                ListItem::new(Line::from(Span::styled(label, style)))
-            })
-            .collect();
-
-        let mut op_state = ListState::default();
-        if list_focus == ListFocus::Operations {
-            op_state.select(Some(selected_operation));
-        }
-
-        let ops_border_color = if list_focus == ListFocus::Operations {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
-
-        let ops_list = List::new(op_items)
-            .block(
-                Block::default()
-                    .title("Operations")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(ops_border_color)),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("> ");
-
-        f.render_stateful_widget(ops_list, left_chunks[1], &mut op_state);
+        // Help text at bottom of left panel
+        let help_text = Line::from(Span::styled(
+            "Up/Down: Navigate | Enter: Select",
+            Style::default().fg(Color::DarkGray),
+        ));
+        let help_widget = Paragraph::new(help_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+        f.render_widget(help_widget, left_chunks[1]);
 
         // Right side: Token details
         let right_chunks =
             Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(chunks[1]);
 
-        let details = if let Some(bal) = balances.get(selected_index) {
+        let details = if selected_index < balances.len() {
+            // Show selected token details
+            let bal = &balances[selected_index];
             vec![
                 Line::from(vec![Span::styled(
                     "Token ID: ",
@@ -769,11 +701,15 @@ impl TokensComponent {
                 ]),
             ]
         } else {
+            // "Create New Token" is selected
             vec![
-                Line::from("No tokens found"),
+                Line::from(vec![Span::styled(
+                    "Create New Token",
+                    Style::default().fg(Color::Yellow),
+                )]),
                 Line::from(""),
-                Line::from("Select 'Create New Token' to issue"),
-                Line::from("a new CT token."),
+                Line::from("Press Enter to create a new CT token."),
+                Line::from("You will become the issuer of this token."),
             ]
         };
 
@@ -791,7 +727,7 @@ impl TokensComponent {
             Line::from(Span::styled(err, Style::default().fg(Color::Red)))
         } else {
             Line::from(Span::styled(
-                "Up/Down: Navigate | Enter: Select/Execute",
+                "Enter: Open menu / Create token",
                 Style::default().fg(Color::DarkGray),
             ))
         };
@@ -803,6 +739,65 @@ impl TokensComponent {
         );
 
         f.render_widget(status_widget, right_chunks[1]);
+    }
+
+    /// Draw context menu overlay for token operations (Transfer/Mint).
+    fn draw_context_menu(
+        f: &mut Frame,
+        area: Rect,
+        account: Option<&Account>,
+        balances: &[CtBalance],
+        selected_index: usize,
+        context_menu_selection: usize,
+        error_message: Option<&str>,
+    ) {
+        // First draw the list mode as background
+        Self::draw_list_mode(f, area, account, balances, selected_index, error_message);
+
+        // Calculate popup position (centered, small size)
+        let popup_width = 20u16;
+        let popup_height = 6u16;
+        let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Clear background for popup
+        let clear = Block::default().style(Style::default().bg(Color::Black));
+        f.render_widget(clear, popup_area);
+
+        // Build menu items
+        let ops = ContextMenuOperation::all();
+        let menu_items: Vec<ListItem> = ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let style = if i == context_menu_selection {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("  {}  ", op.label()),
+                    style,
+                )))
+            })
+            .collect();
+
+        let mut menu_state = ListState::default();
+        menu_state.select(Some(context_menu_selection));
+
+        let menu = List::new(menu_items).block(
+            Block::default()
+                .title("Select Action")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+
+        f.render_stateful_widget(menu, popup_area, &mut menu_state);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1394,7 +1389,7 @@ impl TokensComponent {
     /// Check if we're on an input field that needs direct character input.
     pub fn needs_direct_input(&self) -> bool {
         match self.mode {
-            TokensMode::List => false,
+            TokensMode::List | TokensMode::ContextMenu => false,
             TokensMode::Transfer => matches!(
                 self.transfer_field,
                 TransferField::Recipient | TransferField::Amount
@@ -1422,101 +1417,63 @@ impl Component for TokensComponent {
 
         match self.mode {
             TokensMode::List => {
-                let ops = TokenOperation::all();
-                match self.list_focus {
-                    ListFocus::Tokens => {
-                        match key.code {
-                            KeyCode::Down => {
-                                // If at last item or list is empty, move to Operations
-                                if self.balances.is_empty()
-                                    || self.selected_index >= self.balances.len().saturating_sub(1)
-                                {
-                                    self.list_focus = ListFocus::Operations;
-                                    self.selected_operation = 0;
-                                } else {
-                                    self.next_token();
-                                }
-                            }
-                            KeyCode::Up => {
-                                // If at first item, wrap to Operations (bottom)
-                                if self.selected_index == 0 {
-                                    self.list_focus = ListFocus::Operations;
-                                    self.selected_operation = ops.len() - 1;
-                                } else {
-                                    self.prev_token();
-                                }
-                            }
-                            KeyCode::Enter => {
-                                // Select current token for transfer
-                                if !self.balances.is_empty() {
+                match key.code {
+                    KeyCode::Down => {
+                        self.next_token();
+                    }
+                    KeyCode::Up => {
+                        self.prev_token();
+                    }
+                    KeyCode::Enter => {
+                        if self.is_create_new_selected() {
+                            // "Create New Token" selected - go directly to Genesis mode
+                            self.mode = TokensMode::Genesis;
+                            self.clear_genesis();
+                        } else if !self.balances.is_empty() {
+                            // Token selected - show context menu
+                            self.mode = TokensMode::ContextMenu;
+                            self.context_menu_selection = 0;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            TokensMode::ContextMenu => {
+                let ops = ContextMenuOperation::all();
+                match key.code {
+                    KeyCode::Down => {
+                        if self.context_menu_selection >= ops.len() - 1 {
+                            self.context_menu_selection = 0;
+                        } else {
+                            self.context_menu_selection += 1;
+                        }
+                    }
+                    KeyCode::Up => {
+                        if self.context_menu_selection == 0 {
+                            self.context_menu_selection = ops.len() - 1;
+                        } else {
+                            self.context_menu_selection -= 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(op) = ops.get(self.context_menu_selection) {
+                            match op {
+                                ContextMenuOperation::Transfer => {
                                     self.mode = TokensMode::Transfer;
                                     self.clear_transfer();
                                 }
+                                ContextMenuOperation::Mint => {
+                                    self.mode = TokensMode::Mint;
+                                    self.clear_mint();
+                                }
                             }
-                            _ => {}
                         }
                     }
-                    ListFocus::Operations => {
-                        match key.code {
-                            KeyCode::Down => {
-                                // If at last operation, wrap to List (top)
-                                if self.selected_operation >= ops.len() - 1 {
-                                    if !self.balances.is_empty() {
-                                        self.list_focus = ListFocus::Tokens;
-                                        self.selected_index = 0;
-                                        self.list_state.select(Some(0));
-                                    } else {
-                                        // Wrap within operations if list is empty
-                                        self.selected_operation = 0;
-                                    }
-                                } else {
-                                    self.selected_operation += 1;
-                                }
-                            }
-                            KeyCode::Up => {
-                                // If at first operation, move to List (bottom)
-                                if self.selected_operation == 0 {
-                                    if !self.balances.is_empty() {
-                                        self.list_focus = ListFocus::Tokens;
-                                        self.selected_index = self.balances.len() - 1;
-                                        self.list_state.select(Some(self.selected_index));
-                                    } else {
-                                        // Wrap within operations if list is empty
-                                        self.selected_operation = ops.len() - 1;
-                                    }
-                                } else {
-                                    self.selected_operation -= 1;
-                                }
-                            }
-                            KeyCode::Enter => {
-                                // Execute selected operation
-                                if let Some(op) = ops.get(self.selected_operation) {
-                                    // Check if operation is enabled
-                                    let has_tokens = !self.balances.is_empty();
-                                    if !op.is_enabled(has_tokens) {
-                                        self.error_message = Some(op.disabled_hint().to_string());
-                                        return Ok(());
-                                    }
-
-                                    match op {
-                                        TokenOperation::Transfer => {
-                                            self.mode = TokensMode::Transfer;
-                                            self.clear_transfer();
-                                        }
-                                        TokenOperation::Mint => {
-                                            self.mode = TokensMode::Mint;
-                                            self.clear_mint();
-                                        }
-                                        TokenOperation::Genesis => {
-                                            self.mode = TokensMode::Genesis;
-                                            self.clear_genesis();
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                    KeyCode::Esc => {
+                        // Return to list mode
+                        self.mode = TokensMode::List;
                     }
+                    _ => {}
                 }
             }
             TokensMode::Transfer | TokensMode::Mint | TokensMode::Genesis => {
@@ -1562,7 +1519,6 @@ impl Component for TokensComponent {
                         KeyCode::Esc => {
                             // Return to list mode
                             self.mode = TokensMode::List;
-                            self.list_focus = ListFocus::Operations;
                         }
                         KeyCode::Down => {
                             self.next_field();
@@ -1601,7 +1557,7 @@ impl Component for TokensComponent {
                                 }
                                 TokensMode::Mint => self.mint_field == TransferField::Confirm,
                                 TokensMode::Genesis => self.genesis_field == GenesisField::Confirm,
-                                TokensMode::List => false,
+                                TokensMode::List | TokensMode::ContextMenu => false,
                             };
 
                             if is_confirm {
@@ -1610,7 +1566,7 @@ impl Component for TokensComponent {
                                     TokensMode::Transfer => self.validate_transfer(),
                                     TokensMode::Mint => self.validate_mint(),
                                     TokensMode::Genesis => self.validate_genesis(),
-                                    TokensMode::List => None,
+                                    TokensMode::List | TokensMode::ContextMenu => None,
                                 };
 
                                 if let Some(err) = validation_error {
@@ -1633,7 +1589,7 @@ impl Component for TokensComponent {
                                                 PassphrasePurpose::CreateToken,
                                             );
                                         }
-                                        TokensMode::List => {}
+                                        TokensMode::List | TokensMode::ContextMenu => {}
                                     }
                                 }
                             }
@@ -1654,8 +1610,7 @@ impl Component for TokensComponent {
             &self.balances,
             self.selected_index,
             self.mode,
-            self.list_focus,
-            self.selected_operation,
+            self.context_menu_selection,
             &self.transfer_recipient,
             &self.transfer_amount,
             self.transfer_field,
