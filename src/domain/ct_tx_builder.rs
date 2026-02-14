@@ -17,17 +17,16 @@ use crate::{
     domain::{
         account::Account,
         cell::CtCell,
-        ct::{commit, encrypt_amount_and_blinding, prove_range, random_blinding},
+        ct::{commit, encrypt_amount, prove_range, random_blinding},
         ct_mint::FundingCell,
         stealth::{derive_stealth_secret, generate_ephemeral_key_with_shared_secret},
     },
 };
 
 /// Minimum cell capacity in CKB for a CT token cell with stealth-lock.
-/// CT cell needs: capacity (8B) + lock (stealth 86B) + type (65B) + data (72B) = 231 bytes
-/// Type script args: ct_info_script_hash (32B).
-/// Data format: commitment (32B) + encrypted(amount 8B + blinding 32B) = 72B.
-const MIN_CT_CELL_CAPACITY: u64 = 231_00000000;
+/// CT cell needs: capacity (8B) + lock (stealth 86B) + type (65B) + data (64B) = 223 bytes
+/// Type script args changed from 64B to 32B (ct_info_script_hash only).
+const MIN_CT_CELL_CAPACITY: u64 = 223_00000000;
 
 /// Minimum cell capacity for a plain stealth cell (no type script).
 /// stealth cell: capacity (8B) + lock (stealth 86B) = 94 bytes, but minimum is 61 CKB
@@ -644,7 +643,7 @@ impl CtTxBuilder {
         &self,
         stealth_address: &[u8],
         amount: u64,
-        blinding: &Scalar,
+        _blinding: &Scalar,
         commitment: &curve25519_dalek::ristretto::CompressedRistretto,
     ) -> Result<(Script, Vec<u8>)> {
         if stealth_address.len() != 66 {
@@ -681,12 +680,11 @@ impl CtTxBuilder {
             args: JsonBytes::from_vec(script_args.clone()),
         };
 
-        // Encrypt amount AND blinding factor using shared secret
-        // This allows the recipient to recover the blinding factor for spending
-        let encrypted = encrypt_amount_and_blinding(amount, blinding, &shared_secret);
+        // Encrypt amount using shared secret from ephemeral key derivation
+        let encrypted = encrypt_amount(amount, &shared_secret);
 
-        // Build output data: commitment (32B) || encrypted(amount + blinding) (40B) = 72B
-        let mut output_data = Vec::with_capacity(72);
+        // Build output data: commitment (32B) || encrypted_amount (32B)
+        let mut output_data = Vec::with_capacity(64);
         output_data.extend_from_slice(commitment.as_bytes());
         output_data.extend_from_slice(&encrypted);
 
@@ -697,7 +695,7 @@ impl CtTxBuilder {
         &self,
         account: &Account,
         amount: u64,
-        blinding: &Scalar,
+        _blinding: &Scalar,
         commitment: &curve25519_dalek::ristretto::CompressedRistretto,
     ) -> Result<(Script, Vec<u8>)> {
         let view_pub = account.view_public_key();
@@ -725,10 +723,10 @@ impl CtTxBuilder {
             args: JsonBytes::from_vec(script_args),
         };
 
-        // Encrypt amount AND blinding factor for ourselves using shared secret
-        let encrypted = encrypt_amount_and_blinding(amount, blinding, &shared_secret);
+        // Encrypt amount for ourselves using shared secret from ephemeral key derivation
+        let encrypted = encrypt_amount(amount, &shared_secret);
 
-        let mut output_data = Vec::with_capacity(72);
+        let mut output_data = Vec::with_capacity(64);
         output_data.extend_from_slice(commitment.as_bytes());
         output_data.extend_from_slice(&encrypted);
 
@@ -898,8 +896,8 @@ mod tests {
 
     #[test]
     fn test_min_ct_cell_capacity() {
-        // 231 CKB minimum for CT cell with stealth-lock
-        // (increased from 223 CKB after cell data changed from 64B to 72B for v2 format)
-        assert_eq!(MIN_CT_CELL_CAPACITY, 231_00000000);
+        // 223 CKB minimum for CT cell with stealth-lock
+        // (reduced from 255 CKB after type args changed from 64B to 32B)
+        assert_eq!(MIN_CT_CELL_CAPACITY, 223_00000000);
     }
 }
