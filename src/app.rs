@@ -2804,6 +2804,10 @@ impl App {
             let setup_error_message = self.wallet_setup_component.error_message.clone();
             let setup_success_message = self.wallet_setup_component.success_message.clone();
 
+            // Spinner state for wallet setup
+            let tx_progress_visible = self.tx_progress_visible;
+            let tx_progress_frame = self.tx_progress_frame;
+
             self.tui.draw(|f| {
                 WalletSetupComponent::draw_static(
                     f,
@@ -2819,6 +2823,43 @@ impl App {
                     setup_error_message.as_deref(),
                     setup_success_message.as_deref(),
                 );
+
+                // Draw progress spinner if active (wallet creation/restore is CPU-intensive)
+                if tx_progress_visible {
+                    const SPINNER_FRAMES: &[&str] =
+                        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                    let spinner_char = SPINNER_FRAMES[tx_progress_frame % SPINNER_FRAMES.len()];
+
+                    let area = f.area();
+                    let popup_width = 30u16.min(area.width.saturating_sub(4));
+                    let popup_height = 5u16.min(area.height.saturating_sub(4));
+                    let x = (area.width.saturating_sub(popup_width)) / 2;
+                    let y = (area.height.saturating_sub(popup_height)) / 2;
+                    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+                    f.render_widget(ratatui::widgets::Clear, popup_area);
+
+                    let block = Block::default()
+                        .title("Creating Wallet")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan));
+
+                    let inner = block.inner(popup_area);
+                    f.render_widget(block, popup_area);
+
+                    let content = Paragraph::new(vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("  {}  ", spinner_char),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::styled("Please wait...", Style::default().fg(Color::Reset)),
+                        ]),
+                    ])
+                    .alignment(ratatui::layout::Alignment::Center);
+                    f.render_widget(content, inner);
+                }
             })?;
             return Ok(());
         }
