@@ -164,11 +164,17 @@ impl TokensComponent {
         self.is_editing = false;
     }
 
-    /// Clear mint form.
+    /// Clear mint form and pre-fill recipient with current account's stealth address.
     pub fn clear_mint(&mut self) {
-        self.mint_recipient.clear();
+        // Default to minting to self (current account's stealth address)
+        self.mint_recipient = self
+            .account
+            .as_ref()
+            .map(|acc| acc.stealth_address())
+            .unwrap_or_default();
         self.mint_amount.clear();
-        self.mint_field = TransferField::Recipient;
+        // Skip recipient field since it's pre-filled, start at amount
+        self.mint_field = TransferField::Amount;
         self.is_editing = false;
     }
 
@@ -1075,9 +1081,9 @@ impl TokensComponent {
         .block(
             Block::default()
                 .title(if focused_field == TransferField::Recipient {
-                    "> Recipient Stealth Address"
+                    "> Recipient (default: self)"
                 } else {
-                    "  Recipient Stealth Address"
+                    "  Recipient (default: self)"
                 })
                 .borders(Borders::ALL)
                 .border_style(if focused_field == TransferField::Recipient {
