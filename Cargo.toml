@@ -1,6 +1,6 @@
 [package]
 name = "obscell-wallet"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["quake"]
 description = "A TUI wallet for obscell privacy tokens on Nervos CKB"
