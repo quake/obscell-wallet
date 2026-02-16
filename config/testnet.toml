@@ -2,7 +2,7 @@
 name = "testnet"
 rpc_url = "https://testnet.ckbapp.dev"
 # Start scanning from block after contract deployment to skip irrelevant history
-scan_start_block = 20117508
+scan_start_block = 20122772
 
 [contracts]
 stealth_lock_code_hash = "0x0dc965b5bfb6db2759275ad7d92ee502e10955cca789d001af03e3576cfe3f1c"
