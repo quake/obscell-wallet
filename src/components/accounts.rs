@@ -99,16 +99,17 @@ impl AccountsComponent {
         let chunks = Layout::horizontal([Constraint::Length(40), Constraint::Min(0)]).split(area);
 
         // Helper to truncate string to fit width (accounting for borders)
+        // Returns (truncated_string, was_truncated)
         let max_width = chunks[1].width.saturating_sub(2) as usize;
-        let truncate = |s: &str| -> String {
+        let truncate_with_flag = |s: &str| -> (String, bool) {
             if s.chars().count() <= max_width {
-                s.to_string()
+                (s.to_string(), false)
             } else if max_width <= 3 {
-                ".".repeat(max_width)
+                (".".repeat(max_width), true)
             } else {
                 let chars: Vec<char> = s.chars().collect();
                 let truncated: String = chars[..max_width - 3].iter().collect();
-                format!("{}...", truncated)
+                (format!("{}...", truncated), true)
             }
         };
 
@@ -160,10 +161,10 @@ impl AccountsComponent {
 
         // Account details
         let details = if let Some(acc) = accounts.get(selected_index) {
-            let stealth_addr = truncate(&acc.stealth_address());
-            let ckb_addr = one_time_address
-                .map(&truncate)
-                .unwrap_or_else(|| "(generating...)".to_string());
+            let (stealth_addr, stealth_truncated) = truncate_with_flag(&acc.stealth_address());
+            let (ckb_addr, ckb_truncated) = one_time_address
+                .map(truncate_with_flag)
+                .unwrap_or_else(|| ("(generating...)".to_string(), false));
 
             // Address style - blinking effect when spinning
             let addr_style = if is_spinning {
@@ -183,10 +184,16 @@ impl AccountsComponent {
                     Style::default().fg(Color::Yellow),
                 )])]
             } else {
-                let mut lines = vec![Line::from(vec![Span::styled(
-                    "Address selected! Press Enter to regenerate",
-                    Style::default().fg(Color::Green),
-                )])];
+                let mut lines = vec![
+                    Line::from(vec![Span::styled(
+                        "Address selected! Press Enter to regenerate",
+                        Style::default().fg(Color::Green),
+                    )]),
+                    Line::from(vec![Span::styled(
+                        "Select with mouse, copy with Ctrl+C / Cmd+C",
+                        Style::default().fg(Color::DarkGray),
+                    )]),
+                ];
                 // Show faucet hint for testnet
                 if network_name == Some("testnet") {
                     lines.push(Line::from(""));
@@ -196,6 +203,20 @@ impl AccountsComponent {
                     )]));
                 }
                 lines
+            };
+
+            // Build stealth address label with truncation warning
+            let stealth_label = if stealth_truncated {
+                "Stealth Address (truncated - widen window):"
+            } else {
+                "Stealth Address (for receiving):"
+            };
+
+            // Build one-time address label with truncation warning
+            let ckb_label = if ckb_truncated {
+                "One-time CKB Address (truncated - widen window):"
+            } else {
+                "One-time CKB Address:"
             };
 
             let mut details = vec![
@@ -213,7 +234,7 @@ impl AccountsComponent {
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "Stealth Address (for receiving):",
+                    stealth_label,
                     Style::default().fg(Color::DarkGray),
                 )]),
                 Line::from(vec![Span::styled(
@@ -222,7 +243,7 @@ impl AccountsComponent {
                 )]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "One-time CKB Address:",
+                    ckb_label,
                     Style::default().fg(Color::DarkGray),
                 )]),
                 Line::from(vec![Span::styled(ckb_addr, addr_style)]),
