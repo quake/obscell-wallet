@@ -2574,6 +2574,7 @@ impl App {
                         wallet_meta: meta,
                         account,
                         status_message: "Wallet created with Account 1!".to_string(),
+                        is_new_wallet: true, // New wallet, can skip scan to tip
                     });
                 });
             }
@@ -2648,6 +2649,7 @@ impl App {
                         wallet_meta: meta,
                         account,
                         status_message: "Wallet restored with Account 1!".to_string(),
+                        is_new_wallet: false, // Restored wallet, need full scan
                     });
                 });
             }
@@ -2725,6 +2727,7 @@ impl App {
                         wallet_meta: meta,
                         account,
                         status_message: "Wallet restored from backup with Account 1!".to_string(),
+                        is_new_wallet: false, // Restored wallet, need full scan
                     });
                 });
             }
@@ -2732,6 +2735,7 @@ impl App {
                 ref wallet_meta,
                 ref account,
                 ref status_message,
+                is_new_wallet,
             } => {
                 // Hide spinner
                 self.tx_progress_visible = false;
@@ -2748,6 +2752,19 @@ impl App {
                     self.wallet_setup_component.error_message =
                         Some(format!("Failed to save account: {}", e));
                     return Ok(());
+                }
+
+                // For new wallets, skip scanning by setting scan state to tip block
+                if is_new_wallet
+                    && let Ok(tip) = self.scanner.get_tip_block_number()
+                {
+                    let mut scan_state = crate::domain::scan_state::ScanState::new();
+                    scan_state.last_scanned_block = Some(tip);
+                    if let Err(e) = self.store.save_scan_state(&scan_state) {
+                        tracing::warn!("Failed to save scan state for new wallet: {}", e);
+                    }
+                    self.scanned_block_number = Some(tip);
+                    tracing::info!("New wallet created, skipping scan to tip block {}", tip);
                 }
 
                 // Update app state
@@ -3333,8 +3350,9 @@ impl App {
                 let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(20);
                 let popup_width =
                     ((max_line_len + 6) as u16).clamp(30, area.width.saturating_sub(4));
+                // Height: 1 empty + 1 icon + N message lines + 1 empty + 1 hint + 2 border = N + 6
                 let popup_height =
-                    ((lines.len() + 5) as u16).clamp(7, area.height.saturating_sub(4));
+                    ((lines.len() + 6) as u16).clamp(8, area.height.saturating_sub(4));
                 let x = (area.width.saturating_sub(popup_width)) / 2;
                 let y = (area.height.saturating_sub(popup_height)) / 2;
                 let popup_area = Rect::new(x, y, popup_width, popup_height);

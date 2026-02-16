@@ -125,6 +125,9 @@ pub enum Action {
         wallet_meta: crate::domain::wallet::WalletMeta,
         account: crate::domain::account::Account,
         status_message: String,
+        /// True if this is a newly created wallet (skip scan to tip),
+        /// False if restored from mnemonic/backup (need full scan)
+        is_new_wallet: bool,
     },
     /// Wallet creation failed with error message
     WalletError(String),
