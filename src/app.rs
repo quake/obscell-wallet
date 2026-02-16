@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Tabs},
 };
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, info};
 
@@ -26,7 +27,7 @@ use crate::{
     },
     config::Config,
     domain::{
-        account::AccountManager,
+        account::{Account, AccountManager},
         cell::aggregate_ct_balances_with_info,
         ct_info::{CtInfoData, MINTABLE},
         ct_mint::{
@@ -38,7 +39,7 @@ use crate::{
         wallet::WalletMeta,
     },
     infra::{
-        block_scanner::BlockScanner,
+        block_scanner::{BlockScanner, ScanCancelFlag, new_cancel_flag},
         devnet::DevNet,
         faucet::Faucet,
         rpc::RpcClient,
@@ -147,6 +148,8 @@ pub struct App {
     pub tip_block_number: Option<u64>,
     pub scanned_block_number: Option<u64>,
     pub is_scanning: bool,
+    pub scan_cancel_flag: Option<ScanCancelFlag>,
+    pub pending_rescan: Option<PendingRescan>,
     pub last_auto_scan: Option<u64>,
     // Dev mode fields
     pub dev_mode: bool,
@@ -178,6 +181,17 @@ pub struct App {
 pub struct TxResultPopup {
     pub is_success: bool,
     pub message: String,
+}
+
+/// Pending rescan request (to be executed after current scan is cancelled)
+#[derive(Debug, Clone)]
+pub enum PendingRescan {
+    /// Incremental scan from last scanned block
+    Incremental,
+    /// Full rescan from config's scan_start_block
+    Full,
+    /// Full rescan from a specific height
+    FromHeight(u64),
 }
 
 impl App {
@@ -271,6 +285,8 @@ impl App {
             tip_block_number: None,
             scanned_block_number: None,
             is_scanning: false,
+            scan_cancel_flag: None,
+            pending_rescan: None,
             last_auto_scan: None,
             // Dev mode
             dev_mode,
@@ -362,6 +378,7 @@ impl App {
             } => {
                 self.is_scanning = false;
                 self.scan_update_rx = None;
+                self.scan_cancel_flag = None;
                 self.scanned_block_number = Some(last_block);
 
                 // Refresh all UI components
@@ -390,10 +407,73 @@ impl App {
             BlockScanUpdate::Error(msg) => {
                 self.is_scanning = false;
                 self.scan_update_rx = None;
+                self.scan_cancel_flag = None;
                 self.status_message = format!("Scan error: {}", msg);
                 info!("Background scan error: {}", msg);
             }
+            BlockScanUpdate::Cancelled => {
+                self.is_scanning = false;
+                self.scan_update_rx = None;
+                self.scan_cancel_flag = None;
+                debug!("Scan cancelled");
+
+                // Check if there's a pending rescan to start
+                if let Some(pending) = self.pending_rescan.take()
+                    && let Ok(accounts) = self.account_manager.list_accounts()
+                    && !accounts.is_empty()
+                {
+                    match pending {
+                        PendingRescan::Incremental => {
+                            let _ = self.start_scan(accounts, false, None);
+                        }
+                        PendingRescan::Full => {
+                            let _ = self.start_scan(accounts, true, None);
+                        }
+                        PendingRescan::FromHeight(height) => {
+                            let _ = self.start_scan(accounts, true, Some(height));
+                        }
+                    }
+                }
+            }
         }
+        Ok(())
+    }
+
+    /// Start a background scan with the given parameters.
+    fn start_scan(
+        &mut self,
+        accounts: Vec<Account>,
+        is_full_rescan: bool,
+        start_height: Option<u64>,
+    ) -> Result<()> {
+        let msg = if is_full_rescan {
+            if let Some(h) = start_height {
+                format!("Full rescan from block {}...", h)
+            } else {
+                "Full rescan in background...".to_string()
+            }
+        } else {
+            "Scanning in background...".to_string()
+        };
+        self.status_message = msg;
+        self.is_scanning = true;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.scan_update_rx = Some(rx);
+
+        let cancel_flag = new_cancel_flag();
+        self.scan_cancel_flag = Some(cancel_flag.clone());
+
+        BlockScanner::spawn_background_scan(
+            self.config.clone(),
+            self.store.clone(),
+            accounts,
+            is_full_rescan,
+            start_height,
+            tx,
+            cancel_flag,
+        );
+
         Ok(())
     }
 
@@ -829,6 +909,9 @@ impl App {
                         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                         self.scan_update_rx = Some(rx);
 
+                        let cancel_flag = new_cancel_flag();
+                        self.scan_cancel_flag = Some(cancel_flag.clone());
+
                         BlockScanner::spawn_background_scan(
                             self.config.clone(),
                             self.store.clone(),
@@ -836,6 +919,7 @@ impl App {
                             false, // incremental scan
                             None,  // no custom start height
                             tx,
+                            cancel_flag,
                         );
                     }
                     // Update timestamp immediately so we don't spam scans
@@ -1138,88 +1222,65 @@ impl App {
                 }
             }
             Action::Rescan => {
-                if self.is_scanning {
-                    self.status_message = "Scan already in progress...".to_string();
-                    return Ok(());
-                }
-
                 let accounts = self.account_manager.list_accounts()?;
                 if accounts.is_empty() {
                     self.status_message = "No accounts to scan".to_string();
                     return Ok(());
                 }
 
-                // Start background scan
-                self.status_message = "Scanning in background...".to_string();
-                self.is_scanning = true;
+                // If a scan is already running, cancel it and schedule the new scan
+                if self.is_scanning {
+                    if let Some(ref flag) = self.scan_cancel_flag {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                    self.pending_rescan = Some(PendingRescan::Incremental);
+                    self.status_message = "Cancelling current scan...".to_string();
+                    return Ok(());
+                }
 
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                self.scan_update_rx = Some(rx);
-
-                BlockScanner::spawn_background_scan(
-                    self.config.clone(),
-                    self.store.clone(),
-                    accounts,
-                    false, // incremental scan
-                    None,  // no custom start height
-                    tx,
-                );
+                // No scan running, start immediately
+                self.start_scan(accounts, false, None)?;
             }
             Action::FullRescan => {
-                if self.is_scanning {
-                    self.status_message = "Scan already in progress...".to_string();
-                    return Ok(());
-                }
-
                 let accounts = self.account_manager.list_accounts()?;
                 if accounts.is_empty() {
                     self.status_message = "No accounts to scan".to_string();
                     return Ok(());
                 }
 
-                // Start background full rescan
-                self.status_message = "Full rescan in background...".to_string();
-                self.is_scanning = true;
+                // If a scan is already running, cancel it and schedule the new scan
+                if self.is_scanning {
+                    if let Some(ref flag) = self.scan_cancel_flag {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                    self.pending_rescan = Some(PendingRescan::Full);
+                    self.status_message = "Cancelling current scan for full rescan...".to_string();
+                    return Ok(());
+                }
 
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                self.scan_update_rx = Some(rx);
-
-                BlockScanner::spawn_background_scan(
-                    self.config.clone(),
-                    self.store.clone(),
-                    accounts,
-                    true, // full rescan
-                    None, // use config's scan_start_block
-                    tx,
-                );
+                // No scan running, start immediately
+                self.start_scan(accounts, true, None)?;
             }
             Action::FullRescanFromHeight(start_height) => {
-                if self.is_scanning {
-                    self.status_message = "Scan already in progress...".to_string();
-                    return Ok(());
-                }
-
                 let accounts = self.account_manager.list_accounts()?;
                 if accounts.is_empty() {
                     self.status_message = "No accounts to scan".to_string();
                     return Ok(());
                 }
 
-                // Start background full rescan from specified height
-                self.status_message = format!("Full rescan from block {}...", start_height);
-                self.is_scanning = true;
+                // If a scan is already running, cancel it and schedule the new scan
+                if self.is_scanning {
+                    if let Some(ref flag) = self.scan_cancel_flag {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                    self.pending_rescan = Some(PendingRescan::FromHeight(start_height));
+                    self.status_message =
+                        format!("Cancelling current scan for rescan from {}...", start_height);
+                    return Ok(());
+                }
 
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                self.scan_update_rx = Some(rx);
-
-                BlockScanner::spawn_background_scan(
-                    self.config.clone(),
-                    self.store.clone(),
-                    accounts,
-                    true, // full rescan
-                    Some(start_height),
-                    tx,
-                );
+                // No scan running, start immediately
+                self.start_scan(accounts, true, Some(start_height))?;
             }
             Action::SendTransaction => {
                 // This action is no longer used directly - we use SendTransactionWithPassphrase

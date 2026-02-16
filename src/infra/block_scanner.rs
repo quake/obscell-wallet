@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::{
     config::Config,
@@ -46,6 +48,17 @@ pub enum BlockScanUpdate {
     },
     /// Scan failed with error
     Error(String),
+    /// Scan was cancelled
+    Cancelled,
+}
+
+/// A flag that can be used to cancel a running scan.
+/// Clone this and pass to spawn_background_scan, then set to true to request cancellation.
+pub type ScanCancelFlag = Arc<AtomicBool>;
+
+/// Create a new cancellation flag (initially false = not cancelled).
+pub fn new_cancel_flag() -> ScanCancelFlag {
+    Arc::new(AtomicBool::new(false))
 }
 
 /// Result of processing a single block.
@@ -1019,9 +1032,254 @@ impl BlockScanner {
         self.scan_blocks_from_height(accounts, start, update_tx)
     }
 
+    /// Scan blocks with cancellation support.
+    pub fn scan_blocks_with_cancel(
+        &self,
+        accounts: &[Account],
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+        cancel_flag: &ScanCancelFlag,
+    ) -> Result<usize> {
+        self.scan_blocks_from_height_with_cancel(
+            accounts,
+            self.config.network.scan_start_block,
+            update_tx,
+            cancel_flag,
+        )
+    }
+
+    /// Scan blocks from a specific height with cancellation support.
+    pub fn scan_blocks_from_height_with_cancel(
+        &self,
+        accounts: &[Account],
+        start_block: u64,
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+        cancel_flag: &ScanCancelFlag,
+    ) -> Result<usize> {
+        if accounts.is_empty() {
+            return Ok(0);
+        }
+
+        let tip = self.get_tip_block_number()?;
+        let mut state = self.store.load_scan_state()?;
+
+        let mut current = state.next_block_to_scan(start_block);
+        let mut blocks_processed = 0;
+        let mut total_cells_found: u64 = 0;
+
+        debug!(
+            "Scan state: start_block={}, last_scanned={:?}, recent_blocks_count={}, next_to_scan={}",
+            start_block,
+            state.last_scanned_block,
+            state.recent_blocks.len(),
+            current
+        );
+
+        if current <= tip {
+            info!("Starting block scan from {} to {} (tip)", current, tip);
+        } else {
+            debug!("Already synced to tip {}, no new blocks to scan", tip);
+            if let Some(tx) = update_tx {
+                let last_scanned = state.last_scanned_block.unwrap_or(start_block);
+                let _ = tx.send(BlockScanUpdate::Progress {
+                    current_block: last_scanned,
+                    tip_block: tip,
+                    cells_found: 0,
+                });
+            }
+        }
+
+        'scan_loop: while current <= tip {
+            // Check for cancellation at the start of each iteration
+            if cancel_flag.load(Ordering::Relaxed) {
+                info!("Scan cancelled at block {}", current);
+                return Ok(blocks_processed);
+            }
+
+            let block = match self.get_block_with_retry(current) {
+                Ok(Some(b)) => b,
+                Ok(None) => {
+                    warn!("Block {} not found, waiting...", current);
+                    break;
+                }
+                Err(e) => {
+                    warn!("Failed to fetch block {} after retries: {}", current, e);
+                    if let Some(tx) = update_tx {
+                        let _ = tx.send(BlockScanUpdate::Error(format!(
+                            "RPC error at block {}: {}",
+                            current, e
+                        )));
+                    }
+                    return Err(e);
+                }
+            };
+
+            let block_hash: [u8; 32] = block.header().calc_header_hash().into();
+            let parent_hash: [u8; 32] = block.header().raw().parent_hash().into();
+
+            // Check for reorg
+            if let Some(expected_parent) = state.expected_parent_hash()
+                && parent_hash != expected_parent
+            {
+                warn!(
+                    "Reorg detected at block {}! Expected parent {:?}, got {:?}",
+                    current,
+                    hex::encode(&expected_parent[..8]),
+                    hex::encode(&parent_hash[..8])
+                );
+
+                if let Some(fork_block) = state.find_fork_point(&parent_hash) {
+                    info!("Fork point found at block {}", fork_block);
+
+                    if let Some(last_scanned) = state.last_scanned_block {
+                        info!(
+                            "Undoing blocks {} down to {} (fork_block + 1)",
+                            last_scanned,
+                            fork_block + 1
+                        );
+                        for undo_block in (fork_block + 1..=last_scanned).rev() {
+                            if let Some(changes) = self.store.get_block_changes(undo_block)? {
+                                debug!("Undoing block {}", undo_block);
+                                self.undo_block_changes(&changes)?;
+                                self.store.delete_block_changes(undo_block)?;
+                            } else {
+                                warn!(
+                                    "No BlockChanges found for block {}, falling back to full rescan",
+                                    undo_block
+                                );
+                                for account in accounts {
+                                    self.store.clear_all_cells_for_account(account.id)?;
+                                }
+                                self.store.clear_block_changes()?;
+                                state.clear();
+                                self.store.save_scan_state(&state)?;
+                                current = start_block;
+                                continue 'scan_loop;
+                            }
+                        }
+                    }
+
+                    state.rollback_to(fork_block);
+                    self.store.save_scan_state(&state)?;
+
+                    if let Some(tx) = update_tx {
+                        let new_tip = self.get_tip_block_number().unwrap_or(tip);
+                        let _ = tx.send(BlockScanUpdate::ReorgDetected {
+                            fork_block,
+                            new_tip,
+                        });
+                    }
+
+                    current = fork_block + 1;
+                    continue;
+                } else {
+                    warn!("Fork point not found in recent blocks, initiating full rescan");
+                    for account in accounts {
+                        self.store.clear_all_cells_for_account(account.id)?;
+                    }
+                    self.store.clear_block_changes()?;
+                    state.clear();
+                    self.store.save_scan_state(&state)?;
+                    current = start_block;
+                    continue;
+                }
+            }
+
+            // Process the block
+            let result = self.process_block(&block, accounts)?;
+
+            // Store new cells and mark spent
+            for (account_id, cells) in &result.new_stealth_cells {
+                if !cells.is_empty() {
+                    self.store.add_stealth_cells(*account_id, cells)?;
+                    total_cells_found += cells.len() as u64;
+                }
+            }
+            for (account_id, cells) in &result.new_ct_cells {
+                if !cells.is_empty() {
+                    self.store.add_ct_cells(*account_id, cells)?;
+                    total_cells_found += cells.len() as u64;
+                }
+            }
+            for (account_id, cells) in &result.new_ct_info_cells {
+                if !cells.is_empty() {
+                    self.store.add_ct_info_cells(*account_id, cells)?;
+                }
+            }
+            for (account_id, out_points) in &result.spent_out_points {
+                if !out_points.is_empty() {
+                    self.store.remove_spent_cells(*account_id, out_points)?;
+                    self.store.remove_spent_ct_cells(*account_id, out_points)?;
+                    self.store
+                        .remove_spent_ct_info_cells(*account_id, out_points)?;
+                }
+            }
+            for (account_id, records) in &result.tx_records {
+                for record in records {
+                    self.store.save_tx_record(*account_id, record)?;
+                }
+            }
+
+            let block_changes = Self::create_block_changes(current, block_hash, &result);
+            if !block_changes.is_empty() {
+                self.store.save_block_changes(&block_changes)?;
+            }
+
+            state.add_block(current, block_hash);
+            self.store.save_scan_state(&state)?;
+
+            blocks_processed += 1;
+
+            if let Some(tx) = update_tx
+                && (blocks_processed % 10 == 0 || current == tip)
+            {
+                let _ = tx.send(BlockScanUpdate::Progress {
+                    current_block: current,
+                    tip_block: tip,
+                    cells_found: total_cells_found,
+                });
+            }
+
+            current += 1;
+        }
+
+        info!(
+            "Block scan complete: {} blocks processed, {} cells found",
+            blocks_processed, total_cells_found
+        );
+
+        Ok(blocks_processed)
+    }
+
+    /// Perform a full rescan with cancellation support.
+    pub fn full_rescan_from_height_with_cancel(
+        &self,
+        accounts: &[Account],
+        start_height: Option<u64>,
+        update_tx: Option<&tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>>,
+        cancel_flag: &ScanCancelFlag,
+    ) -> Result<usize> {
+        let start = start_height.unwrap_or(self.config.network.scan_start_block);
+        info!("Starting full rescan from block {}...", start);
+
+        // Clear all data
+        let account_ids: Vec<u64> = accounts.iter().map(|a| a.id).collect();
+        self.store.clear_all_for_rescan(&account_ids)?;
+
+        // Notify
+        if let Some(tx) = update_tx {
+            let _ = tx.send(BlockScanUpdate::Started {
+                is_full_rescan: true,
+            });
+        }
+
+        // Run scan from specified height with cancel support
+        self.scan_blocks_from_height_with_cancel(accounts, start, update_tx, cancel_flag)
+    }
+
     /// Spawn a background scan task.
     /// If `start_height` is Some, performs a full rescan from that height.
     /// If `start_height` is None and `is_full_rescan` is true, uses config's scan_start_block.
+    /// Pass a `cancel_flag` to allow cancellation; set it to true to request cancellation.
     pub fn spawn_background_scan(
         config: Config,
         store: Store,
@@ -1029,21 +1287,32 @@ impl BlockScanner {
         is_full_rescan: bool,
         start_height: Option<u64>,
         update_tx: tokio::sync::mpsc::UnboundedSender<BlockScanUpdate>,
+        cancel_flag: ScanCancelFlag,
     ) {
         tokio::spawn(async move {
             let update_tx_clone = update_tx.clone();
             let update_tx_final = update_tx.clone();
             let store_clone = store.clone();
             let account_ids: Vec<u64> = accounts.iter().map(|a| a.id).collect();
+            let cancel_flag_clone = cancel_flag.clone();
 
             let _ = update_tx.send(BlockScanUpdate::Started { is_full_rescan });
 
             let result = tokio::task::spawn_blocking(move || {
                 let scanner = BlockScanner::new(config, store);
                 if is_full_rescan {
-                    scanner.full_rescan_from_height(&accounts, start_height, Some(&update_tx_clone))
+                    scanner.full_rescan_from_height_with_cancel(
+                        &accounts,
+                        start_height,
+                        Some(&update_tx_clone),
+                        &cancel_flag_clone,
+                    )
                 } else {
-                    scanner.scan_blocks(&accounts, Some(&update_tx_clone))
+                    scanner.scan_blocks_with_cancel(
+                        &accounts,
+                        Some(&update_tx_clone),
+                        &cancel_flag_clone,
+                    )
                 }
             })
             .await;
@@ -1051,6 +1320,12 @@ impl BlockScanner {
             // Handle result and send final update
             match result {
                 Ok(Ok(_blocks_processed)) => {
+                    // Check if we were cancelled
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        let _ = update_tx_final.send(BlockScanUpdate::Cancelled);
+                        return;
+                    }
+
                     // Count cells from store for the Complete message
                     let mut total_stealth = 0;
                     let mut total_ct = 0;
@@ -1080,8 +1355,13 @@ impl BlockScanner {
                     });
                 }
                 Ok(Err(e)) => {
-                    // Scan returned an error
-                    let _ = update_tx_final.send(BlockScanUpdate::Error(e.to_string()));
+                    // Check if we were cancelled (error might be due to cancellation)
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        let _ = update_tx_final.send(BlockScanUpdate::Cancelled);
+                    } else {
+                        // Scan returned an error
+                        let _ = update_tx_final.send(BlockScanUpdate::Error(e.to_string()));
+                    }
                 }
                 Err(e) => {
                     // Task panicked
