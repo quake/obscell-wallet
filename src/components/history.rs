@@ -184,7 +184,7 @@ impl HistoryComponent {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
 
                 let (amount_str, delta_color) = Self::format_delta(tx);
@@ -285,7 +285,7 @@ impl HistoryComponent {
                 Span::styled("Block: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", tx.block_number),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Reset),
                 ),
             ]));
             lines.push(Line::from(""));
@@ -295,7 +295,7 @@ impl HistoryComponent {
                 Span::styled("Time: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     Self::format_timestamp(tx.timestamp),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Reset),
                 ),
             ]));
 

@@ -122,7 +122,7 @@ impl AccountsComponent {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
 
                 let balance_str = format_ckb_balance(acc.ckb_balance);
@@ -201,7 +201,7 @@ impl AccountsComponent {
             let mut details = vec![
                 Line::from(vec![
                     Span::styled("Name: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                 ]),
                 Line::from(""),
                 Line::from(vec![

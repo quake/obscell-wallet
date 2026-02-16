@@ -224,7 +224,7 @@ impl DevComponent {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 ListItem::new(Line::from(Span::styled(op.label(), style)))
             })
@@ -338,7 +338,7 @@ impl DevComponent {
         let amount_style = if is_editing {
             Style::default().fg(Color::Yellow)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let mut amount_display = faucet_amount.to_string();
@@ -360,7 +360,7 @@ impl DevComponent {
             ]),
             Line::from(vec![
                 Span::styled("Recipient: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(recipient_text, Style::default().fg(Color::White)),
+                Span::styled(recipient_text, Style::default().fg(Color::Reset)),
             ]),
             Line::from(vec![
                 Span::styled("Amount: ", Style::default().fg(Color::DarkGray)),

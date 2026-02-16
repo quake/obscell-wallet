@@ -247,7 +247,7 @@ impl SettingsComponent {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 ListItem::new(Line::from(Span::styled(op.label(), style)))
             })
@@ -298,7 +298,7 @@ impl SettingsComponent {
                 } else if is_current {
                     Style::default().fg(Color::Green)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
 
                 let marker = if is_current {
@@ -416,7 +416,7 @@ impl SettingsComponent {
 
                 details.push(Line::from(vec![
                     Span::styled("Network: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(display_name, Style::default().fg(Color::White)),
+                    Span::styled(display_name, Style::default().fg(Color::Reset)),
                 ]));
                 details.push(Line::from(""));
                 details.push(Line::from(vec![

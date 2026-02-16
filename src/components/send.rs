@@ -270,7 +270,7 @@ impl SendComponent {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("From: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                     Span::raw("  |  "),
                     Span::styled("Balance: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
@@ -305,7 +305,7 @@ impl SendComponent {
                 Style::default().fg(Color::Cyan)
             }
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let recipient_text = if recipient.is_empty() && focused_field != SendField::Recipient {
@@ -362,7 +362,7 @@ impl SendComponent {
                 Style::default().fg(Color::Cyan)
             }
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let amount_text = if amount.is_empty() && focused_field != SendField::Amount {

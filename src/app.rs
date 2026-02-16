@@ -2980,7 +2980,7 @@ impl App {
             let tabs = Tabs::new(titles)
                 .block(Block::default().borders(Borders::ALL))
                 .select(active_tab.index(dev_mode))
-                .style(Style::default().fg(Color::White))
+                .style(Style::default().fg(Color::Reset))
                 .highlight_style(
                     Style::default()
                         .fg(Color::Cyan)
@@ -3145,7 +3145,7 @@ impl App {
                 let input_style = if rescan_height_input.is_empty() {
                     Style::default().fg(Color::DarkGray)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 let input_widget = Paragraph::new(display_value).style(input_style).block(
                     Block::default()
@@ -3219,7 +3219,7 @@ impl App {
                     format!("{}_", masked)
                 };
                 let input_widget = Paragraph::new(display_value)
-                    .style(Style::default().fg(Color::White))
+                    .style(Style::default().fg(Color::Reset))
                     .block(
                         Block::default()
                             .title("Passphrase")
@@ -3277,7 +3277,7 @@ impl App {
                             format!("  {}  ", spinner_char),
                             Style::default().fg(Color::Cyan),
                         ),
-                        Span::styled("Please wait...", Style::default().fg(Color::White)),
+                        Span::styled("Please wait...", Style::default().fg(Color::Reset)),
                     ]),
                 ])
                 .alignment(ratatui::layout::Alignment::Center);
@@ -3330,7 +3330,7 @@ impl App {
                 for line in &lines {
                     content_lines.push(Line::from(Span::styled(
                         *line,
-                        Style::default().fg(Color::White),
+                        Style::default().fg(Color::Reset),
                     )));
                 }
 

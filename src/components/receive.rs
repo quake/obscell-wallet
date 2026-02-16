@@ -158,7 +158,7 @@ impl ReceiveComponent {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("Account: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(

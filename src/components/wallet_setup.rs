@@ -489,7 +489,7 @@ impl WalletSetupComponent {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Reset)
             };
 
             let prefix = if is_selected { "▶ " } else { "  " };
@@ -523,7 +523,7 @@ impl WalletSetupComponent {
         // Instructions
         let instructions =
             custom_instruction.unwrap_or("Enter a strong passphrase (min 8 characters):");
-        let instr_para = Paragraph::new(instructions).style(Style::default().fg(Color::White));
+        let instr_para = Paragraph::new(instructions).style(Style::default().fg(Color::Reset));
         f.render_widget(instr_para, chunks[0]);
 
         // Password field
@@ -543,7 +543,7 @@ impl WalletSetupComponent {
             });
 
         let input_para = Paragraph::new(display)
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(Color::Reset))
             .block(input_block);
         f.render_widget(input_para, chunks[1]);
 
@@ -611,7 +611,7 @@ impl WalletSetupComponent {
 
         // Instructions
         let instructions = Paragraph::new("Enter your 24-word mnemonic (space-separated):")
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(Color::Reset));
         f.render_widget(instructions, chunks[0]);
 
         // Input area
@@ -628,7 +628,7 @@ impl WalletSetupComponent {
 
         let display = format!("{}│", input);
         let input_para = Paragraph::new(display)
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(Color::Reset))
             .block(input_block)
             .wrap(Wrap { trim: false });
         f.render_widget(input_para, chunks[1]);
@@ -649,7 +649,7 @@ impl WalletSetupComponent {
 
         // Instructions
         let instructions = Paragraph::new("Enter your backup string (starts with 'obscell:1:'):")
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(Color::Reset));
         f.render_widget(instructions, chunks[0]);
 
         // Input area
@@ -665,7 +665,7 @@ impl WalletSetupComponent {
 
         let display = format!("{}│", input);
         let input_para = Paragraph::new(display)
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(Color::Reset))
             .block(input_block)
             .wrap(Wrap { trim: false });
         f.render_widget(input_para, chunks[1]);

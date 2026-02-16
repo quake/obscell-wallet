@@ -600,7 +600,7 @@ impl TokensComponent {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
 
                 let amount_str = format_token_amount(bal.total_amount);
@@ -696,7 +696,7 @@ impl TokensComponent {
                     Span::styled("Cells: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         bal.cell_count.to_string(),
-                        Style::default().fg(Color::White),
+                        Style::default().fg(Color::Reset),
                     ),
                 ]),
             ]
@@ -763,7 +763,7 @@ impl TokensComponent {
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
         // Clear background for popup
-        let clear = Block::default().style(Style::default().bg(Color::Black));
+        let clear = Block::default().style(Style::default().bg(Color::Reset));
         f.render_widget(clear, popup_area);
 
         // Build menu items
@@ -778,7 +778,7 @@ impl TokensComponent {
                         .bg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 ListItem::new(Line::from(Span::styled(
                     format!("  {}  ", op.label()),
@@ -828,7 +828,7 @@ impl TokensComponent {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("From: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                     Span::raw("  |  "),
                     Span::styled("Token: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(bal.display_name(), Style::default().fg(Color::Cyan)),
@@ -862,7 +862,7 @@ impl TokensComponent {
         let recipient_style = if focused_field == TransferField::Recipient {
             Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let recipient_text = if recipient.is_empty() && focused_field != TransferField::Recipient {
@@ -902,7 +902,7 @@ impl TokensComponent {
         let amount_style = if focused_field == TransferField::Amount {
             Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let amount_text = if amount.is_empty() && focused_field != TransferField::Amount {
@@ -1025,7 +1025,7 @@ impl TokensComponent {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("Issuer: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                     Span::raw("  |  "),
                     Span::styled("Minting new CT tokens", Style::default().fg(Color::Magenta)),
                 ]),
@@ -1052,7 +1052,7 @@ impl TokensComponent {
         let recipient_style = if focused_field == TransferField::Recipient {
             Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let recipient_text = if recipient.is_empty() && focused_field != TransferField::Recipient {
@@ -1092,7 +1092,7 @@ impl TokensComponent {
         let amount_style = if focused_field == TransferField::Amount {
             Style::default().fg(Color::Yellow) // Always "editing" style when focused
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let amount_text = if amount.is_empty() && focused_field != TransferField::Amount {
@@ -1215,7 +1215,7 @@ impl TokensComponent {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("Issuer: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&acc.name, Style::default().fg(Color::White)),
+                    Span::styled(&acc.name, Style::default().fg(Color::Reset)),
                     Span::raw("  |  "),
                     Span::styled(
                         "Creating new CT token (genesis)",
@@ -1245,7 +1245,7 @@ impl TokensComponent {
         let checkbox_style = if focused_field == GenesisField::Unlimited {
             Style::default().fg(Color::Cyan)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let checkbox_text = if unlimited {
@@ -1284,7 +1284,7 @@ impl TokensComponent {
         } else if unlimited {
             Style::default().fg(Color::DarkGray)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         let supply_text = if unlimited {
