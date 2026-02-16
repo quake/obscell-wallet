@@ -69,4 +69,4 @@ Cryptographic primitives used:
 
 The wallet is already deployed on **testnet** - feel free to download a pre-built binary and try it out!
 
-Feedback and contributions welcome!
+This is still an early release and may contain bugs. Feedback, bug reports, and contributions are all welcome!
